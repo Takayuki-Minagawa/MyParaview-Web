@@ -1,3 +1,3 @@
-"""ParaView-like web app backend (M1 MVP)."""
+"""MyParaView-Web hybrid visualization backend."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

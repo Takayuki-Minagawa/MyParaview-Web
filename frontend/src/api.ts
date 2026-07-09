@@ -1,10 +1,39 @@
-import type { Dataset, Job, Project } from "./types";
+import type {
+  Artifact,
+  AssistProposal,
+  CollectionStep,
+  Dataset,
+  Job,
+  Pipeline,
+  Project,
+  ServerCapabilities,
+  ViewState,
+} from "./types";
 
 export const API_BASE =
   (import.meta.env?.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
 
+export function setAccessToken(token: string | null) {
+  if (typeof window === "undefined") return;
+  if (token) window.sessionStorage.setItem("pvweb.accessToken", token);
+  else window.sessionStorage.removeItem("pvweb.accessToken");
+}
+
+function accessToken() {
+  return typeof window === "undefined"
+    ? null
+    : window.sessionStorage.getItem("pvweb.accessToken");
+}
+
+export function authorizedFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  const token = accessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${API_BASE}${path}`, init);
+  const resp = await authorizedFetch(`${API_BASE}${path}`, init);
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
@@ -15,6 +44,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => req<{ status: string }>("/health"),
+  capabilities: () => req<ServerCapabilities>("/capabilities"),
 
   listProjects: () => req<Project[]>("/projects"),
   createProject: (name: string) =>
@@ -33,14 +63,99 @@ export const api = {
     fd.append("file", file);
     return req<Dataset>(`/projects/${projectId}/datasets`, { method: "POST", body: fd });
   },
+  uploadDatasetBundle: (projectId: string, files: File[]) => {
+    const form = new FormData();
+    for (const file of files) {
+      form.append("files", file, file.webkitRelativePath || file.name);
+    }
+    return req<Dataset>(`/projects/${projectId}/dataset-bundles`, {
+      method: "POST",
+      body: form,
+    });
+  },
+  uploadExternalDatasetBundle: (projectId: string, files: File[]) => {
+    const form = new FormData();
+    for (const file of files) {
+      form.append("files", file, file.webkitRelativePath || file.name);
+    }
+    return req<Dataset>(`/projects/${projectId}/external-dataset-bundles`, {
+      method: "POST",
+      body: form,
+    });
+  },
 
   ingest: (datasetId: string) =>
     req<Job>(`/datasets/${datasetId}/ingest`, { method: "POST" }),
 
   getJob: (id: string) => req<Job>(`/jobs/${id}`),
+  listJobs: (projectId?: string) =>
+    req<Job[]>(`/jobs${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
   cancelJob: (id: string) => req<Job>(`/jobs/${id}/cancel`, { method: "POST" }),
+  createJob: (
+    projectId: string,
+    kind: "convert" | "filter" | "export",
+    targetId: string,
+    params: Record<string, unknown>,
+  ) => req<Job>("/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, kind, target_id: targetId, params }),
+  }),
+
+  listPipelines: (projectId: string) =>
+    req<Pipeline[]>(`/pipelines?project_id=${encodeURIComponent(projectId)}`),
+  createViewPipeline: (
+    projectId: string,
+    datasetId: string,
+    name: string,
+    viewState: ViewState,
+  ) => req<Pipeline>("/pipelines", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: projectId,
+      name,
+      nodes: [
+        { node_type: "reader", name: "Reader", local_id: "reader", dataset_id: datasetId, params: {} },
+        {
+          node_type: "representation",
+          name: "Representation",
+          input_id: "reader",
+          params: { view_state: viewState },
+        },
+      ],
+    }),
+  }),
+  deletePipeline: (id: string) => req<void>(`/pipelines/${id}`, { method: "DELETE" }),
+
+  listArtifacts: (datasetId: string) =>
+    req<Artifact[]>(`/artifacts?dataset_id=${encodeURIComponent(datasetId)}`),
+  uploadArtifact: (datasetId: string, kind: "screenshot" | "client_export", blob: Blob) => {
+    const form = new FormData();
+    const extension = kind === "screenshot" ? "png" : "bin";
+    form.append("file", blob, `${kind}.${extension}`);
+    return req<Artifact>(
+      `/artifacts?dataset_id=${encodeURIComponent(datasetId)}&kind=${kind}`,
+      { method: "POST", body: form },
+    );
+  },
+  downloadArtifact: async (artifactId: string) => {
+    const response = await authorizedFetch(`${API_BASE}/artifacts/${artifactId}`);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return response.blob();
+  },
 
   downloadUrl: (datasetId: string) => `${API_BASE}/datasets/${datasetId}/download`,
+  listTimesteps: (datasetId: string) =>
+    req<CollectionStep[]>(`/datasets/${datasetId}/timesteps`),
+  timestepUrl: (datasetId: string, stepIndex: number) =>
+    `${API_BASE}/datasets/${datasetId}/timesteps/${stepIndex}/download`,
+  proposeAssistance: (datasetId: string, prompt: string) =>
+    req<AssistProposal>("/assist/proposals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataset_id: datasetId, prompt }),
+    }),
 };
 
 const TERMINAL = new Set(["succeeded", "failed", "canceled"]);

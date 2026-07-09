@@ -1,97 +1,161 @@
 # MyParaView-Web
 
-A ParaView-like web application for viewing and analysing CAE / CFD / FEA and
-scientific datasets. This repository implements the **M1 MVP** slice of the
-[work plan](./work_plan.md), which is itself derived from the technical research
-in [`paraview_webapp_research.md`](./paraview_webapp_research.md).
+ParaView風の科学データWebビューアです。小～中規模データはReact + vtk.jsで直接描画し、
+外部形式・重いフィルタ・サーバレンダリングは、任意構成のParaView/trame workerへ安全に委譲します。
 
-> Scope note: this is the M1 MVP (ingest → metadata → browser rendering →
-> pipelines → cancellable jobs). The heavy server-side rendering path (trame /
-> ParaView `VtkRemoteView`) and formats such as CGNS/Exodus/EnSight/XDMF are
-> planned for M2+ and are intentionally **not** implemented yet — the code
-> reports those formats as "server-rendered" rather than faking support.
+追加機能候補17件の実装状態と境界は
+[docs/implementation-status.md](docs/implementation-status.md) に集約しています。
 
-## Architecture (implemented subset)
+## 主な機能
 
+- VTP: surface / wireframe / points、point/cell scalar、3種のcolormap、手動range、opacity、凡例
+- VTI: X/Y/Z slice とvolume rendering
+- CSV: X/Y/Z列選択による点群化（ブラウザ上限250,000点）
+- PVD: 参照ファイル込みbundle upload、時系列slider/playback、完全bundle ZIP export
+- 表示状態: Pipeline browser、camera/representation/color/VTI/PVD状態の保存・復元
+- UX: job center、cancel、進捗/ログ、panel折りたたみ、resize、orientation axes、標準view
+- Artifact: source/bundle export、client screenshot、worker生成VTPの一覧と認証付きdownload
+- 本番基盤: Alembic、PostgreSQL、S3/MinIO、OIDC Code+PKCE、Project RBAC、監査ログ
+- Server capability: pvpython reader/convert/filter、trame broker session、期限付きWebSocket proxy
+- R&D: WebGPU/WASM検出（描画は安定版vtk.js WebGL）、Python/Jupyter deep link、安全な操作提案
+
+## アーキテクチャ
+
+```text
+React + vtk.js ── HTTP/JSON ── FastAPI ── PostgreSQL or SQLite
+      │                            ├────── S3/MinIO or local object store
+      │                            ├────── cancellable local job manager
+      │                            ├────── pvpython worker (optional)
+      └── OIDC Code+PKCE           └────── trame broker + WS proxy (optional)
 ```
-React + vtk.js (frontend)  ──HTTP/JSON──▶  FastAPI (backend)
-        │                                      │
-        │  GET /datasets/{id}/download         ├─ SQLite  (projects, datasets, pipelines, jobs)
-        └──────────────────────────────────────┤─ Object store (local FS stand-in for S3)
-                                                └─ Job manager (thread pool, cancellable)
-                                                       └─ metadata extractor (stdlib, no VTK)
-```
 
-The hybrid split from the research (browser rendering for small PolyData,
-server-side for heavy data) is reflected in the frontend: only `PolyData` is
-rendered in-browser via `vtk.js`; other dataset types show a "server-rendered"
-placeholder.
+外部worker/brokerが未設定の場合、該当操作は成功扱いにせず、503またはfailed jobで
+capability不足を明示します。
 
-## Backend
+## ローカル起動
 
-Requirements: Python 3.9+.
+Python 3.9+、Node.js 20+を使用します。
 
 ```bash
 cd backend
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
-
-# run the API (http://localhost:8000, docs at /docs)
 ./.venv/bin/uvicorn app.main:app --reload
-
-# run the tests
-./.venv/bin/python -m pytest
 ```
 
-### Metadata extraction
-
-`app/metadata.py` parses **VTK XML native formats** (`.vtp/.vti/.vtu/.vts/.vtr`),
-the **`.pvd`** time-series collection, and **CSV** tables using only the Python
-standard library. Structural metadata (type, counts, array names/components,
-image bounds) is always extracted; scalar *ranges* and point-derived *bounds*
-are computed only for inline `format="ascii"` arrays. Binary/appended payloads
-are reported structurally with `range: null` — an honest boundary where a
-server-side VTK reader would later take over (see work_plan M2).
-
-### API surface
-
-| Method & path | Purpose |
-|---|---|
-| `POST /projects` · `GET /projects` · `GET/DELETE /projects/{id}` | project CRUD |
-| `POST /projects/{id}/datasets` | upload (multipart, extension + magic check + quota) |
-| `GET /projects/{id}/datasets` · `GET /datasets/{id}` | list / get dataset |
-| `POST /datasets/{id}/ingest` | start metadata-extraction job (202) |
-| `GET /datasets/{id}/metadata` | extracted metadata |
-| `GET /datasets/{id}/download` | original object bytes (consumed by vtk.js) |
-| `POST /pipelines` · `PATCH /pipelines/{id}` · `GET/DELETE` | reader→filter→representation DAG |
-| `GET /jobs` · `GET /jobs/{id}` · `POST /jobs/{id}/cancel` | job status & cancellation |
-| `GET /artifacts/{id}` | converted artifacts / screenshots |
-
-## Frontend
-
-Requirements: Node 20+.
+別ターミナルで:
 
 ```bash
 cd frontend
 npm install
-npm run dev        # http://localhost:5173 (expects the API on :8000)
-npm run build      # production build
-npm run test       # vitest unit tests
-npm run typecheck  # tsc --noEmit
+npm run dev
 ```
 
-Configure the API base with `VITE_API_BASE` (default `http://localhost:8000`).
+- UI: `http://localhost:5173`
+- API/OpenAPI: `http://localhost:8000/docs`
+- `VITE_API_BASE`でAPI URLを変更可能
 
-## What is tested
+## PostgreSQL + MinIO
 
-- **Backend** (`pytest`): metadata parsers for VTP/VTI/CSV/PVD; the full
-  upload → ingest → metadata API flow; upload guardrails (extension, magic,
-  content mismatch); pipeline CRUD; job cancellation semantics.
-- **Frontend** (`vitest`): pure helpers — byte/count/bounds formatting and the
-  cool-to-warm colormap / normalisation.
+```bash
+docker compose -f infra/docker-compose.yml up -d
+set -a
+source infra/.env.example
+set +a
+cd backend
+./.venv/bin/uvicorn app.main:app
+```
 
-## Roadmap
+MinIO bucketは`minio-init`が作成します。S3 objectはimmutable key + local read-through
+cacheでVTK reader/FileResponseへ渡されます。
 
-See [`work_plan.md`](./work_plan.md). This repo delivers **M1**; M2 (CGNS/Exodus/
-EnSight, more filters, volume rendering), M3 (large/time-series), and M4
-(VTK.wasm / WebGPU) remain planned.
+## OIDC / RBAC
+
+Backendは次の3値をすべて設定した場合だけOIDCを有効化します。部分設定は503でfail closedです。
+
+```text
+PVWEB_OIDC_ISSUER
+PVWEB_OIDC_AUDIENCE
+PVWEB_OIDC_JWKS_URL
+```
+
+FrontendはAuthorization Code + PKCEを使用します。
+
+```text
+VITE_OIDC_AUTHORITY
+VITE_OIDC_CLIENT_ID
+VITE_OIDC_REDIRECT_URI  # 省略時は現在のapp path
+```
+
+roleは`viewer / editor / admin`です。OIDC未設定のローカル環境では`anonymous`を使用し、
+テスト用途に限り`X-PVWeb-User`で開発identityを切り替えられます。
+
+既存local DBをOIDCへ切り替える前に、OIDCの`sub`に対応するUser/ProjectMember（admin）を
+追加してください。legacy projectは`anonymous` adminへ移行されるため、そのままOIDCを有効化すると
+通常のOIDC subjectから既存projectが見えません。OIDCを有効化する前にlocal adminとして
+`PUT /projects/{project_id}/members/{sub}`を実行できます。
+
+## ParaView worker
+
+```text
+PVWEB_PVPYTHON=/opt/paraview/bin/pvpython
+PVWEB_WORKER_TIMEOUT=900
+```
+
+`workers/pv_worker.py`を別process groupで起動し、cancel/timeout時は子孫processも停止します。
+対応する縦スライスは次のとおりです。
+
+- CGNS / Exodus / EnSight / XDMF metadata reader
+- external/composite dataset → MergeBlocks → ExtractSurface → VTP
+- Slice / Clip / Contour / Threshold → surface VTP Artifact
+- Contourのcell scalarはCell Data to Point Dataを挿入
+
+EnSight/XDMFはdescriptorとsidecarをfolder uploadします。相対参照closureを検証し、
+absolute path、外部URI、未upload参照を拒否します。
+
+## trame session broker
+
+```text
+PVWEB_TRAME_BROKER_URL=http://trame-broker:9002
+PVWEB_TRAME_ALLOWED_WS_HOSTS=trame-broker
+PVWEB_SESSION_TTL=3600
+```
+
+`POST /sessions`はbrokerへTTLを渡し、返却WebSocket hostをallowlist検査します。
+client capability tokenはURL queryではなく`Sec-WebSocket-Protocol`で渡します。期限到達時は
+proxyを閉じ、remote sessionをbest-effort cleanupします。
+
+## Python / Jupyter deep link
+
+```python
+from python.pvweb_client import PVWebClient
+
+client = PVWebClient("http://localhost:5173")
+client.open_view(project_id="...", dataset_id="...")
+```
+
+`pipeline_id`も指定できます。OIDC redirect後もsame-originの元deep linkを復元します。
+
+## 安全な操作アシスタント
+
+`POST /assist/proposals`はdataset metadataからSlice/Clip/Contour/Threshold/着色の
+変更案を返すだけで、JobやArtifactを生成しません。UIはJSON差分を表示し、現在dataset・prompt・
+request世代の一致を再確認してから、利用者の明示操作で適用します。
+
+## テスト
+
+```bash
+cd backend && .venv/bin/pytest -q
+cd frontend && npm run typecheck && npm test -- --run && npm run build
+python3 -m pytest -q python
+git diff --check
+```
+
+実操作の確認項目は[docs/verify-all-features.md](docs/verify-all-features.md)を参照してください。
+
+## 重要な制約
+
+- PVD browser playbackは現時点で各時刻1 DataSet（VTPまたはVTI、同一形式）です。
+- WebGPU/WASMはfeature detection段階で、rendererはvtk.js WebGLです。
+- trame/ParaView自体はこのrepositoryに同梱しません。外部capabilityとして接続します。
+- productionではworker/brokerをcontainer分離し、CPU/GPU/memory/time quotaを設定してください。

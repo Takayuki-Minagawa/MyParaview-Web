@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from defusedxml.common import DefusedXmlException
 
 from app.metadata import UnsupportedFormatError, extract_metadata
 
@@ -69,6 +70,46 @@ def test_pvd_collection_timesteps_and_enrichment():
     assert meta.num_points == 3
     assert _array(meta, "temperature").value_range == [0.0, 10.0]
     assert meta.extra["files"] == ["series_step0.vtp", "series_step1.vtp"]
+
+
+def test_vtk_xml_rejects_internal_entities(tmp_path):
+    payload = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE VTKFile [<!ENTITY expanded "0 0 0">]>'
+        '<VTKFile type="PolyData"><PolyData><Piece NumberOfPoints="1" NumberOfPolys="0">'
+        '<Points><DataArray type="Float32" NumberOfComponents="3" format="ascii">'
+        '&expanded;</DataArray></Points></Piece></PolyData></VTKFile>'
+    )
+    path = tmp_path / "entity.vtp"
+    path.write_text(payload)
+    with pytest.raises(DefusedXmlException):
+        extract_metadata(str(path))
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_pvd_rejects_non_finite_timestep(tmp_path, value):
+    pvd = tmp_path / "invalid-time.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        f'<DataSet timestep="{value}" file="step.vtp"/>'
+        "</Collection></VTKFile>"
+    )
+    with pytest.raises(ValueError, match="timestep must be finite"):
+        extract_metadata(str(pvd))
+
+
+def test_pvd_imagedata_preserves_grid_metadata(tmp_path):
+    (tmp_path / "frame.vti").write_bytes((DATA / "sample_image.vti").read_bytes())
+    pvd = tmp_path / "image-series.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        '<DataSet timestep="0" file="frame.vti"/>'
+        "</Collection></VTKFile>"
+    )
+    meta = extract_metadata(str(pvd))
+    assert meta.extra["inner_type"] == "ImageData"
+    assert meta.extra["dimensions"] == [2, 2, 2]
+    assert meta.extra["whole_extent"] == [0, 1, 0, 1, 0, 1]
 
 
 _MINI_VTP = (

@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import mimetypes
+import os
+import shutil
+import tempfile
+import zipfile
+from pathlib import Path
 from typing import Optional
 
+from sqlalchemy import select
+
+from .config import settings
 from .db import SessionLocal
 from .jobs import JobCancelled, JobContext
 from .metadata import extract_metadata
-from .models import Dataset
+from .models import Artifact, Dataset, DatasetFile
 from .storage import store
+from .worker import extract_external_metadata, run_transform
 
 
 def _set_dataset_status(dataset_id: str, status: str, *, error: Optional[str]) -> None:
@@ -44,11 +54,47 @@ def run_ingest(dataset_id: str):
             db.add(ds)
             db.commit()
             object_path = str(store.path_for(ds.object_key))
+            source_ext = ds.ext
+            bundle_files = list(
+                db.execute(
+                    select(
+                        DatasetFile.relative_path,
+                        DatasetFile.object_key,
+                        DatasetFile.is_primary,
+                    ).where(DatasetFile.dataset_id == dataset_id)
+                ).all()
+            )
 
         try:
             ctx.check_cancelled()
             ctx.update(progress=0.3, log_line="parsing metadata")
-            meta = extract_metadata(object_path)
+            if bundle_files:
+                with tempfile.TemporaryDirectory(prefix="pvweb-bundle-") as temp_dir:
+                    root = Path(temp_dir).resolve()
+                    primary_path: Path | None = None
+                    for relative_path, object_key, is_primary in bundle_files:
+                        target = (root / relative_path).resolve()
+                        if root not in target.parents:
+                            raise ValueError(f"unsafe bundle path {relative_path!r}")
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(store.path_for(object_key), target)
+                        if is_primary:
+                            if primary_path is not None:
+                                raise ValueError("dataset bundle has multiple primary files")
+                            primary_path = target
+                    if primary_path is None:
+                        raise ValueError("dataset bundle has no primary file")
+                    meta = (
+                        extract_external_metadata(primary_path, ctx)
+                        if source_ext in settings.external_extensions
+                        else extract_metadata(str(primary_path))
+                    )
+            else:
+                meta = (
+                    extract_external_metadata(Path(object_path), ctx)
+                    if source_ext in settings.external_extensions
+                    else extract_metadata(object_path)
+                )
             ctx.check_cancelled()
         except JobCancelled:
             # revert so the dataset is not left displaying "ingesting"
@@ -78,5 +124,146 @@ def run_ingest(dataset_id: str):
 
         ctx.update(progress=1.0, log_line=f"ingest done type={meta.dataset_type}")
         return {"dataset_id": dataset_id, "metadata": payload}
+
+    return body
+
+
+def run_dataset_operation(dataset_id: str, kind: str, params: dict):
+    """Create a derived artifact through the generic job contract.
+
+    Source export works in-process. Conversion and validated server filters use
+    the separately configured ParaView worker and fail explicitly when that
+    capability is unavailable.
+    """
+
+    def body(ctx: JobContext) -> dict:
+        ctx.update(progress=0.05, log_line=f"{kind} start dataset={dataset_id}")
+        with SessionLocal() as db:
+            dataset = db.get(Dataset, dataset_id)
+            if dataset is None:
+                raise ValueError(f"dataset {dataset_id} not found")
+            source_path = store.path_for(dataset.object_key)
+            project_id = dataset.project_id
+            source_name = dataset.filename
+            source_ext = dataset.ext
+            bundle_files = list(
+                db.execute(
+                    select(
+                        DatasetFile.relative_path,
+                        DatasetFile.object_key,
+                        DatasetFile.is_primary,
+                    ).where(
+                        DatasetFile.dataset_id == dataset_id
+                    )
+                ).all()
+            )
+
+        ctx.check_cancelled()
+        output_format = str(params.get("output_format", "source")).lower()
+        if kind == "export" and output_format != "source":
+            raise ValueError("export jobs only support output_format='source'")
+        if kind == "convert" and output_format != "vtp":
+            raise ValueError("convert jobs require output_format='vtp'")
+
+        is_bundle_export = kind == "export" and bool(bundle_files)
+        needs_worker = kind == "filter" or (kind == "convert" and source_ext != ".vtp")
+        output_ext = (
+            ".zip"
+            if is_bundle_export
+            else (".vtp" if kind in {"filter", "convert"} else source_ext)
+        )
+        stem = os.path.splitext(os.path.basename(source_name))[0]
+        suffix = "filtered" if kind == "filter" else ("converted" if kind == "convert" else "export")
+        filename = f"{stem}-{suffix}{output_ext}"
+        artifact_kind = (
+            "filtered_vtp" if kind == "filter" else
+            ("converted_vtp" if output_ext == ".vtp" and kind == "convert" else kind)
+        )
+        object_key = store.new_key(output_ext)
+        persisted = False
+        artifact_id: Optional[str] = None
+        try:
+            if is_bundle_export:
+                ctx.update(progress=0.35, log_line="packaging dataset bundle")
+                with tempfile.TemporaryDirectory(prefix="pvweb-export-") as export_dir:
+                    archive_path = Path(export_dir) / filename
+                    with zipfile.ZipFile(
+                        archive_path, "w", compression=zipfile.ZIP_DEFLATED
+                    ) as archive:
+                        for relative_path, bundle_object_key, _ in bundle_files:
+                            ctx.check_cancelled()
+                            archive.write(store.path_for(bundle_object_key), arcname=relative_path)
+                    size = store.copy_in(object_key, archive_path)
+            elif needs_worker:
+                ctx.update(progress=0.25, log_line=f"running ParaView {kind} worker")
+                with tempfile.TemporaryDirectory(prefix="pvweb-worker-") as worker_dir:
+                    root = Path(worker_dir).resolve()
+                    worker_source = source_path
+                    if bundle_files:
+                        worker_source = None
+                        for relative_path, bundle_object_key, is_primary in bundle_files:
+                            target = (root / relative_path).resolve()
+                            if root not in target.parents:
+                                raise ValueError(f"unsafe bundle path {relative_path!r}")
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copyfile(store.path_for(bundle_object_key), target)
+                            if is_primary:
+                                worker_source = target
+                        if worker_source is None:
+                            raise ValueError("dataset bundle has no primary file")
+                    worker_output = root / filename
+                    run_transform(Path(worker_source), worker_output, kind, params, ctx)
+                    size = store.copy_in(object_key, worker_output)
+            else:
+                ctx.update(progress=0.35, log_line="copying source object")
+                size = store.copy_in(object_key, source_path)
+            ctx.check_cancelled()
+            content_type = (
+                "application/zip"
+                if is_bundle_export
+                else mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            )
+            with SessionLocal() as db:
+                artifact = Artifact(
+                    dataset_id=dataset_id,
+                    job_id=ctx.job_id,
+                    kind=artifact_kind,
+                    filename=filename,
+                    size_bytes=size,
+                    object_key=object_key,
+                    content_type=content_type,
+                )
+                db.add(artifact)
+                db.flush()
+                artifact_id = artifact.id
+                db.commit()
+            persisted = True
+            ctx.check_cancelled()
+            ctx.update(progress=1.0, log_line=f"artifact created id={artifact_id}")
+            return {
+                "project_id": project_id,
+                "dataset_id": dataset_id,
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "size_bytes": size,
+            }
+        except JobCancelled:
+            if artifact_id is not None:
+                with SessionLocal() as db:
+                    artifact = db.get(Artifact, artifact_id)
+                    if artifact is not None:
+                        db.delete(artifact)
+                        db.commit()
+            store.delete(object_key)
+            raise
+        except Exception:
+            if persisted and artifact_id is not None:
+                with SessionLocal() as db:
+                    artifact = db.get(Artifact, artifact_id)
+                    if artifact is not None:
+                        db.delete(artifact)
+                        db.commit()
+            store.delete(object_key)
+            raise
 
     return body

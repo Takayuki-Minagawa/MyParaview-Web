@@ -10,11 +10,14 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from .config import settings
 from .db import init_db
-from .routers import artifacts, datasets, jobs, pipelines, projects
+from .db import SessionLocal
+from .models import Artifact, AuditEvent, Dataset, Job, Pipeline, RenderSession
+from .routers import artifacts, assist, datasets, jobs, pipelines, projects, sessions
 
 
 @asynccontextmanager
@@ -25,8 +28,8 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="ParaView-like Web App API",
-    version="0.1.0",
-    summary="M1 MVP: dataset ingest, metadata, pipelines, cancellable jobs.",
+    version="0.2.0",
+    summary="Hybrid scientific visualization, pipelines, jobs, and production adapters.",
     lifespan=lifespan,
 )
 
@@ -40,9 +43,80 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def record_audit_event(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    is_download = request.method == "GET" and (
+        "/download" in path or (path.startswith("/artifacts/") and path.count("/") == 2)
+    )
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} or is_download:
+        path_params = request.scope.get("path_params", {})
+        principal = getattr(request.state, "principal", None)
+        resource_type = getattr(request.state, "audit_resource_type", None) or next(
+            (name for name in ("dataset", "pipeline", "job", "artifact", "project") if f"{name}_id" in path_params),
+            request.url.path.strip("/").split("/", 1)[0] or "api",
+        )
+        resource_id = getattr(request.state, "audit_resource_id", None) or path_params.get(
+            f"{resource_type}_id"
+        )
+        try:
+            with SessionLocal() as db:
+                project_id = (
+                    getattr(request.state, "audit_project_id", None)
+                    or path_params.get("project_id")
+                )
+                dataset_id = path_params.get("dataset_id") or request.query_params.get("dataset_id")
+                if not project_id and dataset_id:
+                    dataset = db.get(Dataset, dataset_id)
+                    project_id = dataset.project_id if dataset else None
+                if not project_id and path_params.get("pipeline_id"):
+                    pipeline = db.get(Pipeline, path_params["pipeline_id"])
+                    project_id = pipeline.project_id if pipeline else None
+                if not project_id and path_params.get("job_id"):
+                    job = db.get(Job, path_params["job_id"])
+                    project_id = job.project_id if job else None
+                if not project_id and path_params.get("artifact_id"):
+                    artifact = db.get(Artifact, path_params["artifact_id"])
+                    dataset = db.get(Dataset, artifact.dataset_id) if artifact and artifact.dataset_id else None
+                    job = db.get(Job, artifact.job_id) if artifact and artifact.job_id else None
+                    project_id = dataset.project_id if dataset else (job.project_id if job else None)
+                if not project_id and path_params.get("session_id"):
+                    render_session = db.get(RenderSession, path_params["session_id"])
+                    project_id = render_session.project_id if render_session else None
+                db.add(
+                    AuditEvent(
+                        actor_id=getattr(principal, "id", None),
+                        project_id=project_id,
+                        action=request.method.lower(),
+                        resource_type=resource_type,
+                        resource_id=resource_id,
+                        status_code=response.status_code,
+                        detail={"path": path},
+                    )
+                )
+                db.commit()
+        except Exception:
+            # Audit storage must not replace the original API response. Operators
+            # should alert on database failures separately.
+            pass
+    return response
+
+
 @app.get("/health", tags=["meta"])
 def health() -> dict:
     return {"status": "ok", "service": "pvweb-api", "version": app.version}
+
+
+@app.get("/capabilities", tags=["meta"])
+def capabilities() -> dict:
+    return {
+        "database": "postgresql" if settings.database_url.startswith("postgresql") else "sqlite",
+        "object_store": settings.object_store,
+        "oidc": bool(settings.oidc_issuer and settings.oidc_audience and settings.oidc_jwks_url),
+        "paraview_worker": bool(settings.worker_command),
+        "trame_sessions": bool(settings.trame_broker_url),
+    }
 
 
 app.include_router(projects.router)
@@ -50,3 +124,5 @@ app.include_router(datasets.router)
 app.include_router(pipelines.router)
 app.include_router(jobs.router)
 app.include_router(artifacts.router)
+app.include_router(sessions.router)
+app.include_router(assist.router)

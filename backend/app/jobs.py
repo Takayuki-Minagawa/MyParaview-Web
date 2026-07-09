@@ -15,7 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from .db import SessionLocal
-from .models import Job
+from .models import Artifact, Job
+from .storage import store
 
 
 class JobCancelled(Exception):
@@ -65,13 +66,19 @@ class JobManager:
             self._cancels[job_id] = event
         self._pool.submit(self._run, job_id, body, event)
 
+    def shutdown(self, *, wait: bool = True) -> None:
+        self._pool.shutdown(wait=wait)
+
     def cancel(self, job_id: str) -> bool:
         """Request cancellation. Returns True if the job was cancellable."""
         with self._lock:
             event = self._cancels.get(job_id)
-        if event is None:
-            return False
-        event.set()
+            if event is None:
+                return False
+            # Set while holding the same lock used by the worker's terminal
+            # pop/is_set pair. A successful cancel can no longer be overtaken
+            # by publication of a succeeded result.
+            event.set()
         # if still queued/running, mark canceled promptly
         with SessionLocal() as db:
             job = db.get(Job, job_id)
@@ -97,11 +104,19 @@ class JobManager:
             db.commit()
         try:
             result = body(ctx)
+            # Close the cancellation window before publishing the terminal
+            # state. A cancel that arrived before this lock is honored; later
+            # callers see an untracked/terminal job instead of racing success.
+            with self._lock:
+                self._cancels.pop(job_id, None)
+                canceled = event.is_set()
+            if canceled:
+                self._cleanup_result(result)
             with SessionLocal() as db:
                 job = db.get(Job, job_id)
                 if job is None:
                     return
-                if event.is_set():
+                if canceled:
                     job.status = "canceled"
                 else:
                     job.status = "succeeded"
@@ -128,6 +143,20 @@ class JobManager:
         finally:
             with self._lock:
                 self._cancels.pop(job_id, None)
+
+    @staticmethod
+    def _cleanup_result(result: dict) -> None:
+        artifact_id = result.get("artifact_id")
+        if not artifact_id:
+            return
+        with SessionLocal() as db:
+            artifact = db.get(Artifact, artifact_id)
+            if artifact is None:
+                return
+            object_key = artifact.object_key
+            db.delete(artifact)
+            db.commit()
+        store.delete(object_key)
 
 
 manager = JobManager()

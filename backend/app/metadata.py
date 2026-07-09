@@ -1,8 +1,9 @@
 """Dataset metadata extraction.
 
 Self-contained parsers for VTK XML native formats (.vtp/.vti/.vtu/.vts/.vtr),
-the .pvd time-series collection format, and CSV tables. Uses only the Python
-standard library so that the ingestion worker needs no VTK/ParaView install.
+the .pvd time-series collection format, and CSV tables. XML parsing uses
+``defusedxml`` so untrusted uploads cannot expand entities; no VTK install is
+required for the browser-direct formats.
 
 Scope (per work_plan M0-D / M1-B):
   * Structural metadata is always extracted (dataset type, counts, array names,
@@ -22,6 +23,8 @@ import os
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from typing import List, Optional
+
+from defusedxml import ElementTree as SafeET
 
 
 @dataclass
@@ -237,7 +240,7 @@ _XML_TYPE_DISPATCH = {
 
 
 def _extract_vtk_xml(path: str) -> DatasetMetadata:
-    root = ET.parse(path).getroot()
+    root = SafeET.parse(path).getroot()
     if _local(root.tag) != "VTKFile":
         raise UnsupportedFormatError(f"Not a VTKFile: root tag {root.tag!r}")
     vtk_type = root.get("type", "")
@@ -272,34 +275,62 @@ def _contained_sibling(pvd_path: str, rel: str) -> Optional[str]:
 
 
 def _extract_pvd(path: str) -> DatasetMetadata:
-    root = ET.parse(path).getroot()
+    root = SafeET.parse(path).getroot()
     collection = _find_child(root, "Collection")
     meta = DatasetMetadata(dataset_type="Collection")
     if collection is None:
         return meta
     entries = _find_children(collection, "DataSet")
-    timesteps = sorted({float(e.get("timestep", "0") or "0") for e in entries})
-    files = [e.get("file") for e in entries if e.get("file")]
+    parsed_entries = []
+    for entry in entries:
+        if not entry.get("file"):
+            continue
+        timestep = float(entry.get("timestep", "0") or "0")
+        if not math.isfinite(timestep):
+            raise ValueError("PVD timestep must be finite")
+        parsed_entries.append(
+            {
+                "timestep": timestep,
+                "part": int(entry.get("part", "0") or "0"),
+                "group": entry.get("group", "") or "",
+                "file": entry.get("file", "") or "",
+            }
+        )
+    timesteps = sorted({entry["timestep"] for entry in parsed_entries})
+    files = [entry["file"] for entry in parsed_entries]
     parts = {int(e.get("part", "0") or "0") for e in entries}
     meta.timesteps = timesteps
     meta.num_blocks = len(parts)
-    meta.extra = {"num_timesteps": len(timesteps), "files": files}
+    meta.extra = {
+        "num_timesteps": len(timesteps),
+        "files": files,
+        "entries": parsed_entries,
+    }
     # enrich arrays/counts from the first referenced piece if resolvable & XML.
     # The referenced path is restricted to the .pvd's own directory: a crafted
     # collection must not read absolute paths or escape via ".." into the rest
     # of the object store or the filesystem.
-    first = _contained_sibling(path, files[0]) if files else None
-    if first is not None:
-        if os.path.isfile(first) and first.lower().endswith((".vtp", ".vti", ".vtu", ".vts", ".vtr")):
-            try:
-                inner = _extract_vtk_xml(first)
-                meta.num_points = inner.num_points
-                meta.num_cells = inner.num_cells
-                meta.bounds = inner.bounds
-                meta.arrays = inner.arrays
-                meta.extra["inner_type"] = inner.dataset_type
-            except Exception:  # noqa: BLE001 - enrichment is best-effort
-                pass
+    first_inner: Optional[DatasetMetadata] = None
+    for referenced_file in files:
+        sibling = _contained_sibling(path, referenced_file)
+        if sibling is not None:
+            if os.path.isfile(sibling) and sibling.lower().endswith((".vtp", ".vti", ".vtu", ".vts", ".vtr")):
+                # A bundle is only ready when every local referenced VTK piece
+                # parses. Silently accepting a broken later frame leaves the
+                # playback UI in an unrecoverable state.
+                inner = _extract_vtk_xml(sibling)
+                if first_inner is None:
+                    first_inner = inner
+                elif inner.dataset_type != first_inner.dataset_type:
+                    raise ValueError("PVD referenced dataset types must be consistent")
+    if first_inner is not None:
+        meta.num_points = first_inner.num_points
+        meta.num_cells = first_inner.num_cells
+        meta.bounds = first_inner.bounds
+        meta.arrays = first_inner.arrays
+        meta.extra["inner_type"] = first_inner.dataset_type
+        for key, value in (first_inner.extra or {}).items():
+            meta.extra.setdefault(key, value)
     return meta
 
 

@@ -1,5 +1,9 @@
 # ParaView類似Webアプリ自作に向けた調査メモ
 
+> 実装追記 (2026-07-10): この調査から抽出した追加機能17件の現在状態は
+> [`docs/implementation-status.md`](docs/implementation-status.md)を参照。本書は技術選定時の
+> 調査記録として保持し、実装済み範囲はREADME/ADR-0002を正とする。
+
 作成日: 2026-07-09 (JST)  
 対象: 解析結果、CAE/CFD/FEA/科学データの表示・分析を行うParaView類似Webアプリ  
 調査方法: メインエージェントで一次情報を確認し、サブエージェント3本で「GitHub/OSS」「論文・技術資料」「実装設計/MVP」を並行調査した。
@@ -411,4 +415,3 @@ ParaViewではフィルタは入力と出力を持つパイプラインモジュ
 - 精度向上のため次を追記済み: (1) VTK.wasm/`trame-vtklocal`は公式に「prototype」「infancy」＝実験段階であること、(2) `trame-vtk`の3描画方式（Remote/Local/RemoteLocal）の区別、(3) ネイティブVTK形式とreader対応の外部形式（CGNS/Exodus/EnSight/Xdmf）の区別、(4) `vtk.js`のボリュームレンダリング対応、(5) `trame`のApache-2.0ライセンス実態。
 
 > 注: Star数・最終pushは変動する。ライセンスとメンテ状況は採用直前に再確認すること。
-

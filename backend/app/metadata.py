@@ -254,6 +254,22 @@ def _extract_vtk_xml(path: str) -> DatasetMetadata:
     return handler(grid)
 
 
+def _contained_sibling(pvd_path: str, rel: str) -> Optional[str]:
+    """Resolve ``rel`` (a .pvd DataSet ``file``) against the .pvd's directory,
+    returning it only if it stays within that directory. Blocks absolute paths
+    and ``..`` traversal. Returns None otherwise."""
+    if not rel:
+        return None
+    base = os.path.realpath(os.path.dirname(pvd_path))
+    candidate = os.path.realpath(os.path.join(base, rel))
+    try:
+        if os.path.commonpath([base, candidate]) != base:
+            return None
+    except ValueError:  # e.g. different drives on Windows
+        return None
+    return candidate
+
+
 def _extract_pvd(path: str) -> DatasetMetadata:
     root = ET.parse(path).getroot()
     collection = _find_child(root, "Collection")
@@ -267,9 +283,12 @@ def _extract_pvd(path: str) -> DatasetMetadata:
     meta.timesteps = timesteps
     meta.num_blocks = len(parts)
     meta.extra = {"num_timesteps": len(timesteps), "files": files}
-    # enrich arrays/counts from the first referenced piece if resolvable & XML
-    if files:
-        first = os.path.join(os.path.dirname(path), files[0])
+    # enrich arrays/counts from the first referenced piece if resolvable & XML.
+    # The referenced path is restricted to the .pvd's own directory: a crafted
+    # collection must not read absolute paths or escape via ".." into the rest
+    # of the object store or the filesystem.
+    first = _contained_sibling(path, files[0]) if files else None
+    if first is not None:
         if os.path.isfile(first) and first.lower().endswith((".vtp", ".vti", ".vtu", ".vts", ".vtr")):
             try:
                 inner = _extract_vtk_xml(first)

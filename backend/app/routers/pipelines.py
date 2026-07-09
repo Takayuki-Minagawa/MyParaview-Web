@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import Pipeline, PipelineNode, Project
+from ..models import Dataset, Pipeline, PipelineNode, Project
 from ..schemas import PipelineCreate, PipelineOut, PipelineUpdate
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
@@ -17,6 +17,16 @@ def _replace_nodes(db: Session, pipeline: Pipeline, node_specs) -> None:
     db.flush()
     created: list[tuple] = []
     for spec in node_specs:
+        # a node referencing a dataset must point at an existing dataset in the
+        # same project (SQLite doesn't enforce FKs, so validate explicitly).
+        if spec.dataset_id is not None:
+            ds = db.get(Dataset, spec.dataset_id)
+            if ds is None:
+                raise HTTPException(422, f"dataset_id {spec.dataset_id!r} not found")
+            if ds.project_id != pipeline.project_id:
+                raise HTTPException(
+                    422, f"dataset_id {spec.dataset_id!r} belongs to a different project"
+                )
         node = PipelineNode(
             node_type=spec.node_type,
             name=spec.name,

@@ -71,6 +71,53 @@ def test_pvd_collection_timesteps_and_enrichment():
     assert meta.extra["files"] == ["series_step0.vtp", "series_step1.vtp"]
 
 
+_MINI_VTP = (
+    '<?xml version="1.0"?>\n'
+    '<VTKFile type="PolyData"><PolyData>'
+    '<Piece NumberOfPoints="3" NumberOfPolys="1">'
+    '<Points><DataArray type="Float32" NumberOfComponents="3" format="ascii">'
+    "0 0 0 1 0 0 0 1 0</DataArray></Points>"
+    "</Piece></PolyData></VTKFile>\n"
+)
+
+
+def test_pvd_does_not_read_outside_its_directory(tmp_path):
+    # a crafted PVD must not escape its own directory via ".." or absolute paths
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.vtp").write_text(_MINI_VTP)
+
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    pvd = inside / "series.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="Collection"><Collection>'
+        '<DataSet timestep="0" file="../outside/secret.vtp"/>'
+        "</Collection></VTKFile>\n"
+    )
+    meta = extract_metadata(str(pvd))
+    assert meta.dataset_type == "Collection"
+    assert meta.timesteps == [0.0]
+    # enrichment is blocked -> counts stay unset despite the reachable target
+    assert meta.num_points is None
+
+
+def test_pvd_enriches_from_sibling_in_same_directory(tmp_path):
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "step0.vtp").write_text(_MINI_VTP)
+    pvd = d / "series.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="Collection"><Collection>'
+        '<DataSet timestep="0" file="step0.vtp"/>'
+        "</Collection></VTKFile>\n"
+    )
+    meta = extract_metadata(str(pvd))
+    assert meta.num_points == 3  # in-directory enrichment still works
+
+
 def test_imagedata_tolerates_malformed_origin(tmp_path):
     # Origin/Spacing with fewer than 3 tokens must not raise IndexError.
     p = tmp_path / "bad.vti"

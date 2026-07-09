@@ -70,6 +70,54 @@ def test_ingest_csv(client, data_dir):
     assert meta["num_points"] == 4
 
 
+def test_ingest_failure_marks_dataset_error(client):
+    pid = _new_project(client, "fail")
+    # passes the .vtp magic sniff (starts with <?xml) but is malformed XML,
+    # so parsing raises during ingest.
+    resp = client.post(
+        f"/projects/{pid}/datasets",
+        files={"file": ("broken.vtp", b'<?xml version="1.0"?><VTKFile type="PolyData"><PolyData><Piece',
+                        "application/octet-stream")},
+    )
+    assert resp.status_code == 201
+    dsid = resp.json()["id"]
+    job = client.post(f"/datasets/{dsid}/ingest").json()
+    finished = wait_for_job(client, job["id"])
+    assert finished["status"] == "failed"
+
+    meta = client.get(f"/datasets/{dsid}/metadata").json()
+    assert meta["status"] == "error"  # not stuck at "ingesting"
+    assert meta["error"]
+
+
+def test_pipeline_rejects_unknown_dataset_id(client):
+    pid = _new_project(client, "unknownds")
+    resp = client.post(
+        "/pipelines",
+        json={
+            "project_id": pid,
+            "name": "p",
+            "nodes": [{"node_type": "reader", "name": "r", "dataset_id": "nope", "params": {}}],
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_pipeline_rejects_cross_project_dataset(client, data_dir):
+    p1 = _new_project(client, "owner")
+    p2 = _new_project(client, "other")
+    ds = _upload(client, p1, data_dir, "sample_surface.vtp").json()
+    resp = client.post(
+        "/pipelines",
+        json={
+            "project_id": p2,
+            "name": "p",
+            "nodes": [{"node_type": "reader", "name": "r", "dataset_id": ds["id"], "params": {}}],
+        },
+    )
+    assert resp.status_code == 422
+
+
 def test_upload_rejects_unknown_extension(client, data_dir):
     pid = _new_project(client)
     resp = client.post(

@@ -56,10 +56,16 @@ export function App() {
       const ds = await api.uploadDataset(currentProjectId, file);
       setBusy("メタデータを解析中…");
       const job = await api.ingest(ds.id);
-      await pollJob(job.id, (j) => setBusy(`解析中… ${Math.round(j.progress * 100)}%`));
+      const final = await pollJob(job.id, (j) =>
+        setBusy(`解析中… ${Math.round(j.progress * 100)}%`),
+      );
       await refreshDatasets(currentProjectId);
       setSelectedDatasetId(ds.id);
       setBusy(null);
+      if (final.status !== "succeeded") {
+        const lastLog = (final.log ?? "").split("\n").filter(Boolean).pop() ?? "";
+        setError(`メタデータ抽出に失敗しました (${final.status}): ${lastLog}`);
+      }
     }).finally(() => setBusy(null));
 
   const selectDataset = (id: string) =>

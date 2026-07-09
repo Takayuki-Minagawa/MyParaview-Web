@@ -1,0 +1,133 @@
+:root {
+  --bg: #0f1117;
+  --panel: #171a22;
+  --panel-2: #1e222c;
+  --border: #2a2f3a;
+  --text: #e6e9ef;
+  --muted: #8b93a3;
+  --accent: #4f9dff;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.app { display: flex; flex-direction: column; height: 100vh; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.logo { font-weight: 700; color: var(--accent); }
+.subtitle { color: var(--muted); }
+.error-banner {
+  margin-left: auto;
+  color: #ff8c8c;
+  background: #3a1e22;
+  padding: 4px 10px;
+  border-radius: 6px;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 300px 1fr 320px;
+  flex: 1;
+  min-height: 0;
+}
+
+.panel {
+  background: var(--panel);
+  padding: 14px;
+  overflow-y: auto;
+}
+.panel-left { border-right: 1px solid var(--border); }
+.panel-right { border-left: 1px solid var(--border); }
+.panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 16px 0 8px; }
+.panel h2:first-child { margin-top: 0; }
+.panel h3 { font-size: 12px; color: var(--muted); margin: 14px 0 6px; }
+
+.center { position: relative; min-width: 0; }
+
+.viewer { position: absolute; inset: 0; }
+.viewer-canvas { position: absolute; inset: 0; }
+.viewer-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+input, select, button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+select { width: 100%; }
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+
+.row { display: flex; gap: 8px; margin: 6px 0; align-items: center; }
+.row input[type="text"], .row input:not([type]) { flex: 1; }
+.actions { margin-top: 16px; }
+.radio { display: flex; align-items: center; gap: 4px; color: var(--text); }
+
+.busy { color: var(--accent); margin: 8px 0; font-size: 13px; }
+
+.dataset-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.dataset-list li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.dataset-list li.selected { border-color: var(--accent); background: var(--panel-2); }
+.dataset-list li.empty, .dataset-list li.empty:hover { cursor: default; color: var(--muted); display: block; }
+.ds-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-meta { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 999px; align-self: start; }
+.badge-registered { background: #2a2f3a; color: var(--muted); }
+.badge-ingesting { background: #3a341e; color: #e8c96a; }
+.badge-ready { background: #1e3a2a; color: #6ae08c; }
+.badge-error { background: #3a1e22; color: #ff8c8c; }
+
+.meta-table { width: 100%; border-collapse: collapse; }
+.meta-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 3px 8px 3px 0; vertical-align: top; white-space: nowrap; }
+.meta-table td { padding: 3px 0; }
+.mono, .array-list { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+
+.array-list { list-style: none; margin: 6px 0; padding: 0; }
+.array-list li { padding: 3px 0; display: flex; align-items: center; gap: 6px; }
+.chip { font-size: 10px; padding: 1px 5px; border-radius: 4px; text-transform: uppercase; }
+.chip-point { background: #1e2f3a; color: #6ac6e0; }
+.chip-cell { background: #2f1e3a; color: #c68ce0; }
+.chip-field, .chip-table { background: #2a2f3a; color: var(--muted); }
+
+.muted { color: var(--muted); }

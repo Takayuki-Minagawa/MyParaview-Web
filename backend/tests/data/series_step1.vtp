@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian">
+  <PolyData>
+    <Piece NumberOfPoints="3" NumberOfVerts="0" NumberOfLines="0" NumberOfStrips="0" NumberOfPolys="1">
+      <PointData Scalars="temperature">
+        <DataArray type="Float32" Name="temperature" NumberOfComponents="1" format="ascii">
+          20 25 30
+        </DataArray>
+      </PointData>
+      <Points>
+        <DataArray type="Float32" NumberOfComponents="3" format="ascii">
+          0 0 0
+          1 0 0
+          0 1 0
+        </DataArray>
+      </Points>
+      <Polys>
+        <DataArray type="Int64" Name="connectivity" format="ascii">0 1 2</DataArray>
+        <DataArray type="Int64" Name="offsets" format="ascii">3</DataArray>
+      </Polys>
+    </Piece>
+  </PolyData>
+</VTKFile>

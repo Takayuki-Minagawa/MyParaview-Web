@@ -91,10 +91,14 @@ export function csvToPointData(
 
   const arrays: PointArray[] = [];
   header.forEach((name, columnIndex) => {
-    const values = accepted.map(({ row }) => finiteCell(row[columnIndex]));
-    if (name && values.every((value) => value !== null)) {
-      arrays.push({ name, values: Float32Array.from(values as number[]) });
+    if (!name) return;
+    const values = new Float32Array(accepted.length);
+    for (let rowIndex = 0; rowIndex < accepted.length; rowIndex += 1) {
+      const value = finiteCell(accepted[rowIndex].row[columnIndex]);
+      if (value === null) return;
+      values[rowIndex] = value;
     }
+    arrays.push({ name, values });
   });
   return { points, arrays, numberOfPoints: accepted.length, skippedRows };
 }

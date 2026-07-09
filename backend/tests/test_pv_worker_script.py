@@ -47,6 +47,45 @@ class FakeSimple:
         self.saved = (output, proxy)
 
 
+class FakeArrayAttributes:
+    def GetNumberOfArrays(self):
+        return 0
+
+
+class FakeDataInformation:
+    def GetDataClassName(self):
+        return "vtkUnstructuredGrid"
+
+    def GetNumberOfPoints(self):
+        return 1
+
+    def GetNumberOfCells(self):
+        return 1
+
+    def GetNumberOfDataSets(self):
+        return 1
+
+    def GetBounds(self):
+        return [0, 1, float("inf"), 2, 0, 3]
+
+    def GetPointDataInformation(self):
+        return FakeArrayAttributes()
+
+    def GetCellDataInformation(self):
+        return FakeArrayAttributes()
+
+
+class MetadataSimple:
+    def OpenDataFile(self, _source):
+        proxy = Proxy("reader")
+        proxy.TimestepValues = [float("nan")]
+        proxy.GetDataInformation = lambda: FakeDataInformation()
+        return proxy
+
+    def UpdatePipeline(self, *, proxy):
+        assert proxy.kind == "reader"
+
+
 def test_convert_and_threshold_are_surface_extracted_before_vtp_save(tmp_path, monkeypatch):
     for kind, params in (
         ("convert", {}),
@@ -72,3 +111,11 @@ def test_convert_and_threshold_are_surface_extracted_before_vtp_save(tmp_path, m
         assert simple.saved[1].kind == "surface"
         assert simple.saved[1].source.kind == "merged"
         assert simple.saved[1].source.source.kind == "multiblock"
+
+
+def test_metadata_omits_non_finite_bounds(monkeypatch, capsys):
+    monkeypatch.setattr(pv_worker, "_paraview", MetadataSimple)
+    pv_worker.metadata("source.cgns")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["bounds"] is None
+    assert payload["timesteps"] is None

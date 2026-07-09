@@ -12,11 +12,13 @@ from typing import Optional
 
 from sqlalchemy import select
 
+from .bundles import bundle_reference_path, materialized_bundle_path
 from .config import settings
 from .db import SessionLocal
 from .jobs import JobCancelled, JobContext
 from .metadata import extract_metadata
-from .models import Artifact, Dataset, DatasetFile
+from .models import Artifact, Dataset, DatasetFile, Job, Project
+from .project_locks import project_guard
 from .storage import store
 from .worker import extract_external_metadata, run_transform
 
@@ -53,17 +55,18 @@ def run_ingest(dataset_id: str):
             ds.error = None
             db.add(ds)
             db.commit()
-            object_path = str(store.path_for(ds.object_key))
+            source_object_key = ds.object_key
             source_ext = ds.ext
-            bundle_files = list(
-                db.execute(
-                    select(
-                        DatasetFile.relative_path,
-                        DatasetFile.object_key,
-                        DatasetFile.is_primary,
-                    ).where(DatasetFile.dataset_id == dataset_id)
-                ).all()
-            )
+            bundle_query = select(
+                DatasetFile.relative_path,
+                DatasetFile.object_key,
+                DatasetFile.is_primary,
+            ).where(DatasetFile.dataset_id == dataset_id)
+            if source_ext == ".pvd":
+                # Metadata needs only the descriptor and its first piece. Do
+                # not copy an entire time-series into a temporary directory.
+                bundle_query = bundle_query.where(DatasetFile.is_primary.is_(True))
+            bundle_files = list(db.execute(bundle_query).all())
 
         try:
             ctx.check_cancelled()
@@ -72,29 +75,56 @@ def run_ingest(dataset_id: str):
                 with tempfile.TemporaryDirectory(prefix="pvweb-bundle-") as temp_dir:
                     root = Path(temp_dir).resolve()
                     primary_path: Path | None = None
+                    primary_relative_path: str | None = None
                     for relative_path, object_key, is_primary in bundle_files:
-                        target = (root / relative_path).resolve()
-                        if root not in target.parents:
-                            raise ValueError(f"unsafe bundle path {relative_path!r}")
+                        target = materialized_bundle_path(root, relative_path)
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(store.path_for(object_key), target)
+                        with store.local_path(object_key) as local_object:
+                            shutil.copyfile(local_object, target)
                         if is_primary:
                             if primary_path is not None:
                                 raise ValueError("dataset bundle has multiple primary files")
                             primary_path = target
+                            primary_relative_path = relative_path
                     if primary_path is None:
                         raise ValueError("dataset bundle has no primary file")
-                    meta = (
-                        extract_external_metadata(primary_path, ctx)
-                        if source_ext in settings.external_extensions
-                        else extract_metadata(str(primary_path))
-                    )
+                    if source_ext == ".pvd":
+                        meta = extract_metadata(str(primary_path))
+                        referenced = list(meta.extra.get("files") or [])
+                        if referenced and primary_relative_path:
+                            first_relative = bundle_reference_path(
+                                primary_relative_path, str(referenced[0])
+                            )
+                            with SessionLocal() as db:
+                                first_object_key = db.scalar(
+                                    select(DatasetFile.object_key).where(
+                                        DatasetFile.dataset_id == dataset_id,
+                                        DatasetFile.relative_path == first_relative,
+                                    )
+                                )
+                            if first_object_key:
+                                first_target = materialized_bundle_path(root, first_relative)
+                                first_target.parent.mkdir(parents=True, exist_ok=True)
+                                with store.local_path(first_object_key) as local_object:
+                                    shutil.copyfile(local_object, first_target)
+                                meta = extract_metadata(str(primary_path))
+                    else:
+                        meta = (
+                            extract_external_metadata(primary_path, ctx)
+                            if source_ext in settings.external_extensions
+                            else extract_metadata(str(primary_path))
+                        )
             else:
-                meta = (
-                    extract_external_metadata(Path(object_path), ctx)
-                    if source_ext in settings.external_extensions
-                    else extract_metadata(object_path)
-                )
+                with store.local_path(source_object_key) as local_object:
+                    meta = (
+                        extract_external_metadata(local_object, ctx)
+                        if source_ext in settings.external_extensions
+                        else extract_metadata(str(local_object))
+                    )
+            if source_ext == ".pvd":
+                # A standalone PVD can provide useful collection metadata, but
+                # playback is only enabled for a server-validated full bundle.
+                meta.extra["bundle_complete"] = bool(bundle_files)
             ctx.check_cancelled()
         except JobCancelled:
             # revert so the dataset is not left displaying "ingesting"
@@ -142,7 +172,7 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
             dataset = db.get(Dataset, dataset_id)
             if dataset is None:
                 raise ValueError(f"dataset {dataset_id} not found")
-            source_path = store.path_for(dataset.object_key)
+            source_object_key = dataset.object_key
             project_id = dataset.project_id
             source_name = dataset.filename
             source_ext = dataset.ext
@@ -182,6 +212,7 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
         object_key = store.new_key(output_ext)
         persisted = False
         artifact_id: Optional[str] = None
+        source_path = store.acquire_path(source_object_key)
         try:
             if is_bundle_export:
                 ctx.update(progress=0.35, log_line="packaging dataset bundle")
@@ -192,7 +223,8 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
                     ) as archive:
                         for relative_path, bundle_object_key, _ in bundle_files:
                             ctx.check_cancelled()
-                            archive.write(store.path_for(bundle_object_key), arcname=relative_path)
+                            with store.local_path(bundle_object_key) as local_object:
+                                archive.write(local_object, arcname=relative_path)
                     size = store.copy_in(object_key, archive_path)
             elif needs_worker:
                 ctx.update(progress=0.25, log_line=f"running ParaView {kind} worker")
@@ -202,11 +234,10 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
                     if bundle_files:
                         worker_source = None
                         for relative_path, bundle_object_key, is_primary in bundle_files:
-                            target = (root / relative_path).resolve()
-                            if root not in target.parents:
-                                raise ValueError(f"unsafe bundle path {relative_path!r}")
+                            target = materialized_bundle_path(root, relative_path)
                             target.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copyfile(store.path_for(bundle_object_key), target)
+                            with store.local_path(bundle_object_key) as local_object:
+                                shutil.copyfile(local_object, target)
                             if is_primary:
                                 worker_source = target
                         if worker_source is None:
@@ -223,20 +254,34 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
                 if is_bundle_export
                 else mimetypes.guess_type(filename)[0] or "application/octet-stream"
             )
-            with SessionLocal() as db:
-                artifact = Artifact(
-                    dataset_id=dataset_id,
-                    job_id=ctx.job_id,
-                    kind=artifact_kind,
-                    filename=filename,
-                    size_bytes=size,
-                    object_key=object_key,
-                    content_type=content_type,
-                )
-                db.add(artifact)
-                db.flush()
-                artifact_id = artifact.id
-                db.commit()
+            with project_guard(project_id):
+                with SessionLocal() as db:
+                    current_dataset = db.get(Dataset, dataset_id)
+                    current_job = db.get(Job, ctx.job_id)
+                    current_project = db.scalar(
+                        select(Project).where(Project.id == project_id).with_for_update()
+                    )
+                    if (
+                        current_dataset is None
+                        or current_dataset.project_id != project_id
+                        or current_job is None
+                        or current_job.project_id != project_id
+                        or current_project is None
+                    ):
+                        raise ValueError("project was deleted while creating artifact")
+                    artifact = Artifact(
+                        dataset_id=dataset_id,
+                        job_id=ctx.job_id,
+                        kind=artifact_kind,
+                        filename=filename,
+                        size_bytes=size,
+                        object_key=object_key,
+                        content_type=content_type,
+                    )
+                    db.add(artifact)
+                    db.flush()
+                    artifact_id = artifact.id
+                    db.commit()
             persisted = True
             ctx.check_cancelled()
             ctx.update(progress=1.0, log_line=f"artifact created id={artifact_id}")
@@ -265,5 +310,7 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
                         db.commit()
             store.delete(object_key)
             raise
+        finally:
+            store.release_path(source_object_key)
 
     return body

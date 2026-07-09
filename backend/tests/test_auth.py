@@ -10,10 +10,16 @@ from fastapi import HTTPException
 from jwt.exceptions import PyJWKClientError
 
 from app import auth
-from app.config import settings
+from app.config import Settings, settings
+
+
+def test_settings_default_auth_mode_is_fail_closed(monkeypatch):
+    monkeypatch.delenv("PVWEB_AUTH_MODE", raising=False)
+    assert Settings().auth_mode == "oidc"
 
 
 def test_oidc_rs256_claim_and_signature_validation(monkeypatch):
+    auth._jwk_client.cache_clear()
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_key = private_key.public_key()
@@ -22,8 +28,10 @@ def test_oidc_rs256_claim_and_signature_validation(monkeypatch):
     monkeypatch.setattr(settings, "oidc_jwks_url", "https://issuer.example/jwks")
 
     class StaticJwks:
+        constructions = 0
+
         def __init__(self, _url):
-            pass
+            type(self).constructions += 1
 
         def get_signing_key_from_jwt(self, _token):
             return SimpleNamespace(key=public_key)
@@ -39,6 +47,8 @@ def test_oidc_rs256_claim_and_signature_validation(monkeypatch):
 
     valid = jwt.encode(base, private_key, algorithm="RS256")
     assert auth._decode_oidc_token(valid).id == "user-1"
+    assert auth._decode_oidc_token(valid).id == "user-1"
+    assert StaticJwks.constructions == 1
 
     rejected = [
         {**base, "aud": "wrong-audience"},
@@ -61,6 +71,8 @@ def test_oidc_rs256_claim_and_signature_validation(monkeypatch):
             raise PyJWKClientError("JWKS unavailable")
 
     monkeypatch.setattr(auth.jwt, "PyJWKClient", BrokenJwks)
+    auth._jwk_client.cache_clear()
     with pytest.raises(HTTPException) as error:
         auth._decode_oidc_token(valid)
     assert error.value.status_code == 401
+    auth._jwk_client.cache_clear()

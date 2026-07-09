@@ -11,34 +11,23 @@ from defusedxml import ElementTree as SafeET
 from defusedxml.common import DefusedXmlException
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import Principal, get_principal, require_project_role
+from ..bundles import bundle_reference_path as _bundle_reference_path
+from ..bundles import safe_relative_path as _safe_relative_path
 from ..config import settings
 from ..db import get_db
 from ..jobs import manager
 from ..models import Dataset, DatasetFile, Job, Project
+from ..project_locks import project_guard
 from ..schemas import CollectionStepOut, DatasetOut, JobOut
 from ..services import run_ingest
 from ..storage import store
 
 router = APIRouter(tags=["datasets"])
-
-
-def _safe_relative_path(filename: str) -> str:
-    raw = filename.replace("\\", "/")
-    path = PurePosixPath(raw)
-    if not raw or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise ValueError(f"unsafe relative path {filename!r}")
-    return path.as_posix()
-
-
-def _bundle_reference_path(primary_path: str, reference: str) -> str:
-    reference_path = _safe_relative_path(reference)
-    return _safe_relative_path(
-        (PurePosixPath(primary_path).parent / PurePosixPath(reference_path)).as_posix()
-    )
 
 
 def _validate_descriptor_reference(primary_path: str, reference: str, manifest: set[str]) -> None:
@@ -158,7 +147,7 @@ async def upload_dataset(
     ext = os.path.splitext(filename)[1].lower()
     if ext not in settings.allowed_extensions:
         raise HTTPException(415, f"unsupported extension {ext!r}")
-    if ext in {".pvd", ".case", ".xdmf", ".xmf"}:
+    if ext in {".case", ".xdmf", ".xmf"}:
         raise HTTPException(400, "descriptor datasets must be uploaded with all referenced files")
 
     head = await file.read(4096)
@@ -168,17 +157,29 @@ async def upload_dataset(
 
     key = store.new_key(ext)
     try:
-        size = store.save_stream(key, file.file, max_bytes=settings.max_upload_bytes)
-    except ValueError as exc:
-        raise HTTPException(413, str(exc)) from exc
-
-    ds = Dataset(
-        project_id=project_id, filename=filename, ext=ext,
-        size_bytes=size, object_key=key, status="registered",
-    )
-    db.add(ds)
-    db.commit()
-    db.refresh(ds)
+        try:
+            size = store.save_stream(key, file.file, max_bytes=settings.max_upload_bytes)
+        except ValueError as exc:
+            raise HTTPException(413, str(exc)) from exc
+        with project_guard(project_id):
+            db.expire_all()
+            project = db.scalar(
+                select(Project).where(Project.id == project_id).with_for_update()
+            )
+            if project is None:
+                raise HTTPException(409, "project was deleted during upload")
+            require_project_role(db, project_id, principal, "editor")
+            ds = Dataset(
+                project_id=project_id, filename=filename, ext=ext,
+                size_bytes=size, object_key=key, status="registered",
+            )
+            db.add(ds)
+            db.commit()
+            db.refresh(ds)
+    except Exception:
+        db.rollback()
+        store.delete(key)
+        raise
     request.state.audit_project_id = project_id
     request.state.audit_resource_type = "dataset"
     request.state.audit_resource_id = ds.id
@@ -246,7 +247,8 @@ async def upload_dataset_bundle(
         by_path = {relative_path: key for relative_path, key, _ in persisted}
         primary_key = by_path[primary_path]
         try:
-            references = _pvd_references(str(store.path_for(primary_key)))
+            with store.local_path(primary_key) as local_primary:
+                references = _pvd_references(str(local_primary))
             resolved_references = [
                 _bundle_reference_path(primary_path, reference) for reference in references
             ]
@@ -353,12 +355,13 @@ async def upload_external_dataset_bundle(
 
         primary_key = next(key for path, key, _ in persisted if path == primary_path)
         try:
-            _validate_external_descriptor(
-                str(store.path_for(primary_key)),
-                primary_path,
-                primary_ext,
-                {path for path, _, _ in persisted},
-            )
+            with store.local_path(primary_key) as local_primary:
+                _validate_external_descriptor(
+                    str(local_primary),
+                    primary_path,
+                    primary_ext,
+                    {path for path, _, _ in persisted},
+                )
         except (ET.ParseError, DefusedXmlException, UnicodeDecodeError, ValueError) as exc:
             raise HTTPException(422, f"invalid external descriptor: {exc}") from exc
         dataset = Dataset(
@@ -506,9 +509,14 @@ def download_collection_timestep(
     )
     if member is None or not store.exists(member.object_key):
         raise HTTPException(410, "timestep object is unavailable")
+    path = store.acquire_path(member.object_key)
+    if not path.is_file():
+        store.release_path(member.object_key)
+        raise HTTPException(410, "timestep object is unavailable")
     return FileResponse(
-        str(store.path_for(member.object_key)),
+        str(path),
         filename=PurePosixPath(relative_path).name,
+        background=BackgroundTask(store.release_path, member.object_key),
     )
 
 
@@ -540,7 +548,12 @@ def download_dataset(
     if ds is None:
         raise HTTPException(404, "dataset not found")
     require_project_role(db, ds.project_id, principal)
-    path = store.path_for(ds.object_key)
+    path = store.acquire_path(ds.object_key)
     if not path.is_file():
+        store.release_path(ds.object_key)
         raise HTTPException(410, "object no longer available")
-    return FileResponse(str(path), filename=ds.filename)
+    return FileResponse(
+        str(path),
+        filename=ds.filename,
+        background=BackgroundTask(store.release_path, ds.object_key),
+    )

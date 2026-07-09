@@ -45,13 +45,16 @@ def metadata(source: str) -> None:
         raise RuntimeError(f"ParaView has no reader for {source}")
     simple.UpdatePipeline(proxy=reader)
     info = reader.GetDataInformation()
-    timesteps = [float(value) for value in (getattr(reader, "TimestepValues", None) or [])]
+    raw_timesteps = [float(value) for value in (getattr(reader, "TimestepValues", None) or [])]
+    timesteps = raw_timesteps if all(map(math.isfinite, raw_timesteps)) else []
+    raw_bounds = [float(value) for value in info.GetBounds()]
+    bounds = raw_bounds if len(raw_bounds) == 6 and all(map(math.isfinite, raw_bounds)) else None
     payload = {
         "dataset_type": info.GetDataClassName().removeprefix("vtk"),
         "num_points": int(info.GetNumberOfPoints()),
         "num_cells": int(info.GetNumberOfCells()),
         "num_blocks": int(info.GetNumberOfDataSets() or 1),
-        "bounds": [float(value) for value in info.GetBounds()],
+        "bounds": bounds,
         "timesteps": timesteps or None,
         "arrays": [
             *_array_info(info.GetPointDataInformation(), "point"),

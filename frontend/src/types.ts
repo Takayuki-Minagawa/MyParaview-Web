@@ -4,6 +4,16 @@ export interface Project {
   created_at: string;
 }
 
+export type ProjectRole = "viewer" | "editor" | "admin";
+
+export interface ProjectMember {
+  id: string;
+  project_id: string;
+  user_id: string;
+  role: ProjectRole;
+  created_at: string;
+}
+
 export interface ArrayInfo {
   name: string;
   association: "point" | "cell" | "field" | "table";

@@ -41,14 +41,7 @@ export function colorMapCssGradient(name: ColorMapName): string {
  * scalar coloring in scientific visualization. Input is clamped to [0, 1].
  */
 export function coolToWarm(t: number): RGB {
-  const x = Math.max(0, Math.min(1, t));
-  const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
-  if (x < 0.5) {
-    const u = x / 0.5; // blue -> white
-    return [lerp(0.23, 0.87, u), lerp(0.3, 0.87, u), lerp(0.75, 0.87, u)];
-  }
-  const u = (x - 0.5) / 0.5; // white -> red
-  return [lerp(0.87, 0.71, u), lerp(0.87, 0.02, u), lerp(0.87, 0.15, u)];
+  return sampleColorMap("cool-to-warm", t);
 }
 
 /** Sample any registered colormap using piecewise-linear interpolation. */

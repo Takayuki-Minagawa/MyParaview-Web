@@ -152,6 +152,11 @@ button:hover { border-color: var(--accent); }
 .row { display: flex; gap: 8px; margin: 6px 0; align-items: center; }
 .bundle-upload { display: grid; gap: 4px; margin-top: 8px; }
 .bundle-upload .muted { font-size: 11px; line-height: 1.35; }
+.member-list { list-style: none; margin: 0; padding: 0; }
+.member-list li { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; }
+.member-list li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-admin .row { align-items: stretch; }
+.member-admin .row input { min-width: 0; }
 .row input[type="text"], .row input:not([type]) { flex: 1; }
 .actions { margin-top: 16px; }
 .radio { display: flex; align-items: center; gap: 4px; color: var(--text); }

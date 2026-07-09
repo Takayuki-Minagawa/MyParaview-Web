@@ -178,6 +178,23 @@ def test_pvd_enriches_from_sibling_in_same_directory(tmp_path):
     assert meta.num_points == 3  # in-directory enrichment still works
 
 
+def test_pvd_broken_first_piece_keeps_collection_metadata(tmp_path):
+    (tmp_path / "broken.vtp").write_text(
+        '<?xml version="1.0"?><VTKFile type="PolyData"><PolyData>'
+    )
+    pvd = tmp_path / "series.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        '<DataSet timestep="0" file="broken.vtp"/>'
+        '</Collection></VTKFile>'
+    )
+    meta = extract_metadata(str(pvd))
+    assert meta.dataset_type == "Collection"
+    assert meta.timesteps == [0.0]
+    assert meta.extra["inner_type"] == "PolyData"
+    assert "enrichment_warning" in meta.extra
+
+
 def test_imagedata_tolerates_malformed_origin(tmp_path):
     # Origin/Spacing with fewer than 3 tokens must not raise IndexError.
     p = tmp_path / "bad.vti"

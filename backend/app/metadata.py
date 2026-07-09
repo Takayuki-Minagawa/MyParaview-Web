@@ -306,23 +306,31 @@ def _extract_pvd(path: str) -> DatasetMetadata:
         "files": files,
         "entries": parsed_entries,
     }
-    # enrich arrays/counts from the first referenced piece if resolvable & XML.
+    # Enrich arrays/counts from only the first referenced piece, best-effort.
+    # Time-series can contain thousands of frames and metadata extraction must
+    # not become O(N), nor should a damaged later frame make the whole
+    # collection undiscoverable.
     # The referenced path is restricted to the .pvd's own directory: a crafted
     # collection must not read absolute paths or escape via ".." into the rest
     # of the object store or the filesystem.
     first_inner: Optional[DatasetMetadata] = None
-    for referenced_file in files:
-        sibling = _contained_sibling(path, referenced_file)
-        if sibling is not None:
-            if os.path.isfile(sibling) and sibling.lower().endswith((".vtp", ".vti", ".vtu", ".vts", ".vtr")):
-                # A bundle is only ready when every local referenced VTK piece
-                # parses. Silently accepting a broken later frame leaves the
-                # playback UI in an unrecoverable state.
-                inner = _extract_vtk_xml(sibling)
-                if first_inner is None:
-                    first_inner = inner
-                elif inner.dataset_type != first_inner.dataset_type:
-                    raise ValueError("PVD referenced dataset types must be consistent")
+    if files:
+        first_extension = os.path.splitext(files[0])[1].lower()
+        inferred_types = {
+            ".vtp": "PolyData",
+            ".vti": "ImageData",
+            ".vtu": "UnstructuredGrid",
+            ".vts": "StructuredGrid",
+            ".vtr": "RectilinearGrid",
+        }
+        if first_extension in inferred_types:
+            meta.extra["inner_type"] = inferred_types[first_extension]
+        sibling = _contained_sibling(path, files[0])
+        if sibling is not None and os.path.isfile(sibling) and first_extension in inferred_types:
+            try:
+                first_inner = _extract_vtk_xml(sibling)
+            except Exception as exc:  # noqa: BLE001 - optional enrichment only
+                meta.extra["enrichment_warning"] = str(exc)
     if first_inner is not None:
         meta.num_points = first_inner.num_points
         meta.num_cells = first_inner.num_cells

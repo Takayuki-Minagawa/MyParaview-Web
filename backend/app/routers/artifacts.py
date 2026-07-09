@@ -10,11 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
 from ..db import get_db
-from ..models import Artifact, Dataset, Job
+from ..models import Artifact, Dataset, Job, Project
+from ..project_locks import project_guard
 from ..schemas import ArtifactOut
 from ..storage import store
 
@@ -105,19 +107,31 @@ async def upload_artifact(
             file.file,
             max_bytes=min(settings.max_upload_bytes, 32 * 1024 * 1024),
         )
-        if kind == "screenshot" and not _valid_png(store.path_for(object_key)):
-            raise HTTPException(400, "screenshot artifact is not a valid PNG")
-        artifact = Artifact(
-            dataset_id=dataset.id,
-            kind=kind,
-            filename=filename,
-            size_bytes=size,
-            object_key=object_key,
-            content_type=file.content_type or "application/octet-stream",
-        )
-        db.add(artifact)
-        db.commit()
-        db.refresh(artifact)
+        if kind == "screenshot":
+            with store.local_path(object_key) as local_object:
+                if not _valid_png(local_object):
+                    raise HTTPException(400, "screenshot artifact is not a valid PNG")
+        project_id = dataset.project_id
+        with project_guard(project_id):
+            db.expire_all()
+            dataset = db.get(Dataset, dataset_id)
+            project = db.scalar(
+                select(Project).where(Project.id == project_id).with_for_update()
+            )
+            if dataset is None or project is None or dataset.project_id != project_id:
+                raise HTTPException(409, "dataset project was deleted during artifact upload")
+            require_project_role(db, project_id, principal, "editor")
+            artifact = Artifact(
+                dataset_id=dataset.id,
+                kind=kind,
+                filename=filename,
+                size_bytes=size,
+                object_key=object_key,
+                content_type=file.content_type or "application/octet-stream",
+            )
+            db.add(artifact)
+            db.commit()
+            db.refresh(artifact)
         request.state.audit_project_id = dataset.project_id
         request.state.audit_resource_type = "artifact"
         request.state.audit_resource_id = artifact.id
@@ -153,7 +167,13 @@ def get_artifact(
     if not project_id:
         raise HTTPException(410, "artifact has no accessible project scope")
     require_project_role(db, project_id, principal)
-    path = store.path_for(art.object_key)
+    path = store.acquire_path(art.object_key)
     if not path.is_file():
+        store.release_path(art.object_key)
         raise HTTPException(410, "artifact object no longer available")
-    return FileResponse(str(path), media_type=art.content_type, filename=art.filename)
+    return FileResponse(
+        str(path),
+        media_type=art.content_type,
+        filename=art.filename,
+        background=BackgroundTask(store.release_path, art.object_key),
+    )

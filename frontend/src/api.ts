@@ -6,6 +6,8 @@ import type {
   Job,
   Pipeline,
   Project,
+  ProjectMember,
+  ProjectRole,
   ServerCapabilities,
   ViewState,
 } from "./types";
@@ -53,6 +55,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+  getMembership: (projectId: string) =>
+    req<ProjectMember>(`/projects/${projectId}/membership`),
+  listMembers: (projectId: string) =>
+    req<ProjectMember[]>(`/projects/${projectId}/members`),
+  putMember: (projectId: string, userId: string, role: ProjectRole) =>
+    req<ProjectMember>(
+      `/projects/${projectId}/members`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, role }),
+      },
+    ),
 
   listDatasets: (projectId: string) =>
     req<Dataset[]>(`/projects/${projectId}/datasets`),

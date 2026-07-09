@@ -18,9 +18,21 @@ class Settings:
         self.s3_bucket = os.environ.get("PVWEB_S3_BUCKET", "pvweb")
         self.s3_endpoint_url = os.environ.get("PVWEB_S3_ENDPOINT_URL") or None
         self.s3_region = os.environ.get("PVWEB_S3_REGION", "us-east-1")
+        self.s3_cache_max_bytes = int(
+            os.environ.get("PVWEB_S3_CACHE_MAX_BYTES", str(5 * 1024 * 1024 * 1024))
+        )
+        self.s3_cache_ttl_seconds = int(os.environ.get("PVWEB_S3_CACHE_TTL_SECONDS", "86400"))
+        # Authentication is fail-closed by default. Local development must opt
+        # into the header-based identity provider explicitly.
+        self.auth_mode = os.environ.get("PVWEB_AUTH_MODE", "oidc").lower()
         self.oidc_issuer = os.environ.get("PVWEB_OIDC_ISSUER") or None
         self.oidc_audience = os.environ.get("PVWEB_OIDC_AUDIENCE") or None
         self.oidc_jwks_url = os.environ.get("PVWEB_OIDC_JWKS_URL") or None
+        self.bootstrap_admin_subjects = {
+            subject.strip()
+            for subject in os.environ.get("PVWEB_BOOTSTRAP_ADMIN_SUBS", "").split(",")
+            if subject.strip()
+        }
         self.worker_command = shlex.split(os.environ.get("PVWEB_PVPYTHON", ""))
         self.worker_timeout_seconds = int(os.environ.get("PVWEB_WORKER_TIMEOUT", "900"))
         self.trame_broker_url = os.environ.get("PVWEB_TRAME_BROKER_URL") or None

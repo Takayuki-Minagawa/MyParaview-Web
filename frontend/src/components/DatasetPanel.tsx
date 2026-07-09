@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { Dataset, Job, Project } from "../types";
+import type { Dataset, Job, Project, ProjectMember, ProjectRole } from "../types";
 import { humanFileSize } from "../lib/format";
 import { isCancellable, lastLogLine } from "../lib/job";
 import { PipelinePanel } from "./PipelinePanel";
@@ -10,6 +10,9 @@ interface Props {
   currentProjectId: string | null;
   onSelectProject: (id: string) => void;
   onCreateProject: (name: string) => void;
+  membership: ProjectMember | null;
+  members: ProjectMember[];
+  onPutMember: (userId: string, role: ProjectRole) => void;
   datasets: Dataset[];
   selectedDatasetId: string | null;
   onSelectDataset: (id: string) => void;
@@ -36,6 +39,8 @@ export function DatasetPanel(props: Props) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const bundleRef = useRef<HTMLInputElement | null>(null);
   const [newName, setNewName] = useState("");
+  const [memberId, setMemberId] = useState("");
+  const [memberRole, setMemberRole] = useState<ProjectRole>("viewer");
 
   return (
     <aside className="panel panel-left">
@@ -70,6 +75,48 @@ export function DatasetPanel(props: Props) {
           作成
         </button>
       </div>
+
+      {props.membership?.role === "admin" && (
+        <section className="member-admin" aria-label="プロジェクトメンバー管理">
+          <h3>メンバー管理</h3>
+          <ul className="member-list">
+            {props.members.map((member) => (
+              <li key={member.id}>
+                <span title={member.user_id}>{member.user_id}</span>
+                <span className="badge">{member.role}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="row">
+            <input
+              aria-label="追加するOIDC subject"
+              placeholder="OIDC subject"
+              value={memberId}
+              onChange={(event) => setMemberId(event.target.value)}
+            />
+            <select
+              aria-label="付与するロール"
+              value={memberRole}
+              onChange={(event) => setMemberRole(event.target.value as ProjectRole)}
+            >
+              <option value="viewer">viewer</option>
+              <option value="editor">editor</option>
+              <option value="admin">admin</option>
+            </select>
+            <button
+              disabled={!memberId.trim()}
+              onClick={() => {
+                const subject = memberId.trim();
+                if (!subject) return;
+                props.onPutMember(subject, memberRole);
+                setMemberId("");
+              }}
+            >
+              付与
+            </button>
+          </div>
+        </section>
+      )}
 
       <h2>データセット</h2>
       <div className="row">

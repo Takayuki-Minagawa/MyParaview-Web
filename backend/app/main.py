@@ -8,6 +8,7 @@ Wires the M1 API surface (work_plan 7.2):
 from __future__ import annotations
 
 import os
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -16,13 +17,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .db import init_db
 from .db import SessionLocal
+from .jobs import recover_interrupted_jobs
 from .models import Artifact, AuditEvent, Dataset, Job, Pipeline, RenderSession
 from .routers import artifacts, assist, datasets, jobs, pipelines, projects, sessions
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    recovered = recover_interrupted_jobs()
+    if recovered:
+        logger.warning("marked %d interrupted in-process jobs as failed", recovered)
     yield
 
 
@@ -47,9 +54,12 @@ app.add_middleware(
 async def record_audit_event(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
+    is_timestep_frame = (
+        request.method == "GET" and "/timesteps/" in path and path.endswith("/download")
+    )
     is_download = request.method == "GET" and (
         "/download" in path or (path.startswith("/artifacts/") and path.count("/") == 2)
-    )
+    ) and not is_timestep_frame
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} or is_download:
         path_params = request.scope.get("path_params", {})
         principal = getattr(request.state, "principal", None)
@@ -98,8 +108,8 @@ async def record_audit_event(request: Request, call_next):
                 db.commit()
         except Exception:
             # Audit storage must not replace the original API response. Operators
-            # should alert on database failures separately.
-            pass
+            # can detect and alert on database failures from this log.
+            logger.exception("failed to persist audit event for %s %s", request.method, path)
     return response
 
 
@@ -113,7 +123,12 @@ def capabilities() -> dict:
     return {
         "database": "postgresql" if settings.database_url.startswith("postgresql") else "sqlite",
         "object_store": settings.object_store,
-        "oidc": bool(settings.oidc_issuer and settings.oidc_audience and settings.oidc_jwks_url),
+        "oidc": bool(
+            settings.auth_mode == "oidc"
+            and settings.oidc_issuer
+            and settings.oidc_audience
+            and settings.oidc_jwks_url
+        ),
         "paraview_worker": bool(settings.worker_command),
         "trame_sessions": bool(settings.trame_broker_url),
     }

@@ -63,17 +63,20 @@ set -a
 source infra/.env.example
 set +a
 cd backend
-./.venv/bin/uvicorn app.main:app
+PVWEB_AUTH_MODE=dev ./.venv/bin/uvicorn app.main:app
 ```
 
 MinIO bucketは`minio-init`が作成します。S3 objectはimmutable key + local read-through
-cacheでVTK reader/FileResponseへ渡されます。
+cacheでVTK reader/FileResponseへ渡されます。cacheは
+`PVWEB_S3_CACHE_MAX_BYTES`（既定5 GiB）と`PVWEB_S3_CACHE_TTL_SECONDS`（既定24時間）で制限されます。
 
 ## OIDC / RBAC
 
-Backendは次の3値をすべて設定した場合だけOIDCを有効化します。部分設定は503でfail closedです。
+Backendはデフォルトでfail closedです。ローカル開発だけ`PVWEB_AUTH_MODE=dev`を明示し、
+本番では`PVWEB_AUTH_MODE=oidc`と次の3値をすべて設定します。欠落時は503になります。
 
 ```text
+PVWEB_AUTH_MODE=oidc
 PVWEB_OIDC_ISSUER
 PVWEB_OIDC_AUDIENCE
 PVWEB_OIDC_JWKS_URL
@@ -87,13 +90,14 @@ VITE_OIDC_CLIENT_ID
 VITE_OIDC_REDIRECT_URI  # 省略時は現在のapp path
 ```
 
-roleは`viewer / editor / admin`です。OIDC未設定のローカル環境では`anonymous`を使用し、
-テスト用途に限り`X-PVWeb-User`で開発identityを切り替えられます。
+roleは`viewer / editor / admin`です。明示的なdev modeだけ`anonymous`を使用し、
+テスト用途に限り`X-PVWeb-User`で開発identityを切り替えられます。adminはWeb UIから
+OIDC subjectへroleを付与できます。
 
-既存local DBをOIDCへ切り替える前に、OIDCの`sub`に対応するUser/ProjectMember（admin）を
-追加してください。legacy projectは`anonymous` adminへ移行されるため、そのままOIDCを有効化すると
-通常のOIDC subjectから既存projectが見えません。OIDCを有効化する前にlocal adminとして
-`PUT /projects/{project_id}/members/{sub}`を実行できます。
+既存local DBをOIDCへ切り替える初回だけ、復旧adminのOIDC `sub`を
+`PVWEB_BOOTSTRAP_ADMIN_SUBS=<sub>`（複数はカンマ区切り）に指定してください。ログイン時に
+`anonymous` adminが残るlegacy projectだけadmin権限が付与されます。確認後は環境変数を外し、
+以降のメンバー追加はWeb UIで行います。
 
 ## ParaView worker
 

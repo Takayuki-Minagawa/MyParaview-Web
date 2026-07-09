@@ -42,6 +42,7 @@ interface Props {
   datasetId: string | null;
   url: string | null;
   datasetType?: string | null;
+  emptyMessage?: string;
   representation: Representation;
   colorBy: ScalarSelection | null;
   colorRange: [number, number] | null;
@@ -110,7 +111,7 @@ function applyGeometryColor(scene: any, selection: ScalarSelection | null, range
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyImageColor(scene: any, selection: ScalarSelection | null, range: [number, number] | null, map: ColorMapName, opacity: number) {
-  if (!scene.output || !selection || selection.association !== "point" || !range) return;
+  if (!scene.output || !selection || selection.association !== "point" || !range) return false;
   scene.output.getPointData().setActiveScalars(selection.name);
   scene.lut?.delete?.();
   scene.opacityFunction?.delete?.();
@@ -136,6 +137,7 @@ function applyImageColor(scene: any, selection: ScalarSelection | null, range: [
     const spacing = scene.output.getSpacing().map((value: number) => Math.abs(value)).filter(Boolean);
     scene.mapper.setSampleDistance(Math.max(Math.min(...spacing, 1) * 0.7, 1e-6));
   }
+  return true;
 }
 
 function tableToPolyData(text: string, coordinates: TableCoordinates) {
@@ -265,7 +267,7 @@ async function createScreenshotBlob(dataUrl: string, settings: {
 
 export function VtkViewer(props: Props) {
   const {
-    datasetId, url, datasetType, representation, colorBy, colorRange, opacity, colorMap,
+    datasetId, url, datasetType, emptyMessage, representation, colorBy, colorRange, opacity, colorMap,
     legendVisible, tableCoordinates, imageMode, sliceAxis, sliceIndex,
     onColorRangeResolved, onLoadComplete, cameraState, onCameraChange, onScreenshotCaptured,
     screenshotNonce, resetNonce,
@@ -350,6 +352,7 @@ export function VtkViewer(props: Props) {
       if (!display.colorRange && display.colorBy && resolvedRange) {
         rangeCallbackRef.current?.(display.colorBy, resolvedRange);
       }
+      let displayDiagnostic = "";
       if (scene.kind === "geometry") {
         applyRepresentation(scene, display.representation);
         applyGeometryColor(scene, display.colorBy, resolvedRange, display.colorMap);
@@ -360,7 +363,18 @@ export function VtkViewer(props: Props) {
           scene.mapper.setSlicingMode(vtkImageMapper.SlicingMode[SLICE_MODE[display.sliceAxis]]);
           scene.mapper.setSlice(display.sliceIndex);
         }
-        applyImageColor(scene, display.colorBy, resolvedRange, display.colorMap, display.opacity);
+        const pointArrayCount = scene.output?.getPointData?.().getNumberOfArrays?.() ?? 0;
+        const cellArrayCount = scene.output?.getCellData?.().getNumberOfArrays?.() ?? 0;
+        const applied = applyImageColor(
+          scene, display.colorBy, resolvedRange, display.colorMap, display.opacity,
+        );
+        if (!applied) {
+          displayDiagnostic = pointArrayCount === 0 && cellArrayCount > 0
+            ? "ImageDataにpoint dataがありません。cell dataはサーバ側でpoint dataへ変換してください。"
+            : pointArrayCount === 0
+              ? "ImageDataに表示可能なpoint data配列がありません。"
+              : "表示するpoint data配列または有限な値域を選択してください。";
+        }
         if (scene.kind === "slice") renderer.addActor(scene.prop);
         else renderer.addVolume(scene.prop);
       }
@@ -368,7 +382,7 @@ export function VtkViewer(props: Props) {
       if (display.cameraState) applySavedCamera(scene, display.cameraState);
       renderWindow.render();
       scene.emitCamera();
-      setStatus("");
+      setStatus(displayDiagnostic);
       loadCallbackRef.current?.();
     };
 
@@ -500,7 +514,10 @@ export function VtkViewer(props: Props) {
       applyGeometryColor(scene, colorBy, range, colorMap);
       scene.prop.getProperty().setOpacity(Math.max(0, Math.min(1, opacity)));
     }
-    else applyImageColor(scene, colorBy, range, colorMap, opacity);
+    else {
+      const applied = applyImageColor(scene, colorBy, range, colorMap, opacity);
+      if (applied) setStatus("");
+    }
     scene.renderWindow.render();
   }, [colorBy, colorRange, colorMap, opacity]);
 
@@ -559,7 +576,7 @@ export function VtkViewer(props: Props) {
       {!renderable && (
         <div className="viewer-overlay">
           {!url
-            ? "データセットを選択してください。"
+            ? emptyMessage ?? "データセットを選択してください。"
             : datasetType === "Table" && !tableReady
               ? "重複しないX/Y/Z列を選択してください。"
               : `「${datasetType}」はブラウザ直接描画の対象外です。`}

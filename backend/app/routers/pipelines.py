@@ -15,6 +15,11 @@ router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 def _replace_nodes(db: Session, pipeline: Pipeline, node_specs) -> None:
     # clearing the collection triggers delete-orphan; appending keeps the
     # in-memory relationship consistent so serialization sees the new nodes.
+    # Break self-referential edges first so SQLite/PostgreSQL FK enforcement
+    # does not reject deleting an input node and its consumer together.
+    for existing in pipeline.nodes:
+        existing.input_id = None
+    db.flush()
     pipeline.nodes.clear()
     db.flush()
     created: list[tuple] = []

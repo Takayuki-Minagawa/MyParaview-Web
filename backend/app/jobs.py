@@ -14,13 +14,39 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
+from sqlalchemy import select
+
 from .db import SessionLocal
-from .models import Artifact, Job
+from .models import Artifact, Dataset, Job
 from .storage import store
 
 
 class JobCancelled(Exception):
     """Raised inside a job body when cancellation was requested."""
+
+
+def recover_interrupted_jobs() -> int:
+    """Fail persisted in-process jobs that cannot survive an API restart."""
+    with SessionLocal() as db:
+        interrupted = list(
+            db.scalars(select(Job).where(Job.status.in_(("queued", "running"))))
+        )
+        for job in interrupted:
+            previous = job.status
+            job.status = "failed"
+            job.log = (job.log or "") + (
+                f"ERROR: {previous} in-process job was interrupted by service restart; retry required\n"
+            )
+            if job.kind == "ingest" and job.target_id:
+                dataset = db.get(Dataset, job.target_id)
+                if dataset is not None and dataset.status == "ingesting":
+                    dataset.status = "registered"
+                    dataset.error = None
+                    db.add(dataset)
+            db.add(job)
+        if interrupted:
+            db.commit()
+        return len(interrupted)
 
 
 class JobContext:

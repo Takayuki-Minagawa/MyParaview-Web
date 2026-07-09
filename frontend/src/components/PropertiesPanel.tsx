@@ -294,7 +294,7 @@ export function PropertiesPanel({
         </div>
       )}
 
-      {dataset.dataset_type === "Collection" && (
+      {dataset.dataset_type === "Collection" && dataset.extra?.bundle_complete !== false && (
         <div className="display-controls time-controls">
           <strong>PVD 時系列</strong>
           <div className="row">
@@ -317,6 +317,11 @@ export function PropertiesPanel({
             onChange={(event) => onTimestepIndex(Number(event.target.value))}
           />
         </div>
+      )}
+      {dataset.dataset_type === "Collection" && dataset.extra?.bundle_complete === false && (
+        <p className="muted">
+          参照ファイルは未登録です。表示するにはPVDと兄弟ファイルを含むフォルダ一式を選択してください。
+        </p>
       )}
 
       {dataset.dataset_type === "Table" && tableCoordinates && (

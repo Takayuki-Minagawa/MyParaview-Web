@@ -15,6 +15,8 @@ import type {
   SliceAxis,
   TableCoordinates,
   ServerCapabilities,
+  ProjectMember,
+  ProjectRole,
 } from "./types";
 import { DatasetPanel } from "./components/DatasetPanel";
 import { PropertiesPanel } from "./components/PropertiesPanel";
@@ -62,6 +64,8 @@ export function App() {
     authenticated: false,
   });
   const [serverCapabilities, setServerCapabilities] = useState<ServerCapabilities | null>(null);
+  const [membership, setMembership] = useState<ProjectMember | null>(null);
+  const [members, setMembers] = useState<ProjectMember[]>([]);
   const browserCapabilities = useMemo(() => detectBrowserCapabilities(), []);
   const deepLink = useMemo(() => {
     const query = new URLSearchParams(window.location.search);
@@ -136,6 +140,24 @@ export function App() {
     }
   }, []);
 
+  const refreshMembership = useCallback(async (projectId: string) => {
+    const epoch = projectEpochRef.current;
+    try {
+      const current = await api.getMembership(projectId);
+      const nextMembers = current.role === "admin" ? await api.listMembers(projectId) : [];
+      if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
+        setMembership(current);
+        setMembers(nextMembers);
+      }
+    } catch (e) {
+      if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
+        setMembership(null);
+        setMembers([]);
+        setError(`メンバー更新: ${String(e)}`);
+      }
+    }
+  }, []);
+
   const refreshArtifacts = useCallback(
     async (datasetId: string, projectId: string, epoch: number, selectionRequest: number) => {
       try {
@@ -165,6 +187,8 @@ export function App() {
     setDatasets([]);
     setJobs([]);
     setPipelines([]);
+    setMembership(null);
+    setMembers([]);
     setCancelingJobIds(new Set());
     setSelectedDatasetId(null);
     setColorByState(null);
@@ -206,10 +230,13 @@ export function App() {
       setDatasets([]);
       setJobs([]);
       setPipelines([]);
+      setMembership(null);
+      setMembers([]);
       return;
     }
     void refreshDatasets(currentProjectId);
     void refreshPipelines(currentProjectId);
+    void refreshMembership(currentProjectId);
     const projectEpoch = projectEpochRef.current;
     let disposed = false;
     let timer: number | undefined;
@@ -247,7 +274,7 @@ export function App() {
       disposed = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [currentProjectId, refreshDatasets, refreshPipelines]);
+  }, [currentProjectId, refreshDatasets, refreshPipelines, refreshMembership]);
 
   const createProject = (name: string) => {
     const startProject = currentProjectRef.current;
@@ -267,13 +294,18 @@ export function App() {
     const pvd = files.find((file) => file.name.toLowerCase().endsWith(".pvd"));
     const externalDescriptor = files.find((file) => /\.(case|xdmf|xmf)$/i.test(file.name));
     const primary = pvd ?? externalDescriptor ?? files[0];
-    const isBundle = files.length > 1 || !!pvd || !!externalDescriptor;
+    if (files.length > 1 && !pvd && !externalDescriptor) {
+      setError("複数ファイルには .pvd / .case / .xdmf のdescriptorが必要です。単一ファイルは個別に選択してください。");
+      return;
+    }
+    const pvdBundle = !!pvd && files.length > 1;
+    const isBundle = pvdBundle || !!externalDescriptor;
     const epoch = projectEpochRef.current;
     const selectionRequest = selectionRequestRef.current;
     setError(null);
     try {
       setBusy(`${primary.name}${isBundle ? ` ほか${files.length - 1}件` : ""} をアップロード中…`);
-      const ds = pvd
+      const ds = pvdBundle
         ? await api.uploadDatasetBundle(projectId, files)
         : isBundle && externalDescriptor
           ? await api.uploadExternalDatasetBundle(projectId, files)
@@ -484,9 +516,15 @@ export function App() {
   const viewerDatasetType = collectionInnerType || selectedDataset?.dataset_type;
   const viewerUrl = selectedDataset && selectedDataset.status === "ready"
     ? selectedDataset.dataset_type === "Collection"
-      ? api.timestepUrl(selectedDataset.id, timestepIndex)
+      ? selectedDataset.extra?.bundle_complete === false
+        ? null
+        : api.timestepUrl(selectedDataset.id, timestepIndex)
       : api.downloadUrl(selectedDataset.id)
     : null;
+  const viewerEmptyMessage = selectedDataset?.dataset_type === "Collection" &&
+    selectedDataset.extra?.bundle_complete === false
+    ? "PVDのメタデータを登録しました。時系列表示には参照ファイルを含むフォルダ一式をアップロードしてください。"
+    : undefined;
 
   useEffect(() => {
     if (!selectedDataset) return;
@@ -503,9 +541,7 @@ export function App() {
       }
     }
     if (viewerDatasetType === "ImageData" && !colorBy) {
-      const scalar = (selectedDataset.arrays ?? []).find(
-        (array) => array.association === "point" && array.num_components === 1,
-      );
+      const scalar = (selectedDataset.arrays ?? []).find((array) => array.association === "point");
       if (scalar) setColorByState({ name: scalar.name, association: "point" });
     }
   }, [selectedDataset, tableCoordinates, colorBy, viewerDatasetType]);
@@ -657,6 +693,20 @@ export function App() {
           currentProjectId={currentProjectId}
           onSelectProject={switchProject}
           onCreateProject={createProject}
+          membership={membership}
+          members={members}
+          onPutMember={(userId: string, role: ProjectRole) => {
+            const projectId = currentProjectRef.current;
+            if (!projectId) return;
+            const epoch = projectEpochRef.current;
+            void api.putMember(projectId, userId, role)
+              .then(() => {
+                if (isCurrentProject(projectId, epoch)) void refreshMembership(projectId);
+              })
+              .catch((reason) => {
+                if (isCurrentProject(projectId, epoch)) setError(String(reason));
+              });
+          }}
           datasets={datasets}
           selectedDatasetId={selectedDatasetId}
           onSelectDataset={selectDataset}
@@ -718,6 +768,7 @@ export function App() {
             datasetId={selectedDataset?.id ?? null}
             url={viewerUrl}
             datasetType={viewerDatasetType}
+            emptyMessage={viewerEmptyMessage}
             representation={representation}
             colorBy={colorBy}
             colorRange={activeColorRange}

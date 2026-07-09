@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 from conftest import wait_for_job
 
@@ -23,6 +24,105 @@ def test_project_crud(client):
     assert any(p["id"] == pid for p in client.get("/projects").json())
 
     assert client.get("/projects/nope").status_code == 404
+
+
+def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data_dir):
+    from sqlalchemy import or_, select
+
+    from app.db import SessionLocal
+    from app.models import Artifact, Dataset, DatasetFile, Job
+    from app.storage import store
+
+    project_id = _new_project(client, "object-cleanup")
+    uploaded = client.post(
+        f"/projects/{project_id}/dataset-bundles",
+        files=[
+            ("files", ("sample_series.pvd", (data_dir / "sample_series.pvd").read_bytes(), "application/xml")),
+            ("files", ("series_step0.vtp", (data_dir / "series_step0.vtp").read_bytes(), "application/xml")),
+            ("files", ("series_step1.vtp", (data_dir / "series_step1.vtp").read_bytes(), "application/xml")),
+        ],
+    )
+    assert uploaded.status_code == 201
+    dataset_id = uploaded.json()["id"]
+    export = client.post(
+        "/jobs",
+        json={
+            "project_id": project_id,
+            "kind": "export",
+            "target_id": dataset_id,
+            "params": {"output_format": "source"},
+        },
+    )
+    assert wait_for_job(client, export.json()["id"])["status"] == "succeeded"
+
+    with SessionLocal() as db:
+        dataset_ids = list(db.scalars(select(Dataset.id).where(Dataset.project_id == project_id)))
+        job_ids = list(db.scalars(select(Job.id).where(Job.project_id == project_id)))
+        keys = set(db.scalars(select(Dataset.object_key).where(Dataset.project_id == project_id)))
+        keys.update(db.scalars(select(DatasetFile.object_key).where(DatasetFile.dataset_id.in_(dataset_ids))))
+        keys.update(
+            db.scalars(
+                select(Artifact.object_key).where(
+                    or_(Artifact.dataset_id.in_(dataset_ids), Artifact.job_id.in_(job_ids))
+                )
+            )
+        )
+    assert keys and all(store.exists(key) for key in keys)
+    assert client.delete(f"/projects/{project_id}").status_code == 204
+    assert all(not store.exists(key) for key in keys)
+
+
+def test_delete_project_rejects_active_jobs(client, data_dir):
+    from app.db import SessionLocal
+    from app.models import Job
+
+    project_id = _new_project(client, "active-job-delete")
+    dataset = _upload(client, project_id, data_dir, "sample_surface.vtp").json()
+    with SessionLocal() as db:
+        job = Job(
+            project_id=project_id,
+            kind="export",
+            target_id=dataset["id"],
+            status="running",
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    assert client.delete(f"/projects/{project_id}").status_code == 409
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        assert job is not None
+        job.status = "failed"
+        db.add(job)
+        db.commit()
+    assert client.delete(f"/projects/{project_id}").status_code == 204
+
+
+def test_single_upload_cleans_object_if_project_is_deleted_mid_request(client, data_dir, monkeypatch):
+    from app.db import SessionLocal
+    from app.models import Project
+    from app.routers import datasets as dataset_router
+    from app.storage import store
+
+    project_id = _new_project(client, "upload-delete-race")
+    original_save = dataset_router.store.save_stream
+    saved_keys: list[str] = []
+
+    def save_then_delete(key, stream, *, max_bytes):
+        size = original_save(key, stream, max_bytes=max_bytes)
+        saved_keys.append(key)
+        with SessionLocal() as db:
+            project = db.get(Project, project_id)
+            assert project is not None
+            db.delete(project)
+            db.commit()
+        return size
+
+    monkeypatch.setattr(dataset_router.store, "save_stream", save_then_delete)
+    response = _upload(client, project_id, data_dir, "sample_surface.vtp")
+    assert response.status_code == 409
+    assert saved_keys and all(not store.exists(key) for key in saved_keys)
 
 
 def test_project_rbac_and_audit_log(client, data_dir):
@@ -62,6 +162,9 @@ def test_project_rbac_and_audit_log(client, data_dir):
         )
     assert allowed.status_code == 201
     assert client.get(f"/projects/{pid}/members", headers=bob).status_code == 403
+    membership = client.get(f"/projects/{pid}/membership", headers=bob)
+    assert membership.status_code == 200
+    assert membership.json()["role"] == "editor"
     pipeline = client.post(
         "/pipelines",
         json={"project_id": pid, "name": "audited", "nodes": []},
@@ -94,10 +197,116 @@ def test_project_rbac_and_audit_log(client, data_dir):
 def test_partial_oidc_configuration_fails_closed(client, monkeypatch):
     from app.config import settings
 
+    monkeypatch.setattr(settings, "auth_mode", "oidc")
     monkeypatch.setattr(settings, "oidc_issuer", None)
     monkeypatch.setattr(settings, "oidc_audience", "pvweb-api")
     monkeypatch.setattr(settings, "oidc_jwks_url", "https://identity.invalid/jwks")
     assert client.get("/projects").status_code == 503
+
+
+def test_audit_storage_failure_is_logged_without_replacing_response(client, monkeypatch):
+    import app.main as main
+
+    class BrokenSession:
+        def __enter__(self):
+            raise RuntimeError("audit database unavailable")
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(main, "SessionLocal", BrokenSession)
+    logged: list[tuple] = []
+    monkeypatch.setattr(main.logger, "exception", lambda *args: logged.append(args))
+    response = client.post("/projects", json={"name": "audit-log-failure"})
+    assert response.status_code == 201
+    assert logged and "failed to persist audit event" in logged[0][0]
+
+
+def test_default_oidc_mode_rejects_unconfigured_and_header_identity(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "auth_mode", "oidc")
+    monkeypatch.setattr(settings, "oidc_issuer", None)
+    monkeypatch.setattr(settings, "oidc_audience", None)
+    monkeypatch.setattr(settings, "oidc_jwks_url", None)
+    response = client.get("/projects", headers={"X-PVWeb-User": "spoofed-admin"})
+    assert response.status_code == 503
+
+
+def test_oidc_bootstrap_subject_recovers_legacy_projects(client, monkeypatch):
+    from app import auth
+    from app.config import settings
+
+    legacy = client.post("/projects", json={"name": "legacy-project"}).json()
+    modern = client.post(
+        "/projects",
+        json={"name": "already-owned"},
+        headers={"X-PVWeb-User": "existing-owner"},
+    ).json()
+    monkeypatch.setattr(settings, "auth_mode", "oidc")
+    monkeypatch.setattr(settings, "oidc_issuer", "https://issuer.example")
+    monkeypatch.setattr(settings, "oidc_audience", "pvweb-api")
+    monkeypatch.setattr(settings, "oidc_jwks_url", "https://issuer.example/jwks")
+    monkeypatch.setattr(settings, "bootstrap_admin_subjects", {"real-admin"})
+    monkeypatch.setattr(auth, "_decode_oidc_token", lambda _token: auth.Principal("real-admin"))
+
+    headers = {"Authorization": "Bearer test-token"}
+    projects = client.get("/projects", headers=headers)
+    assert projects.status_code == 200
+    assert legacy["id"] in {project["id"] for project in projects.json()}
+    assert modern["id"] not in {project["id"] for project in projects.json()}
+    membership = client.get(f"/projects/{legacy['id']}/membership", headers=headers)
+    assert membership.status_code == 200
+    assert membership.json()["role"] == "admin"
+
+
+def test_member_body_route_supports_uri_subject_and_preserves_last_admin(client):
+    owner = {"X-PVWeb-User": "owner-uri-test"}
+    project_id = client.post("/projects", json={"name": "uri-subject"}, headers=owner).json()["id"]
+    uri_subject = "https://issuer.example/users/alice"
+    granted = client.put(
+        f"/projects/{project_id}/members",
+        json={"user_id": uri_subject, "role": "viewer"},
+        headers=owner,
+    )
+    assert granted.status_code == 200
+    assert granted.json()["user_id"] == uri_subject
+
+    rejected = client.put(
+        f"/projects/{project_id}/members",
+        json={"user_id": "owner-uri-test", "role": "viewer"},
+        headers=owner,
+    )
+    assert rejected.status_code == 409
+    assert client.get(f"/projects/{project_id}/members", headers=owner).status_code == 200
+
+
+def test_concurrent_admin_demotions_cannot_remove_every_admin(client):
+    first = {"X-PVWeb-User": "admin-race-first"}
+    second = {"X-PVWeb-User": "admin-race-second"}
+    project_id = client.post("/projects", json={"name": "admin-race"}, headers=first).json()["id"]
+    assert client.put(
+        f"/projects/{project_id}/members",
+        json={"user_id": "admin-race-second", "role": "admin"},
+        headers=first,
+    ).status_code == 200
+
+    def demote(subject: str, headers: dict[str, str]) -> int:
+        return client.put(
+            f"/projects/{project_id}/members",
+            json={"user_id": subject, "role": "viewer"},
+            headers=headers,
+        ).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(pool.map(lambda args: demote(*args), [
+            ("admin-race-first", first),
+            ("admin-race-second", second),
+        ]))
+    assert sorted(statuses) == [200, 409]
+    members = client.get(f"/projects/{project_id}/members", headers=(first if statuses[0] == 409 else second))
+    assert members.status_code == 200
+    assert sum(member["role"] == "admin" for member in members.json()) == 1
 
 
 def _new_project(client, name="P") -> str:
@@ -148,7 +357,7 @@ def test_ingest_csv(client, data_dir):
     assert meta["num_points"] == 4
 
 
-def test_upload_ingest_and_download_pvd_bundle(client, data_dir):
+def test_upload_ingest_and_download_pvd_bundle(client, data_dir, monkeypatch):
     pid = _new_project(client, "pvd-bundle")
     response = client.post(
         f"/projects/{pid}/dataset-bundles",
@@ -163,9 +372,20 @@ def test_upload_ingest_and_download_pvd_bundle(client, data_dir):
     assert dataset["filename"] == "sample_series.pvd"
     assert dataset["size_bytes"] > (data_dir / "sample_series.pvd").stat().st_size
 
+    import app.services as services
+
+    original_copyfile = services.shutil.copyfile
+    copied: list[tuple[object, object]] = []
+
+    def counting_copyfile(source, target):
+        copied.append((source, target))
+        return original_copyfile(source, target)
+
+    monkeypatch.setattr(services.shutil, "copyfile", counting_copyfile)
     job = client.post(f"/datasets/{dataset['id']}/ingest")
     finished = wait_for_job(client, job.json()["id"])
     assert finished["status"] == "succeeded", finished
+    assert len(copied) == 2
 
     metadata = client.get(f"/datasets/{dataset['id']}/metadata").json()
     assert metadata["dataset_type"] == "Collection"
@@ -184,6 +404,12 @@ def test_upload_ingest_and_download_pvd_bundle(client, data_dir):
     assert first.status_code == 200 and b"temperature" in first.content
     assert second.status_code == 200 and first.content != second.content
     assert client.get(f"/datasets/{dataset['id']}/timesteps/2/download").status_code == 404
+    audit = client.get(f"/projects/{pid}/audit").json()
+    assert not any(
+        f"/datasets/{dataset['id']}/timesteps/" in event["detail"]["path"]
+        and event["detail"]["path"].endswith("/download")
+        for event in audit
+    )
 
     export = client.post(
         "/jobs",
@@ -233,10 +459,15 @@ def test_pvd_bundle_rejects_missing_or_escaping_references(client, data_dir):
     assert escaping.status_code == 422
 
 
-def test_pvd_bundle_rejects_unplayable_collections_and_broken_frames(client, data_dir):
+def test_pvd_bundle_rejects_unplayable_collections_and_tolerates_broken_later_frames(client, data_dir):
     pid = _new_project(client, "pvd-playback-guards")
     standalone = _upload(client, pid, data_dir, "sample_series.pvd")
-    assert standalone.status_code == 400
+    assert standalone.status_code == 201
+    standalone_job = client.post(f"/datasets/{standalone.json()['id']}/ingest")
+    assert wait_for_job(client, standalone_job.json()["id"])["status"] == "succeeded"
+    standalone_meta = client.get(f"/datasets/{standalone.json()['id']}/metadata").json()
+    assert standalone_meta["dataset_type"] == "Collection"
+    assert standalone_meta["extra"]["bundle_complete"] is False
 
     repeated = (
         b'<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
@@ -271,7 +502,10 @@ def test_pvd_bundle_rejects_unplayable_collections_and_broken_frames(client, dat
     )
     assert uploaded.status_code == 201, uploaded.text
     job = client.post(f"/datasets/{uploaded.json()['id']}/ingest")
-    assert wait_for_job(client, job.json()["id"])["status"] == "failed"
+    assert wait_for_job(client, job.json()["id"])["status"] == "succeeded"
+    metadata = client.get(f"/datasets/{uploaded.json()['id']}/metadata").json()
+    assert metadata["status"] == "ready"
+    assert metadata["extra"]["bundle_complete"] is True
 
 
 def test_ingest_failure_marks_dataset_error(client):

@@ -257,8 +257,9 @@ def _extract_vtk_xml(path: str) -> DatasetMetadata:
 def _contained_sibling(pvd_path: str, rel: str) -> Optional[str]:
     """Resolve ``rel`` (a .pvd DataSet ``file``) against the .pvd's directory,
     returning it only if it stays within that directory. Blocks absolute paths
-    and ``..`` traversal. Returns None otherwise."""
-    if not rel:
+    and ``..`` traversal. Returns None otherwise. Valid .pvd files reference
+    their pieces with relative paths, so absolute paths are rejected outright."""
+    if not rel or os.path.isabs(rel):
         return None
     base = os.path.realpath(os.path.dirname(pvd_path))
     candidate = os.path.realpath(os.path.join(base, rel))

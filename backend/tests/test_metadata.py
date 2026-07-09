@@ -103,6 +103,25 @@ def test_pvd_does_not_read_outside_its_directory(tmp_path):
     assert meta.num_points is None
 
 
+def test_pvd_rejects_absolute_path_reference(tmp_path):
+    # even an absolute path that happens to resolve inside the .pvd directory is
+    # rejected: valid .pvd files reference pieces relatively.
+    d = tmp_path / "run"
+    d.mkdir()
+    target = d / "step0.vtp"
+    target.write_text(_MINI_VTP)
+    pvd = d / "series.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="Collection"><Collection>'
+        f'<DataSet timestep="0" file="{target}"/>'
+        "</Collection></VTKFile>\n"
+    )
+    meta = extract_metadata(str(pvd))
+    assert meta.timesteps == [0.0]
+    assert meta.num_points is None  # absolute reference not enriched
+
+
 def test_pvd_enriches_from_sibling_in_same_directory(tmp_path):
     d = tmp_path / "run"
     d.mkdir()

@@ -183,71 +183,104 @@ class JobOut(ORMModel):
     updated_at: datetime
 
 
+def _finite_number(params: dict[str, Any], name: str) -> float:
+    value = params.get(name)
+    try:
+        converted = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be a finite number") from None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(converted)
+    ):
+        raise ValueError(f"{name} must be a finite number")
+    return converted
+
+
+def validate_filter_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Validate slice/clip/contour/threshold parameters.
+
+    Shared by ad-hoc filter jobs and stored pipeline execution so both paths
+    enforce the same contract. Returns normalized params.
+    """
+    operation = str(params.get("filter", "")).lower()
+    if operation not in {"slice", "clip", "contour", "threshold"}:
+        raise ValueError("filter must be slice, clip, contour, or threshold")
+
+    if operation in {"slice", "clip"}:
+        for name in ("origin", "normal"):
+            vector = params.get(name)
+            if not isinstance(vector, list) or len(vector) != 3:
+                raise ValueError(f"{name} must contain three finite numbers")
+            try:
+                converted = [float(value) for value in vector]
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError(f"{name} must contain three finite numbers") from None
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(number)
+                for value, number in zip(vector, converted)
+            ):
+                raise ValueError(f"{name} must contain three finite numbers")
+        if not any(float(value) != 0 for value in params["normal"]):
+            raise ValueError("normal must be non-zero")
+        return {**params, "filter": operation}
+
+    if not str(params.get("array", "")).strip():
+        raise ValueError("array is required")
+    association = str(params.get("association", "POINTS")).upper()
+    if association not in {"POINTS", "CELLS"}:
+        raise ValueError("association must be POINTS or CELLS")
+    if operation == "contour":
+        _finite_number(params, "value")
+    else:
+        minimum = _finite_number(params, "minimum")
+        maximum = _finite_number(params, "maximum")
+        if minimum > maximum:
+            raise ValueError("minimum must be less than or equal to maximum")
+    return {**params, "filter": operation, "association": association}
+
+
+def validate_render_params(params: dict[str, Any]) -> dict[str, Any]:
+    width = int(params.get("width", 1280))
+    height = int(params.get("height", 960))
+    if not (16 <= width <= 4096 and 16 <= height <= 4096):
+        raise ValueError("width and height must be between 16 and 4096")
+    normalized: dict[str, Any] = {**params, "width": width, "height": height}
+    array = params.get("array")
+    if array is not None:
+        if not str(array).strip():
+            raise ValueError("array must not be empty")
+        association = str(params.get("association", "POINTS")).upper()
+        if association not in {"POINTS", "CELLS"}:
+            raise ValueError("association must be POINTS or CELLS")
+        normalized["association"] = association
+    return normalized
+
+
+def validate_stats_params(params: dict[str, Any]) -> dict[str, Any]:
+    bins = int(params.get("bins", 32))
+    if not (1 <= bins <= 256):
+        raise ValueError("bins must be between 1 and 256")
+    return {**params, "bins": bins}
+
+
 class JobCreate(BaseModel):
     project_id: str
-    kind: str = Field(pattern="^(convert|filter|export)$")
+    kind: str = Field(pattern="^(convert|filter|export|render|stats|movie)$")
     target_id: str
     params: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_operation_params(self):
-        if self.kind != "filter":
-            return self
-        operation = str(self.params.get("filter", "")).lower()
-        if operation not in {"slice", "clip", "contour", "threshold"}:
-            raise ValueError("filter must be slice, clip, contour, or threshold")
-
-        def finite_number(name: str) -> float:
-            value = self.params.get(name)
-            try:
-                converted = float(value)
-            except (TypeError, ValueError, OverflowError):
-                raise ValueError(f"{name} must be a finite number") from None
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(converted)
-            ):
-                raise ValueError(f"{name} must be a finite number")
-            return converted
-
-        if operation in {"slice", "clip"}:
-            for name in ("origin", "normal"):
-                vector = self.params.get(name)
-                if (
-                    not isinstance(vector, list)
-                    or len(vector) != 3
-                ):
-                    raise ValueError(f"{name} must contain three finite numbers")
-                try:
-                    converted = [float(value) for value in vector]
-                except (TypeError, ValueError, OverflowError):
-                    raise ValueError(f"{name} must contain three finite numbers") from None
-                if any(
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not math.isfinite(number)
-                    for value, number in zip(vector, converted)
-                ):
-                    raise ValueError(f"{name} must contain three finite numbers")
-            if not any(float(value) != 0 for value in self.params["normal"]):
-                raise ValueError("normal must be non-zero")
-        else:
-            if not str(self.params.get("array", "")).strip():
-                raise ValueError("array is required")
-            association = str(self.params.get("association", "POINTS")).upper()
-            if association not in {"POINTS", "CELLS"}:
-                raise ValueError("association must be POINTS or CELLS")
-            if operation == "contour":
-                finite_number("value")
-            else:
-                minimum = finite_number("minimum")
-                maximum = finite_number("maximum")
-                if minimum > maximum:
-                    raise ValueError("minimum must be less than or equal to maximum")
-        self.params = {**self.params, "filter": operation}
-        if operation in {"contour", "threshold"}:
-            self.params["association"] = association
+        if self.kind == "filter":
+            self.params = validate_filter_params(self.params)
+        elif self.kind in {"render", "movie"}:
+            self.params = validate_render_params(self.params)
+        elif self.kind == "stats":
+            self.params = validate_stats_params(self.params)
         return self
 
 
@@ -292,7 +325,23 @@ class AssistProposalCreate(BaseModel):
 
 
 class AssistProposalOut(BaseModel):
+    id: Optional[str] = None
     action: str
     params: dict[str, Any]
     reason: str
     requires_confirmation: bool = True
+    status: str = "proposed"
+
+
+class AssistProposalRecordOut(ORMModel):
+    id: str
+    project_id: str
+    dataset_id: str
+    actor_id: Optional[str] = None
+    prompt: str
+    action: str
+    params: dict[str, Any]
+    reason: str
+    status: str
+    applied_job_id: Optional[str] = None
+    created_at: datetime

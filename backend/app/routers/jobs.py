@@ -1,20 +1,32 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..auth import Principal, get_principal, require_project_role
-from ..db import get_db
+from ..db import SessionLocal, get_db
 from ..jobs import manager
 from ..models import Dataset, Job, Project
 from ..project_locks import locked_project
 from ..schemas import JobCreate, JobOut
-from ..services import run_dataset_operation
+from ..services import run_dataset_operation, run_movie_export, run_stats_operation
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _job_body_for(kind: str, dataset_id: str, params: dict):
+    if kind == "stats":
+        return run_stats_operation(dataset_id, params)
+    if kind == "movie":
+        return run_movie_export(dataset_id, params)
+    return run_dataset_operation(dataset_id, kind, params)
 
 
 @router.post("", response_model=JobOut, status_code=202)
@@ -61,8 +73,55 @@ def create_job(
     request.state.audit_project_id = payload.project_id
     request.state.audit_resource_type = "job"
     request.state.audit_resource_id = job.id
-    manager.submit(job.id, run_dataset_operation(dataset.id, payload.kind, payload.params))
+    manager.submit(job.id, _job_body_for(payload.kind, dataset.id, payload.params))
     return job
+
+
+@router.get("/stream")
+async def stream_jobs(
+    project_id: str = Query(min_length=1),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Server-sent events with job snapshots for a project.
+
+    Emits every job whose ``updated_at`` advanced since the last poll tick, plus
+    heartbeat comments. Connections close after 5 minutes; clients reconnect.
+    """
+    if db.get(Project, project_id) is None:
+        raise HTTPException(404, "project not found")
+    require_project_role(db, project_id, principal)
+
+    def snapshot(after) -> list[tuple[dict, object]]:
+        with SessionLocal() as session:
+            stmt = (
+                select(Job)
+                .where(Job.project_id == project_id)
+                .order_by(Job.updated_at.asc())
+            )
+            if after is not None:
+                stmt = stmt.where(Job.updated_at > after)
+            return [
+                (JobOut.model_validate(job).model_dump(mode="json"), job.updated_at)
+                for job in session.scalars(stmt)
+            ]
+
+    async def event_stream():
+        cursor = None
+        for _ in range(300):
+            jobs = await run_in_threadpool(snapshot, cursor)
+            for payload, updated_at in jobs:
+                cursor = updated_at if cursor is None else max(cursor, updated_at)
+                yield f"data: {json.dumps(payload)}\n\n"
+            if not jobs:
+                yield ": heartbeat\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("", response_model=list[JobOut])

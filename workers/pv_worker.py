@@ -109,6 +109,59 @@ def transform(kind: str, source: str, output: str, params_file: str) -> None:
     simple.SaveData(output, proxy=surface)
 
 
+def _prepared_view(simple, reader, params: dict):
+    """Create a render view showing ``reader`` with optional scalar coloring."""
+    view = simple.GetActiveViewOrCreate("RenderView")
+    view.ViewSize = [int(params.get("width", 1280)), int(params.get("height", 960))]
+    display = simple.Show(reader, view)
+    array = params.get("array")
+    if array:
+        association = str(params.get("association", "POINTS")).upper()
+        simple.ColorBy(display, (association, str(array)))
+        display.RescaleTransferFunctionToDataRange(True, False)
+    simple.ResetCamera(view)
+    return view
+
+
+def render(source: str, output: str, params_file: str) -> None:
+    """Render a single server-side screenshot of the dataset."""
+    simple = _paraview()
+    params = json.loads(Path(params_file).read_text(encoding="utf-8"))
+    reader = simple.OpenDataFile(source)
+    if reader is None:
+        raise RuntimeError(f"ParaView has no reader for {source}")
+    simple.UpdatePipeline(proxy=reader)
+    view = _prepared_view(simple, reader, params)
+    timesteps = [float(value) for value in (getattr(reader, "TimestepValues", None) or [])]
+    if timesteps:
+        index = int(params.get("timestep_index", 0))
+        if not (0 <= index < len(timesteps)):
+            raise RuntimeError(f"timestep_index {index} out of range 0..{len(timesteps) - 1}")
+        view.ViewTime = timesteps[index]
+    simple.Render(view)
+    simple.SaveScreenshot(output, view)
+
+
+def movie(source: str, output_dir: str, params_file: str) -> None:
+    """Render one PNG frame per timestep into ``output_dir``."""
+    simple = _paraview()
+    params = json.loads(Path(params_file).read_text(encoding="utf-8"))
+    reader = simple.OpenDataFile(source)
+    if reader is None:
+        raise RuntimeError(f"ParaView has no reader for {source}")
+    simple.UpdatePipeline(proxy=reader)
+    view = _prepared_view(simple, reader, params)
+    timesteps = [float(value) for value in (getattr(reader, "TimestepValues", None) or [])]
+    if not timesteps:
+        timesteps = [0.0]
+    frames_root = Path(output_dir)
+    frames_root.mkdir(parents=True, exist_ok=True)
+    for index, time_value in enumerate(timesteps):
+        view.ViewTime = time_value
+        simple.Render(view)
+        simple.SaveScreenshot(str(frames_root / f"frame-{index:04d}.png"), view)
+
+
 def main(argv: list[str]) -> None:
     if len(argv) == 3 and argv[1] == "metadata":
         metadata(argv[2])
@@ -116,7 +169,16 @@ def main(argv: list[str]) -> None:
     if len(argv) == 5 and argv[1] in {"filter", "convert"}:
         transform(argv[1], argv[2], argv[3], argv[4])
         return
-    raise SystemExit("usage: pv_worker.py metadata SOURCE | (filter|convert) SOURCE OUTPUT PARAMS")
+    if len(argv) == 5 and argv[1] == "render":
+        render(argv[2], argv[3], argv[4])
+        return
+    if len(argv) == 5 and argv[1] == "movie":
+        movie(argv[2], argv[3], argv[4])
+        return
+    raise SystemExit(
+        "usage: pv_worker.py metadata SOURCE | (filter|convert|render) SOURCE OUTPUT PARAMS"
+        " | movie SOURCE OUTPUT_DIR PARAMS"
+    )
 
 
 if __name__ == "__main__":

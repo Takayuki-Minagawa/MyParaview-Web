@@ -6,10 +6,19 @@ from sqlalchemy.orm import Session
 
 from ..auth import Principal, get_principal, require_project_role
 from ..db import get_db
-from ..models import Dataset, Pipeline, PipelineNode, Project
+from ..jobs import manager
+from ..models import Dataset, Job, Pipeline, PipelineNode, Project
 from ..pipeline_lifecycle import detach_pipeline_inputs
 from ..project_locks import locked_project
-from ..schemas import PipelineCreate, PipelineOut, PipelineUpdate, ViewState
+from ..schemas import (
+    JobOut,
+    PipelineCreate,
+    PipelineOut,
+    PipelineUpdate,
+    ViewState,
+    validate_filter_params,
+)
+from ..services import load_pipeline_chain, run_pipeline_execution
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
@@ -136,6 +145,46 @@ def update_pipeline(
         db.add(pipeline)
         db.flush()
     return pipeline
+
+
+@router.post("/{pipeline_id}/run", response_model=JobOut, status_code=202)
+def run_pipeline(
+    pipeline_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Execute the pipeline's filter chain server-side into a VTP artifact."""
+    pipeline = db.get(Pipeline, pipeline_id)
+    if pipeline is None:
+        raise HTTPException(404, "pipeline not found")
+    project_id = pipeline.project_id
+    with locked_project(db, project_id, principal, "editor"):
+        try:
+            dataset_id, chain = load_pipeline_chain(db, pipeline_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        dataset = db.get(Dataset, dataset_id)
+        if dataset is None or dataset.project_id != project_id:
+            raise HTTPException(422, "pipeline reader dataset is unavailable")
+        try:
+            filters = [validate_filter_params(dict(node.params)) for node in chain]
+        except ValueError as exc:
+            raise HTTPException(422, f"pipeline node params invalid: {exc}") from exc
+        job = Job(
+            project_id=project_id,
+            kind="pipeline",
+            status="queued",
+            target_id=dataset_id,
+            params={"pipeline_id": pipeline_id, "filters": filters},
+        )
+        db.add(job)
+        db.flush()
+    request.state.audit_project_id = project_id
+    request.state.audit_resource_type = "job"
+    request.state.audit_resource_id = job.id
+    manager.submit(job.id, run_pipeline_execution(pipeline_id, dataset_id, filters))
+    return job
 
 
 @router.delete("/{pipeline_id}", status_code=204)

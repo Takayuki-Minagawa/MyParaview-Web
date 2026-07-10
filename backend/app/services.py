@@ -13,15 +13,18 @@ from typing import Optional
 
 from sqlalchemy import select
 
+import json
+
 from .bundles import bundle_reference_path, materialized_bundle_path
 from .config import settings
 from .db import SessionLocal
 from .jobs import JobCancelled, JobContext
 from .metadata import extract_metadata
-from .models import Artifact, Dataset, DatasetFile, Job
+from .models import Artifact, Dataset, DatasetFile, Job, Pipeline
 from .project_locks import locked_project
+from .stats import compute_dataset_statistics
 from .storage import store
-from .worker import extract_external_metadata, run_transform
+from .worker import extract_external_metadata, run_movie_frames, run_transform
 
 
 def _set_dataset_status(dataset_id: str, status: str, *, error: Optional[str]) -> None:
@@ -209,6 +212,9 @@ def _load_dataset_source(dataset_id: str) -> _DatasetSource:
         )
 
 
+_PLAN_SUFFIX = {"filter": "filtered", "convert": "converted", "render": "render"}
+
+
 def _plan_output(kind: str, params: dict, source: _DatasetSource) -> _OutputPlan:
     output_format = str(params.get("output_format", "source")).lower()
     if kind == "export" and output_format != "source":
@@ -217,16 +223,20 @@ def _plan_output(kind: str, params: dict, source: _DatasetSource) -> _OutputPlan
         raise ValueError("convert jobs require output_format='vtp'")
 
     is_bundle_export = kind == "export" and bool(source.bundle_files)
-    needs_worker = kind == "filter" or (kind == "convert" and source.ext != ".vtp")
-    output_ext = (
-        ".zip"
-        if is_bundle_export
-        else (".vtp" if kind in {"filter", "convert"} else source.ext)
-    )
+    needs_worker = kind in {"filter", "render"} or (kind == "convert" and source.ext != ".vtp")
+    if is_bundle_export:
+        output_ext = ".zip"
+    elif kind in {"filter", "convert"}:
+        output_ext = ".vtp"
+    elif kind == "render":
+        output_ext = ".png"
+    else:
+        output_ext = source.ext
     stem = os.path.splitext(os.path.basename(source.filename))[0]
-    suffix = "filtered" if kind == "filter" else ("converted" if kind == "convert" else "export")
+    suffix = _PLAN_SUFFIX.get(kind, "export")
     artifact_kind = (
         "filtered_vtp" if kind == "filter" else
+        "render_png" if kind == "render" else
         ("converted_vtp" if output_ext == ".vtp" and kind == "convert" else kind)
     )
     return _OutputPlan(
@@ -338,6 +348,214 @@ def rollback_job_artifact(artifact_id: Optional[str], object_key: str) -> None:
                 db.delete(artifact)
                 db.commit()
     store.delete(object_key)
+
+
+def run_stats_operation(dataset_id: str, params: dict):
+    """Compute per-array statistics and publish them as a JSON artifact."""
+
+    def body(ctx: JobContext) -> dict:
+        ctx.update(progress=0.05, log_line=f"stats start dataset={dataset_id}")
+        source = _load_dataset_source(dataset_id)
+        ctx.check_cancelled()
+        bins = int(params.get("bins", 32))
+        stem = os.path.splitext(os.path.basename(source.filename))[0]
+        filename = f"{stem}-stats.json"
+        object_key = store.new_key(".json")
+        artifact_id: Optional[str] = None
+        try:
+            ctx.update(progress=0.3, log_line="computing array statistics")
+            with store.local_path(source.object_key) as local_object:
+                arrays = compute_dataset_statistics(str(local_object), source.ext, bins)
+            ctx.check_cancelled()
+            payload = {"dataset_id": dataset_id, "bins": bins, "arrays": arrays}
+            size = store.save_bytes(object_key, json.dumps(payload, allow_nan=False).encode())
+            artifact_id = persist_job_artifact(
+                ctx,
+                project_id=source.project_id,
+                dataset_id=dataset_id,
+                kind="stats_json",
+                filename=filename,
+                size=size,
+                object_key=object_key,
+                content_type="application/json",
+            )
+            ctx.check_cancelled()
+            ctx.update(progress=1.0, log_line=f"statistics artifact created id={artifact_id}")
+            return {
+                "project_id": source.project_id,
+                "dataset_id": dataset_id,
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "size_bytes": size,
+            }
+        except Exception:
+            rollback_job_artifact(artifact_id, object_key)
+            raise
+
+    return body
+
+
+def run_movie_export(dataset_id: str, params: dict):
+    """Render per-timestep frames through the ParaView worker into a ZIP artifact."""
+
+    def body(ctx: JobContext) -> dict:
+        ctx.update(progress=0.05, log_line=f"movie start dataset={dataset_id}")
+        source = _load_dataset_source(dataset_id)
+        ctx.check_cancelled()
+        stem = os.path.splitext(os.path.basename(source.filename))[0]
+        filename = f"{stem}-movie.zip"
+        object_key = store.new_key(".zip")
+        artifact_id: Optional[str] = None
+        source_path = store.acquire_path(source.object_key)
+        try:
+            with tempfile.TemporaryDirectory(prefix="pvweb-movie-") as movie_dir:
+                root = Path(movie_dir).resolve()
+                worker_source = (
+                    materialize_bundle(source.bundle_files, root / "bundle")
+                    if source.bundle_files
+                    else source_path
+                )
+                ctx.update(progress=0.2, log_line="rendering timestep frames")
+                frames = run_movie_frames(Path(worker_source), root / "frames", params, ctx)
+                ctx.check_cancelled()
+                ctx.update(progress=0.8, log_line=f"packaging {len(frames)} frames")
+                archive_path = root / filename
+                with zipfile.ZipFile(
+                    archive_path, "w", compression=zipfile.ZIP_DEFLATED
+                ) as archive:
+                    for frame in frames:
+                        archive.write(frame, arcname=frame.name)
+                size = store.copy_in(object_key, archive_path)
+            ctx.check_cancelled()
+            artifact_id = persist_job_artifact(
+                ctx,
+                project_id=source.project_id,
+                dataset_id=dataset_id,
+                kind="movie_frames",
+                filename=filename,
+                size=size,
+                object_key=object_key,
+                content_type="application/zip",
+            )
+            ctx.check_cancelled()
+            ctx.update(progress=1.0, log_line=f"movie artifact created id={artifact_id}")
+            return {
+                "project_id": source.project_id,
+                "dataset_id": dataset_id,
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "size_bytes": size,
+                "frame_count": len(frames),
+            }
+        except Exception:
+            rollback_job_artifact(artifact_id, object_key)
+            raise
+        finally:
+            store.release_path(source.object_key)
+
+    return body
+
+
+def load_pipeline_chain(db, pipeline_id: str) -> tuple[str, list]:
+    """Resolve a pipeline into (reader dataset id, ordered filter nodes).
+
+    Execution supports a linear reader -> filter* chain; representation nodes
+    are display-only and skipped. Raises ValueError for shapes that cannot run.
+    """
+    pipeline = db.get(Pipeline, pipeline_id)
+    if pipeline is None:
+        raise ValueError("pipeline not found")
+    nodes = list(pipeline.nodes)
+    readers = [node for node in nodes if node.node_type == "reader"]
+    if len(readers) != 1:
+        raise ValueError("pipeline execution requires exactly one reader node")
+    reader = readers[0]
+    if not reader.dataset_id:
+        raise ValueError("pipeline reader has no dataset")
+    consumers: dict[str, list] = {}
+    for node in nodes:
+        if node.input_id:
+            consumers.setdefault(node.input_id, []).append(node)
+    chain = []
+    current = reader
+    visited = {reader.id}
+    while True:
+        next_filters = [
+            node for node in consumers.get(current.id, []) if node.node_type == "filter"
+        ]
+        if not next_filters:
+            break
+        if len(next_filters) > 1:
+            raise ValueError("pipeline execution supports a single linear filter chain")
+        current = next_filters[0]
+        if current.id in visited:
+            raise ValueError("pipeline filter chain contains a cycle")
+        visited.add(current.id)
+        chain.append(current)
+    if not chain:
+        raise ValueError("pipeline has no filter nodes to execute")
+    return reader.dataset_id, chain
+
+
+def run_pipeline_execution(pipeline_id: str, dataset_id: str, filters: list[dict]):
+    """Execute a stored pipeline's filter chain and publish the final VTP."""
+
+    def body(ctx: JobContext) -> dict:
+        ctx.update(progress=0.05, log_line=f"pipeline start pipeline={pipeline_id}")
+        source = _load_dataset_source(dataset_id)
+        ctx.check_cancelled()
+        stem = os.path.splitext(os.path.basename(source.filename))[0]
+        filename = f"{stem}-pipeline.vtp"
+        object_key = store.new_key(".vtp")
+        artifact_id: Optional[str] = None
+        source_path = store.acquire_path(source.object_key)
+        try:
+            with tempfile.TemporaryDirectory(prefix="pvweb-pipeline-") as work_dir:
+                root = Path(work_dir).resolve()
+                current = (
+                    materialize_bundle(source.bundle_files, root / "bundle")
+                    if source.bundle_files
+                    else source_path
+                )
+                for index, filter_params in enumerate(filters):
+                    ctx.check_cancelled()
+                    ctx.update(
+                        progress=0.1 + 0.7 * index / len(filters),
+                        log_line=f"applying filter {index + 1}/{len(filters)}: "
+                        f"{filter_params.get('filter')}",
+                    )
+                    stage_output = root / f"stage-{index:02d}.vtp"
+                    run_transform(Path(current), stage_output, "filter", filter_params, ctx)
+                    current = stage_output
+                size = store.copy_in(object_key, Path(current))
+            ctx.check_cancelled()
+            artifact_id = persist_job_artifact(
+                ctx,
+                project_id=source.project_id,
+                dataset_id=dataset_id,
+                kind="pipeline_vtp",
+                filename=filename,
+                size=size,
+                object_key=object_key,
+                content_type="application/octet-stream",
+            )
+            ctx.check_cancelled()
+            ctx.update(progress=1.0, log_line=f"pipeline artifact created id={artifact_id}")
+            return {
+                "project_id": source.project_id,
+                "dataset_id": dataset_id,
+                "pipeline_id": pipeline_id,
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "size_bytes": size,
+            }
+        except Exception:
+            rollback_job_artifact(artifact_id, object_key)
+            raise
+        finally:
+            store.release_path(source.object_key)
+
+    return body
 
 
 def run_dataset_operation(dataset_id: str, kind: str, params: dict):

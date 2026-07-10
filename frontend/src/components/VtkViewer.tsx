@@ -12,6 +12,7 @@ import { colorMapCssGradient, colorMapStops } from "../lib/colormap";
 import { csvToPointData } from "../lib/csvToPoints";
 import { authorizedFetch } from "../api";
 import { isRuntimeImageScalar } from "../lib/imageData";
+import type { Messages } from "../i18n";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Volume";
@@ -40,6 +41,7 @@ const SLICE_MODE: Record<SliceAxis, "I" | "J" | "K"> = { X: "I", Y: "J", Z: "K" 
 type CameraPreset = "front" | "side" | "top" | "isometric";
 
 interface Props {
+  messages: Messages;
   datasetId: string | null;
   url: string | null;
   datasetType?: string | null;
@@ -61,6 +63,7 @@ interface Props {
   onScreenshotCaptured?: (blob: Blob, datasetId: string | null) => void;
   screenshotNonce: number;
   resetNonce: number;
+  viewerBackground: [number, number, number];
 }
 
 function createLut(range: [number, number], colorMap: ColorMapName) {
@@ -270,10 +273,11 @@ async function createScreenshotBlob(dataUrl: string, settings: {
 
 export function VtkViewer(props: Props) {
   const {
+    messages,
     datasetId, url, datasetType, emptyMessage, representation, colorBy, colorRange, opacity, colorMap,
     legendVisible, tableCoordinates, imageMode, sliceAxis, sliceIndex,
     onColorRangeResolved, onLoadComplete, cameraState, onCameraChange, onScreenshotCaptured,
-    screenshotNonce, resetNonce,
+    screenshotNonce, resetNonce, viewerBackground,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -308,8 +312,8 @@ export function VtkViewer(props: Props) {
     if (!containerRef.current || !renderable || !url || !datasetType) return;
     let disposed = false;
     const abortController = new AbortController();
-    setStatus("読み込み中…");
-    const grw = vtkGenericRenderWindow.newInstance({ background: [0.09, 0.11, 0.15] });
+    setStatus(messages.viewer.loading);
+    const grw = vtkGenericRenderWindow.newInstance({ background: viewerBackground });
     grw.setContainer(containerRef.current);
     grw.resize();
     const renderer = grw.getRenderer();
@@ -378,12 +382,12 @@ export function VtkViewer(props: Props) {
         );
         if (!applied) {
           displayDiagnostic = pointArrayCount === 0 && cellArrayCount > 0
-            ? "ImageDataにpoint dataがありません。cell dataはサーバ側でpoint dataへ変換してください。"
+            ? messages.viewer.imageNoPointData
             : pointArrayCount === 0
-              ? "ImageDataに表示可能なpoint data配列がありません。"
+              ? messages.viewer.imageNoDisplayableArrays
               : pointScalarCount === 0
-                ? "ImageDataの表示には1成分point scalar配列が必要です。"
-                : "表示するpoint scalar配列または有限な値域を選択してください。";
+                ? messages.viewer.imageNeedsScalar
+                : messages.viewer.imageSelectScalar;
         }
         if (scene.kind === "slice") renderer.addActor(scene.prop);
         else renderer.addVolume(scene.prop);
@@ -419,7 +423,8 @@ export function VtkViewer(props: Props) {
         );
         if (disposed) return;
         if (invalidScalarCells > 0) {
-          scene.dataDiagnostic = `CSVの非数値セル${invalidScalarCells}件をNaNとして読み込みました。`;
+          scene.dataDiagnostic =
+            `${messages.viewer.csvInvalidCellsPrefix}${invalidScalarCells}${messages.viewer.csvInvalidCellsSuffix}`;
         }
         const useGlyphs = output.getNumberOfPoints() <= 2_000;
         const bounds = output.getBounds();
@@ -479,7 +484,7 @@ export function VtkViewer(props: Props) {
     };
     void load().catch((error: unknown) => {
       if (!disposed && !(error instanceof DOMException && error.name === "AbortError")) {
-        setStatus(`描画エラー: ${String(error)}`);
+        setStatus(`${messages.viewer.renderError}: ${String(error)}`);
       }
     });
 
@@ -510,7 +515,7 @@ export function VtkViewer(props: Props) {
       if (ctx.current === scene) ctx.current = null;
     };
   }, [
-    url, datasetType, renderable, imageMode,
+    url, datasetType, renderable, imageMode, messages, viewerBackground,
     tableCoordinates?.x, tableCoordinates?.y, tableCoordinates?.z,
   ]);
 
@@ -566,9 +571,9 @@ export function VtkViewer(props: Props) {
           window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
           screenshotCallbackRef.current?.(blob, capturedDatasetId);
         })
-        .catch((error: unknown) => setStatus(`スクリーンショットエラー: ${String(error)}`)),
+        .catch((error: unknown) => setStatus(`${messages.viewer.screenshotError}: ${String(error)}`)),
     );
-  }, [screenshotNonce]);
+  }, [screenshotNonce, messages]);
 
   useEffect(() => {
     if (!resetNonce || !ctx.current) return;
@@ -581,25 +586,27 @@ export function VtkViewer(props: Props) {
     <div className="viewer">
       <div ref={containerRef} className="viewer-canvas" />
       {renderable && (
-        <div className="viewer-toolbar" aria-label="標準ビュー方向">
-          <button onClick={() => applyCameraPreset(ctx.current, "front")}>正面</button>
-          <button onClick={() => applyCameraPreset(ctx.current, "side")}>側面</button>
-          <button onClick={() => applyCameraPreset(ctx.current, "top")}>上面</button>
-          <button onClick={() => applyCameraPreset(ctx.current, "isometric")}>等角</button>
+        <div className="viewer-toolbar" aria-label={messages.viewer.standardViews}>
+          <button onClick={() => applyCameraPreset(ctx.current, "front")}>{messages.viewer.front}</button>
+          <button onClick={() => applyCameraPreset(ctx.current, "side")}>{messages.viewer.side}</button>
+          <button onClick={() => applyCameraPreset(ctx.current, "top")}>{messages.viewer.top}</button>
+          <button onClick={() => applyCameraPreset(ctx.current, "isometric")}>{messages.viewer.isometric}</button>
         </div>
       )}
       {!renderable && (
         <div className="viewer-overlay">
           {!url
-            ? emptyMessage ?? "データセットを選択してください。"
+            ? emptyMessage ?? messages.viewer.chooseDataset
             : datasetType === "Table" && !tableReady
-              ? "重複しないX/Y/Z列を選択してください。"
-              : `「${datasetType}」はブラウザ直接描画の対象外です。`}
+              ? messages.viewer.chooseDistinctColumns
+              : datasetType
+                ? `“${datasetType}” ${messages.viewer.unsupportedPrefix}`
+                : messages.viewer.chooseDataset}
         </div>
       )}
       {renderable && status && <div className="viewer-overlay">{status}</div>}
       {renderable && colorBy && colorRange && legendVisible && (
-        <div className="color-legend" aria-label="カラーレジェンド">
+        <div className="color-legend" aria-label={messages.viewer.colorLegend}>
           <strong>{colorBy.association} · {colorBy.name}</strong>
           <div className="color-legend-gradient" style={{ background: colorMapCssGradient(colorMap) }} />
           <div className="color-legend-values">

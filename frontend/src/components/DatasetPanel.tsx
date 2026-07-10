@@ -4,8 +4,10 @@ import { humanFileSize } from "../lib/format";
 import { isCancellable, lastLogLine } from "../lib/job";
 import { PipelinePanel } from "./PipelinePanel";
 import type { Pipeline } from "../types";
+import type { Messages } from "../i18n";
 
 interface Props {
+  messages: Messages;
   projects: Project[];
   currentProjectId: string | null;
   onSelectProject: (id: string) => void;
@@ -28,29 +30,23 @@ interface Props {
   onDeletePipeline: (pipeline: Pipeline) => void;
 }
 
-const STATUS_LABEL: Record<Dataset["status"], string> = {
-  registered: "未処理",
-  ingesting: "解析中",
-  ready: "準備完了",
-  error: "エラー",
-};
-
 export function DatasetPanel(props: Props) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const bundleRef = useRef<HTMLInputElement | null>(null);
   const [newName, setNewName] = useState("");
   const [memberId, setMemberId] = useState("");
   const [memberRole, setMemberRole] = useState<ProjectRole>("viewer");
+  const t = props.messages;
 
   return (
     <aside className="panel panel-left">
-      <h2>プロジェクト</h2>
+      <h2>{t.datasetPanel.projects}</h2>
       <select
         value={props.currentProjectId ?? ""}
         onChange={(e) => props.onSelectProject(e.target.value)}
       >
         <option value="" disabled>
-          選択…
+          {t.datasetPanel.selectProject}
         </option>
         {props.projects.map((p) => (
           <option key={p.id} value={p.id}>
@@ -60,7 +56,7 @@ export function DatasetPanel(props: Props) {
       </select>
       <div className="row">
         <input
-          placeholder="新規プロジェクト名"
+          placeholder={t.datasetPanel.newProjectName}
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
         />
@@ -72,13 +68,13 @@ export function DatasetPanel(props: Props) {
             }
           }}
         >
-          作成
+          {t.common.create}
         </button>
       </div>
 
       {props.membership?.role === "admin" && (
-        <section className="member-admin" aria-label="プロジェクトメンバー管理">
-          <h3>メンバー管理</h3>
+        <section className="member-admin" aria-label={t.datasetPanel.memberAdmin}>
+          <h3>{t.datasetPanel.members}</h3>
           <ul className="member-list">
             {props.members.map((member) => (
               <li key={member.id}>
@@ -89,13 +85,13 @@ export function DatasetPanel(props: Props) {
           </ul>
           <div className="row">
             <input
-              aria-label="追加するOIDC subject"
-              placeholder="OIDC subject"
+              aria-label={t.datasetPanel.subjectLabel}
+              placeholder={t.datasetPanel.subjectPlaceholder}
               value={memberId}
               onChange={(event) => setMemberId(event.target.value)}
             />
             <select
-              aria-label="付与するロール"
+              aria-label={t.datasetPanel.roleLabel}
               value={memberRole}
               onChange={(event) => setMemberRole(event.target.value as ProjectRole)}
             >
@@ -112,13 +108,13 @@ export function DatasetPanel(props: Props) {
                 setMemberId("");
               }}
             >
-              付与
+              {t.datasetPanel.grant}
             </button>
           </div>
         </section>
       )}
 
-      <h2>データセット</h2>
+      <h2>{t.datasetPanel.datasets}</h2>
       <div className="row">
         <input
           ref={fileRef}
@@ -139,7 +135,7 @@ export function DatasetPanel(props: Props) {
             element?.setAttribute("webkitdirectory", "");
           }}
           type="file"
-          aria-label="複数ファイルデータセットのフォルダ一式"
+          aria-label={t.datasetPanel.bundleLabel}
           accept=".pvd,.vtp,.vti,.case,.xdmf,.xmf,.h5,.hdf5,.geo,.scl,.vec,.dat,.bin"
           multiple
           disabled={!props.currentProjectId}
@@ -149,7 +145,7 @@ export function DatasetPanel(props: Props) {
             if (bundleRef.current) bundleRef.current.value = "";
           }}
         />
-        <span className="muted">PVD / EnSight / XDMF は参照ファイルを含むフォルダ一式を選択</span>
+        <span className="muted">{t.datasetPanel.bundleHelp}</span>
       </div>
       {props.busy && <div className="busy">{props.busy}</div>}
 
@@ -161,18 +157,18 @@ export function DatasetPanel(props: Props) {
             onClick={() => props.onSelectDataset(d.id)}
           >
             <span className="ds-name">{d.filename}</span>
-            <span className={`badge badge-${d.status}`}>{STATUS_LABEL[d.status]}</span>
+            <span className={`badge badge-${d.status}`}>{t.datasetStatus[d.status]}</span>
             <span className="ds-meta">
               {d.dataset_type ?? d.ext} · {humanFileSize(d.size_bytes)}
             </span>
           </li>
         ))}
         {props.datasets.length === 0 && props.currentProjectId && (
-          <li className="empty">データセットがありません。アップロードしてください。</li>
+          <li className="empty">{t.datasetPanel.emptyDatasets}</li>
         )}
       </ul>
 
-      <h2>ジョブセンター</h2>
+      <h2>{t.datasetPanel.jobs}</h2>
       <ul className="job-list" aria-live="polite">
         {props.jobs.map((job) => (
           <li key={job.id}>
@@ -180,25 +176,26 @@ export function DatasetPanel(props: Props) {
               <span>{job.kind}</span>
               <span className={`badge badge-${job.status}`}>{job.status}</span>
             </div>
-            <progress value={job.progress} max={1} aria-label={`${job.kind} の進捗`} />
+            <progress value={job.progress} max={1} aria-label={`${job.kind}${t.datasetPanel.progress}`} />
             <div className="job-log" title={lastLogLine(job.log)}>
-              {lastLogLine(job.log) || "ログ待機中"}
+              {lastLogLine(job.log) || t.datasetPanel.waitingLog}
             </div>
             {isCancellable(job) && (
               <button
                 className="danger-button"
                 disabled={props.cancelingJobIds.has(job.id)}
                 onClick={() => props.onCancelJob(job.id)}
-              >
-                {props.cancelingJobIds.has(job.id) ? "キャンセル中…" : "キャンセル"}
+            >
+                {props.cancelingJobIds.has(job.id) ? t.common.canceling : t.common.cancel}
               </button>
             )}
           </li>
         ))}
-        {props.jobs.length === 0 && <li className="empty">ジョブはありません。</li>}
+        {props.jobs.length === 0 && <li className="empty">{t.datasetPanel.emptyJobs}</li>}
       </ul>
 
       <PipelinePanel
+        messages={t}
         pipelines={props.pipelines}
         canSave={props.canSavePipeline}
         onSave={props.onSavePipeline}

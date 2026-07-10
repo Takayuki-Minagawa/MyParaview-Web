@@ -5,6 +5,14 @@ ParaView風の科学データWebビューアです。小～中規模データは
 
 追加機能候補17件の実装状態と境界は
 [docs/implementation-status.md](docs/implementation-status.md) に集約しています。
+GitHub Pagesでの初期公開と将来のDockerサーバー移行方針は
+[docs/server-deployment-memo.md](docs/server-deployment-memo.md) に記録しています。
+
+## 公開範囲
+
+このリポジトリは研究・開発中のWeb可視化アプリケーションです。GitHub Pagesなどの静的公開では、
+ブラウザ内で完結するファイル表示機能を初期対象とします。プロジェクト保存、認証、サーバフィルタ、
+trame session、PostgreSQL/S3連携はサーバーモードで提供する機能です。
 
 ## 主な機能
 
@@ -168,3 +176,13 @@ git diff --check
 - WebGPU/WASMはfeature detection段階で、rendererはvtk.js WebGLです。
 - trame/ParaView自体はこのrepositoryに同梱しません。外部capabilityとして接続します。
 - productionではworker/brokerをcontainer分離し、CPU/GPU/memory/time quotaを設定してください。
+
+## ライセンス
+
+現時点では、このリポジトリ固有のソースコードに対するオープンソースライセンスは未指定です。
+公開リポジトリとして閲覧できますが、再配布・改変・商用利用などの許諾は、明示的なLICENSEファイルが
+追加されるまで付与されません。
+
+React、vtk.js、FastAPI、ParaView などの第三者ソフトウェアと依存パッケージには、それぞれの
+ライセンスが適用されます。配布物を作成する場合は、各依存関係のライセンス表記とNOTICEの条件を
+確認してください。

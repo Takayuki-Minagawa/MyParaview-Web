@@ -26,8 +26,24 @@ import { clampSliceIndex, parseViewState } from "./lib/viewState";
 import { initializeOidc, login, logout } from "./oidc";
 import { detectBrowserCapabilities } from "./lib/capabilities";
 import { defaultImageScalar } from "./lib/imageData";
+import { MESSAGES } from "./i18n";
+import type { Language, ThemeMode } from "./i18n";
+
+const readStoredLanguage = (): Language => {
+  const value = window.localStorage.getItem("pvweb-language");
+  return value === "en" ? "en" : "ja";
+};
+
+const readStoredTheme = (): ThemeMode => {
+  const value = window.localStorage.getItem("pvweb-theme");
+  if (value === "light" || value === "dark") return value;
+  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+};
 
 export function App() {
+  const [language, setLanguage] = useState<Language>(readStoredLanguage);
+  const [theme, setTheme] = useState<ThemeMode>(readStoredTheme);
+  const [manualOpen, setManualOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -68,6 +84,11 @@ export function App() {
   const [membership, setMembership] = useState<ProjectMember | null>(null);
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const browserCapabilities = useMemo(() => detectBrowserCapabilities(), []);
+  const t = MESSAGES[language];
+  const viewerBackground = useMemo<[number, number, number]>(
+    () => theme === "dark" ? [0.09, 0.11, 0.15] : [0.96, 0.97, 0.99],
+    [theme],
+  );
   const deepLink = useMemo(() => {
     const query = new URLSearchParams(window.location.search);
     return {
@@ -94,6 +115,13 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    document.documentElement.lang = language;
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("pvweb-language", language);
+    window.localStorage.setItem("pvweb-theme", theme);
+  }, [language, theme]);
+
+  useEffect(() => {
     let disposed = false;
     void initializeOidc()
       .then((state) => {
@@ -102,7 +130,7 @@ export function App() {
       .catch((reason) => {
         if (!disposed) {
           setAuthState({ ready: true, configured: true, authenticated: false });
-          setError(`OIDC認証: ${String(reason)}`);
+          setError(`${t.auth.oidcErrorPrefix}: ${String(reason)}`);
         }
       });
     return () => { disposed = true; };
@@ -118,14 +146,14 @@ export function App() {
       const next = await api.listDatasets(projectId);
       if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
         setDatasets(next);
-        setError((value) => value?.startsWith("データセット更新:") ? null : value);
+        setError((value) => value?.startsWith(`${t.errors.datasetUpdate}:`) ? null : value);
       }
     } catch (e) {
       if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
-        setError(`データセット更新: ${String(e)}`);
+        setError(`${t.errors.datasetUpdate}: ${String(e)}`);
       }
     }
-  }, []);
+  }, [t.errors.datasetUpdate]);
 
   const refreshPipelines = useCallback(async (projectId: string) => {
     const epoch = projectEpochRef.current;
@@ -136,10 +164,10 @@ export function App() {
       }
     } catch (e) {
       if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
-        setError(`Pipeline更新: ${String(e)}`);
+        setError(`${t.errors.pipelineUpdate}: ${String(e)}`);
       }
     }
-  }, []);
+  }, [t.errors.pipelineUpdate]);
 
   const refreshMembership = useCallback(async (projectId: string) => {
     const epoch = projectEpochRef.current;
@@ -154,10 +182,10 @@ export function App() {
       if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
         setMembership(null);
         setMembers([]);
-        setError(`メンバー更新: ${String(e)}`);
+        setError(`${t.errors.memberUpdate}: ${String(e)}`);
       }
     }
-  }, []);
+  }, [t.errors.memberUpdate]);
 
   const refreshArtifacts = useCallback(
     async (datasetId: string, projectId: string, epoch: number, selectionRequest: number) => {
@@ -174,10 +202,10 @@ export function App() {
           currentProjectRef.current === projectId &&
           projectEpochRef.current === epoch &&
           selectionRequestRef.current === selectionRequest
-        ) setError(`Artifact更新: ${String(e)}`);
+        ) setError(`${t.errors.artifactUpdate}: ${String(e)}`);
       }
     },
-    [],
+    [t.errors.artifactUpdate],
   );
 
   const switchProject = useCallback((projectId: string) => {
@@ -250,7 +278,7 @@ export function App() {
           projectEpochRef.current === projectEpoch
         ) {
           setJobs((previous) => mergeJobSnapshots(previous, next));
-          setError((value) => value?.startsWith("ジョブ更新:") ? null : value);
+          setError((value) => value?.startsWith(`${t.errors.jobUpdate}:`) ? null : value);
         }
       } catch (e) {
         if (
@@ -258,7 +286,7 @@ export function App() {
           currentProjectRef.current === currentProjectId &&
           projectEpochRef.current === projectEpoch
         ) {
-          setError(`ジョブ更新: ${String(e)}`);
+          setError(`${t.errors.jobUpdate}: ${String(e)}`);
         }
       } finally {
         if (
@@ -296,7 +324,7 @@ export function App() {
     const externalDescriptor = files.find((file) => /\.(case|xdmf|xmf)$/i.test(file.name));
     const primary = pvd ?? externalDescriptor ?? files[0];
     if (files.length > 1 && !pvd && !externalDescriptor) {
-      setError("複数ファイルには .pvd / .case / .xdmf のdescriptorが必要です。単一ファイルは個別に選択してください。");
+      setError(t.errors.multiFileDescriptor);
       return;
     }
     const pvdBundle = !!pvd && files.length > 1;
@@ -305,17 +333,21 @@ export function App() {
     const selectionRequest = selectionRequestRef.current;
     setError(null);
     try {
-      setBusy(`${primary.name}${isBundle ? ` ほか${files.length - 1}件` : ""} をアップロード中…`);
+      setBusy(
+        language === "ja"
+          ? `${primary.name}${isBundle ? ` ${t.errors.andMore}${files.length - 1}件` : ""} ${t.errors.uploadingSuffix}`
+          : `${primary.name}${isBundle ? ` ${t.errors.andMore} ${files.length - 1}` : ""} ${t.errors.uploadingSuffix}`,
+      );
       const ds = pvdBundle
         ? await api.uploadDatasetBundle(projectId, files)
         : isBundle && externalDescriptor
           ? await api.uploadExternalDatasetBundle(projectId, files)
           : await api.uploadDataset(projectId, primary);
-      if (isCurrentProject(projectId, epoch)) setBusy("メタデータを解析中…");
+      if (isCurrentProject(projectId, epoch)) setBusy(t.errors.metadataParsing);
       const job = await api.ingest(ds.id);
       const final = await pollJob(job.id, (j) => {
         if (isCurrentProject(projectId, epoch)) {
-          setBusy(`解析中… ${Math.round(j.progress * 100)}%`);
+          setBusy(`${t.errors.parsingProgress} ${Math.round(j.progress * 100)}%`);
           setJobs((previous) => mergeJobSnapshots(previous, [j, ...previous.filter((x) => x.id !== j.id)]));
         }
       });
@@ -346,7 +378,7 @@ export function App() {
       }
       if (final.status !== "succeeded" && isCurrentProject(projectId, epoch)) {
         const lastLog = (final.log ?? "").split("\n").filter(Boolean).pop() ?? "";
-        setError(`メタデータ抽出に失敗しました (${final.status}): ${lastLog}`);
+        setError(`${t.errors.metadataFailed} (${final.status}): ${lastLog}`);
       }
     } catch (e) {
       if (isCurrentProject(projectId, epoch)) setError(String(e));
@@ -437,7 +469,7 @@ export function App() {
       if (input?.node_type === "reader") break;
     }
     if (!input?.dataset_id || input.node_type !== "reader" || !state) {
-      setError("保存済みPipelineの表示状態を読み取れません。");
+      setError(t.errors.savedPipelineUnreadable);
       return;
     }
     const dataset = await selectDataset(input.dataset_id);
@@ -524,7 +556,7 @@ export function App() {
     : null;
   const viewerEmptyMessage = selectedDataset?.dataset_type === "Collection" &&
     selectedDataset.extra?.bundle_complete === false
-    ? "PVDのメタデータを登録しました。時系列表示には参照ファイルを含むフォルダ一式をアップロードしてください。"
+    ? t.appMessages.incompletePvd
     : undefined;
 
   useEffect(() => {
@@ -652,34 +684,53 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="logo">◵ PVWeb</span>
-        <span className="subtitle">ParaView類似 ハイブリッドWeb可視化</span>
-        <span className="capability-badge" title="WebGPUは検出のみ。描画は安定版vtk.js WebGLを使用します。">
-          {browserCapabilities.renderer} · WebGPU {browserCapabilities.webgpu ? "検出" : "未検出"}
-          {` · WASM ${browserCapabilities.wasm ? "利用可" : "未対応"}`}
-          {serverCapabilities?.paraview_worker ? " · ParaView worker" : ""}
+        <span className="logo">◵ {t.common.appName}</span>
+        <span className="subtitle">{t.common.subtitle}</span>
+        <span className="capability-badge" title={t.capabilities.title}>
+          {browserCapabilities.renderer} · {browserCapabilities.webgpu ? t.capabilities.webgpuDetected : t.capabilities.webgpuMissing}
+          {` · ${browserCapabilities.wasm ? t.capabilities.wasmAvailable : t.capabilities.wasmMissing}`}
+          {serverCapabilities?.paraview_worker ? ` · ${t.capabilities.worker}` : ""}
         </span>
         <div className="auth-controls">
           {!authState.ready ? (
-            <span className="muted">認証確認中…</span>
+            <span className="muted">{t.auth.checking}</span>
           ) : authState.configured && !authState.authenticated ? (
-            <button onClick={() => void login()}>OIDCでログイン</button>
+            <button onClick={() => void login()}>{t.auth.login}</button>
           ) : authState.configured ? (
-            <button onClick={() => void logout()}>ログアウト</button>
+            <button onClick={() => void logout()}>{t.auth.logout}</button>
           ) : null}
+        </div>
+        <div className="mode-controls" aria-label="Display settings">
+          <div className="segmented">
+            <button aria-pressed={theme === "light"} onClick={() => setTheme("light")}>
+              {t.common.light}
+            </button>
+            <button aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>
+              {t.common.dark}
+            </button>
+          </div>
+          <div className="segmented">
+            <button aria-pressed={language === "ja"} onClick={() => setLanguage("ja")}>
+              {t.common.japanese}
+            </button>
+            <button aria-pressed={language === "en"} onClick={() => setLanguage("en")}>
+              {t.common.english}
+            </button>
+          </div>
+          <button onClick={() => setManualOpen(true)}>{t.common.manual}</button>
         </div>
         <div className="panel-toggles">
           <button
             aria-pressed={leftCollapsed}
             onClick={() => setLeftCollapsed((value) => !value)}
           >
-            データパネル
+            {t.datasetPanel.datasets}
           </button>
           <button
             aria-pressed={rightCollapsed}
             onClick={() => setRightCollapsed((value) => !value)}
           >
-            プロパティ
+            {t.properties.title}
           </button>
         </div>
         {error && <span className="error-banner">{error}</span>}
@@ -690,7 +741,29 @@ export function App() {
           rightCollapsed ? " right-collapsed" : ""
         }`}
       >
+        {manualOpen && (
+          <div className="manual-backdrop" role="presentation" onClick={() => setManualOpen(false)}>
+            <section
+              className="manual-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="manual-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="manual-header">
+                <h2 id="manual-title">{t.manual.title}</h2>
+                <button onClick={() => setManualOpen(false)}>{t.common.close}</button>
+              </div>
+              <p>{t.manual.intro}</p>
+              <ol>
+                {t.manual.steps.map((step) => <li key={step}>{step}</li>)}
+              </ol>
+              <p className="muted">{t.manual.publicNote}</p>
+            </section>
+          </div>
+        )}
         <DatasetPanel
+          messages={t}
           projects={projects}
           currentProjectId={currentProjectId}
           onSelectProject={switchProject}
@@ -767,6 +840,7 @@ export function App() {
 
         <main className="center">
           <VtkViewer
+            messages={t}
             datasetId={selectedDataset?.id ?? null}
             url={viewerUrl}
             datasetType={viewerDatasetType}
@@ -811,10 +885,12 @@ export function App() {
             onLoadComplete={() => setViewerLoadedUrl(viewerUrl)}
             screenshotNonce={screenshotNonce}
             resetNonce={resetNonce}
+            viewerBackground={viewerBackground}
           />
         </main>
 
         <PropertiesPanel
+          messages={t}
           dataset={selectedDataset}
           representation={representation}
           onRepresentation={setRepresentation}

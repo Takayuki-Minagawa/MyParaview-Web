@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PVWeb">
+  <rect width="64" height="64" rx="14" fill="#0f1117"/>
+  <path d="M16 46V18h18c7 0 12 5 12 11s-5 11-12 11H25v6h-9Zm9-14h8c2.5 0 4.5-1.2 4.5-3.2s-2-3.2-4.5-3.2h-8V32Z" fill="#e6e9ef"/>
+  <path d="M41 18h8L38 46h-7l10-28Z" fill="#4f9dff"/>
+  <circle cx="48" cy="45" r="4" fill="#6ae08c"/>
+</svg>

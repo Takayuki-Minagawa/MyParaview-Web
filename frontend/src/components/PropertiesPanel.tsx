@@ -13,8 +13,10 @@ import type {
 import { api } from "../api";
 import { formatBounds, formatCount, humanFileSize } from "../lib/format";
 import { isImageScalarArray } from "../lib/imageData";
+import type { Messages } from "../i18n";
 
 interface Props {
+  messages: Messages;
   dataset: Dataset | null;
   representation: Representation;
   onRepresentation: (r: Representation) => void;
@@ -56,10 +58,12 @@ interface Props {
 const REPRESENTATIONS: Representation[] = ["surface", "wireframe", "points"];
 
 function RangeEditor({
+  messages,
   range,
   disabled,
   onChange,
 }: {
+  messages: Messages;
   range: [number, number] | null;
   disabled: boolean;
   onChange: (range: [number, number]) => void;
@@ -83,7 +87,7 @@ function RangeEditor({
     <div className="range-inputs">
       <input
         type="number"
-        aria-label="カラー範囲の最小値"
+        aria-label={messages.properties.rangeMinimum}
         aria-invalid={invalid}
         aria-describedby={invalid ? "color-range-error" : undefined}
         value={draft[0]}
@@ -95,7 +99,7 @@ function RangeEditor({
       <span>〜</span>
       <input
         type="number"
-        aria-label="カラー範囲の最大値"
+        aria-label={messages.properties.rangeMaximum}
         aria-invalid={invalid}
         aria-describedby={invalid ? "color-range-error" : undefined}
         value={draft[1]}
@@ -109,6 +113,7 @@ function RangeEditor({
 }
 
 export function PropertiesPanel({
+  messages,
   dataset,
   representation,
   onRepresentation,
@@ -193,8 +198,8 @@ export function PropertiesPanel({
   if (!dataset) {
     return (
       <aside className="panel panel-right">
-        <h2>プロパティ</h2>
-        <p className="muted">データセットを選択すると詳細が表示されます。</p>
+        <h2>{messages.properties.title}</h2>
+        <p className="muted">{messages.properties.selectDataset}</p>
       </aside>
     );
   }
@@ -263,23 +268,23 @@ export function PropertiesPanel({
 
   return (
     <aside className="panel panel-right">
-      <h2>プロパティ</h2>
+      <h2>{messages.properties.title}</h2>
 
       <table className="meta-table">
         <tbody>
-          <tr><th>形式</th><td>{dataset.dataset_type ?? "-"}</td></tr>
-          <tr><th>状態</th><td>{dataset.status}</td></tr>
-          <tr><th>点数</th><td>{formatCount(dataset.num_points)}</td></tr>
-          <tr><th>セル数</th><td>{formatCount(dataset.num_cells)}</td></tr>
-          <tr><th>ブロック</th><td>{formatCount(dataset.num_blocks)}</td></tr>
-          <tr><th>境界</th><td className="mono">{formatBounds(dataset.bounds)}</td></tr>
+          <tr><th>{messages.properties.format}</th><td>{dataset.dataset_type ?? "-"}</td></tr>
+          <tr><th>{messages.properties.status}</th><td>{dataset.status}</td></tr>
+          <tr><th>{messages.properties.points}</th><td>{formatCount(dataset.num_points)}</td></tr>
+          <tr><th>{messages.properties.cells}</th><td>{formatCount(dataset.num_cells)}</td></tr>
+          <tr><th>{messages.properties.blocks}</th><td>{formatCount(dataset.num_blocks)}</td></tr>
+          <tr><th>{messages.properties.bounds}</th><td className="mono">{formatBounds(dataset.bounds)}</td></tr>
           {dataset.timesteps && (
-            <tr><th>時刻</th><td>{dataset.timesteps.length} steps</td></tr>
+            <tr><th>{messages.properties.time}</th><td>{dataset.timesteps.length} steps</td></tr>
           )}
         </tbody>
       </table>
 
-      <h3>表示</h3>
+      <h3>{messages.properties.display}</h3>
       {!isImageData && (
         <div className="row">
           {REPRESENTATIONS.map((r) => (
@@ -298,10 +303,10 @@ export function PropertiesPanel({
 
       {dataset.dataset_type === "Collection" && dataset.extra?.bundle_complete !== false && (
         <div className="display-controls time-controls">
-          <strong>PVD 時系列</strong>
+          <strong>{messages.properties.pvdTime}</strong>
           <div className="row">
             <button disabled={timesteps.length < 2} onClick={onTogglePlayback}>
-              {playing ? "一時停止" : "再生"}
+              {playing ? messages.properties.pause : messages.properties.play}
             </button>
             <span className="mono">
               step {Math.min(timestepIndex, Math.max(0, timesteps.length - 1))} / {Math.max(0, timesteps.length - 1)}
@@ -310,7 +315,7 @@ export function PropertiesPanel({
           </div>
           <input
             type="range"
-            aria-label="PVDタイムステップ"
+            aria-label={messages.properties.pvdStepLabel}
             min="0"
             max={Math.max(0, timesteps.length - 1)}
             step="1"
@@ -322,13 +327,13 @@ export function PropertiesPanel({
       )}
       {dataset.dataset_type === "Collection" && dataset.extra?.bundle_complete === false && (
         <p className="muted">
-          参照ファイルは未登録です。表示するにはPVDと兄弟ファイルを含むフォルダ一式を選択してください。
+          {messages.properties.pvdMissing}
         </p>
       )}
 
       {dataset.dataset_type === "Table" && tableCoordinates && (
         <div className="display-controls table-coordinates">
-          <strong>Table-to-Points 座標列</strong>
+          <strong>{messages.properties.tableCoordinates}</strong>
           {(["x", "y", "z"] as const).map((axis) => (
             <label key={axis}>
               {axis.toUpperCase()}
@@ -349,7 +354,7 @@ export function PropertiesPanel({
 
       {isImageData && (
         <div className="display-controls image-controls">
-          <strong>ImageData 表示</strong>
+          <strong>{messages.properties.imageDisplay}</strong>
           <div className="row">
             {(["slice", "volume"] as ImageMode[]).map((mode) => (
               <label className="radio" key={mode}>
@@ -366,7 +371,7 @@ export function PropertiesPanel({
           {imageMode === "slice" && (
             <>
               <label>
-                Slice軸
+                {messages.properties.sliceAxis}
                 <select value={sliceAxis} onChange={(event) => onSliceAxis(event.target.value as SliceAxis)}>
                   <option value="X">X</option>
                   <option value="Y">Y</option>
@@ -390,7 +395,7 @@ export function PropertiesPanel({
       )}
 
       <label className="opacity-control">
-        不透明度 {Math.round(opacity * 100)}%
+        {messages.properties.opacity} {Math.round(opacity * 100)}%
         <input
           type="range"
           min="0"
@@ -401,8 +406,8 @@ export function PropertiesPanel({
         />
       </label>
 
-      <h3>スカラー着色</h3>
-      <label className="sr-only" htmlFor="scalar-color-selection">着色するデータ配列</label>
+      <h3>{messages.properties.scalarColor}</h3>
+      <label className="sr-only" htmlFor="scalar-color-selection">{messages.properties.colorArrayLabel}</label>
       <select
         id="scalar-color-selection"
         value={selectionValue}
@@ -419,7 +424,7 @@ export function PropertiesPanel({
         }}
       >
         <option value="" disabled={isImageData}>
-          （なし / 単色）
+          {messages.properties.solidColor}
         </option>
         {colorArrays.map((a) => {
           const association = a.association === "table" ? "point" : a.association;
@@ -435,7 +440,7 @@ export function PropertiesPanel({
       {colorBy && (
         <div className="display-controls">
           <label>
-            カラーマップ
+            {messages.properties.colorMap}
             <select value={colorMap} onChange={(e) => onColorMap(e.target.value as ColorMapName)}>
               <option value="cool-to-warm">Cool to Warm</option>
               <option value="viridis">Viridis</option>
@@ -450,9 +455,10 @@ export function PropertiesPanel({
               disabled={!dataColorRange}
               onChange={(e) => onCustomColorRange(e.target.checked ? dataColorRange : null)}
             />
-            手動レンジ
+            {messages.properties.manualRange}
           </label>
           <RangeEditor
+            messages={messages}
             range={displayedRange}
             disabled={customColorRange === null}
             onChange={onCustomColorRange}
@@ -464,17 +470,17 @@ export function PropertiesPanel({
               checked={legendVisible}
               onChange={(e) => onLegendVisible(e.target.checked)}
             />
-            カラーレジェンドを表示
+            {messages.properties.showLegend}
           </label>
           {customColorRange && customColorRange[0] >= customColorRange[1] && (
             <p id="color-range-error" className="validation-error" role="alert">
-              最小値は最大値より小さくしてください。
+              {messages.properties.rangeError}
             </p>
           )}
         </div>
       )}
 
-      <h3>配列一覧</h3>
+      <h3>{messages.properties.arrays}</h3>
       <ul className="array-list">
         {(dataset.arrays ?? []).map((a) => (
           <li key={`${a.association}:${a.name}`}>
@@ -486,17 +492,17 @@ export function PropertiesPanel({
       </ul>
 
       <div className="row actions">
-        <button onClick={onResetCamera}>カメラリセット</button>
-        <button onClick={onScreenshot}>スクリーンショット</button>
+        <button onClick={onResetCamera}>{messages.properties.resetCamera}</button>
+        <button onClick={onScreenshot}>{messages.properties.screenshot}</button>
       </div>
 
-      <h3>サーバフィルタ</h3>
+      <h3>{messages.properties.serverFilter}</h3>
       <div className="display-controls">
         {!serverFilterAvailable && (
-          <p className="muted">ParaView worker未設定のため、実行は無効です。</p>
+          <p className="muted">{messages.properties.workerMissing}</p>
         )}
         <label>
-          フィルタ
+          {messages.properties.filter}
           <select value={serverFilter} onChange={(event) => setServerFilter(event.target.value as typeof serverFilter)}>
             <option value="slice">Slice</option>
             <option value="clip">Clip</option>
@@ -505,11 +511,11 @@ export function PropertiesPanel({
           </select>
         </label>
         {(serverFilter === "slice" || serverFilter === "clip") ? (
-          <p className="muted">{sliceAxis}軸法線・データ境界中心を使用</p>
+          <p className="muted">{sliceAxis}{messages.properties.sliceClipHint}</p>
         ) : (
           <>
             <label>
-              配列
+              {messages.properties.array}
               <select value={filterArray} onChange={(event) => setFilterArray(event.target.value)}>
                 {serverArrays.map((array) => (
                   <option key={`${array.association}:${array.name}`} value={`${array.association}:${array.name}`}>
@@ -519,12 +525,12 @@ export function PropertiesPanel({
               </select>
             </label>
             <label>
-              {serverFilter === "contour" ? "等値" : "最小値"}
+              {serverFilter === "contour" ? messages.properties.contourValue : messages.properties.minimum}
               <input type="number" value={filterMinimum} onChange={(event) => setFilterMinimum(event.target.value)} />
             </label>
             {serverFilter === "threshold" && (
               <label>
-                最大値
+                {messages.properties.maximum}
                 <input type="number" value={filterMaximum} onChange={(event) => setFilterMaximum(event.target.value)} />
               </label>
             )}
@@ -541,18 +547,18 @@ export function PropertiesPanel({
           }
           onClick={runFilter}
         >
-          {filterPending ? "実行中…" : "フィルタを実行"}
+          {filterPending ? messages.common.running : messages.properties.runFilter}
         </button>
       </div>
 
-      <h3>AI操作アシスタント</h3>
+      <h3>{messages.properties.assistant}</h3>
       <div className="display-controls">
         <label>
-          操作したい内容
+          {messages.properties.assistantPrompt}
           <textarea
             rows={3}
             value={assistantPrompt}
-            placeholder="例: temperature の等値面を作りたい"
+            placeholder={messages.properties.assistantPlaceholder}
             onChange={(event) => {
               assistantRequestRef.current += 1;
               setAssistantPrompt(event.target.value);
@@ -585,7 +591,7 @@ export function PropertiesPanel({
               });
           }}
         >
-          {assistantPending ? "提案中…" : "変更案を作る"}
+          {assistantPending ? messages.properties.assistantPending : messages.properties.assistantCreate}
         </button>
         {assistantError && <p className="validation-error">{assistantError}</p>}
         {assistantProposal && (
@@ -620,16 +626,16 @@ export function PropertiesPanel({
                   setAssistantProposal(null);
                 }}
               >
-                差分を確認して適用
+                {messages.properties.applyProposal}
               </button>
             )}
           </div>
         )}
       </div>
 
-      <h3>Artifacts</h3>
+      <h3>{messages.properties.artifacts}</h3>
       <button disabled={exportPending} onClick={onExport}>
-        {exportPending ? "書き出し中…" : "元データを書き出す"}
+        {exportPending ? messages.properties.exportPending : messages.properties.exportSource}
       </button>
       <ul className="artifact-list">
         {artifacts.map((artifact) => (
@@ -652,7 +658,7 @@ export function PropertiesPanel({
             <span>{artifact.kind} · {humanFileSize(artifact.size_bytes)}</span>
           </li>
         ))}
-        {artifacts.length === 0 && <li className="muted">生成済みArtifactはありません。</li>}
+        {artifacts.length === 0 && <li className="muted">{messages.properties.emptyArtifacts}</li>}
       </ul>
     </aside>
   );

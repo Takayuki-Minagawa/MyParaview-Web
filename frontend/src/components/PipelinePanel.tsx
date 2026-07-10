@@ -1,7 +1,9 @@
 import { useState } from "react";
 import type { Pipeline } from "../types";
+import type { Messages } from "../i18n";
 
 interface Props {
+  messages: Messages;
   pipelines: Pipeline[];
   canSave: boolean;
   onSave: (name: string) => void;
@@ -9,15 +11,15 @@ interface Props {
   onDelete: (pipeline: Pipeline) => void;
 }
 
-export function PipelinePanel({ pipelines, canSave, onSave, onRestore, onDelete }: Props) {
+export function PipelinePanel({ messages, pipelines, canSave, onSave, onRestore, onDelete }: Props) {
   const [name, setName] = useState("");
   return (
     <section className="pipeline-browser">
-      <h2>Pipeline / 表示状態</h2>
+      <h2>{messages.pipelinePanel.title}</h2>
       <div className="row">
         <input
-          aria-label="保存する表示状態名"
-          placeholder="表示状態名"
+          aria-label={messages.pipelinePanel.saveNameLabel}
+          placeholder={messages.pipelinePanel.saveNamePlaceholder}
           value={name}
           onChange={(event) => setName(event.target.value)}
         />
@@ -28,7 +30,7 @@ export function PipelinePanel({ pipelines, canSave, onSave, onRestore, onDelete 
             setName("");
           }}
         >
-          保存
+          {messages.common.save}
         </button>
       </div>
       <ul className="pipeline-list">
@@ -41,16 +43,16 @@ export function PipelinePanel({ pipelines, canSave, onSave, onRestore, onDelete 
               ))}
             </div>
             <div className="row">
-              <button aria-label={`${pipeline.name} を復元`} onClick={() => onRestore(pipeline)}>
-                復元
+              <button aria-label={`${pipeline.name}${messages.pipelinePanel.restoreLabel}`} onClick={() => onRestore(pipeline)}>
+                {messages.common.restore}
               </button>
-              <button aria-label={`${pipeline.name} を削除`} onClick={() => onDelete(pipeline)}>
-                削除
+              <button aria-label={`${pipeline.name}${messages.pipelinePanel.deleteLabel}`} onClick={() => onDelete(pipeline)}>
+                {messages.common.delete}
               </button>
             </div>
           </li>
         ))}
-        {pipelines.length === 0 && <li className="empty">保存済み状態はありません。</li>}
+        {pipelines.length === 0 && <li className="empty">{messages.pipelinePanel.empty}</li>}
       </ul>
     </section>
   );

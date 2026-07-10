@@ -16,7 +16,7 @@
 | 10 | trame server rendering | 接続契約完了 | broker create/delete、host allowlist、TTL、WS proxy。外部trame serviceが必要 |
 | 11 | Slice/Clip/Contour/Threshold | 接続契約完了 | schema/metadata照合、cancel worker、surface VTP Artifact。pvpythonが必要 |
 | 12 | CGNS/Exodus/EnSight/XDMF | 接続契約完了 | magic check、bundle closure、ParaView reader/surface変換。pvpythonが必要 |
-| 13 | PostgreSQL/Alembic/S3/MinIO | 完了 | migration 0001–0006、legacy adoption、Postgres実migration、atomic・有界・lease保護S3 cache、Compose |
+| 13 | PostgreSQL/Alembic/S3/MinIO | 完了 | migration 0001–0007、legacy adoption、Postgres実migration、atomic・有界・lease保護S3 cache、Compose |
 | 14 | OIDC/RBAC/audit | 完了 | default fail-closed、Code+PKCE、RS256 validation、legacy bootstrap、member UI、viewer/editor/admin、mutation/download audit |
 | 15 | WebGPU/WASM | 検証スライス完了 | browser feature detectionを表示。描画は意図的にvtk.js WebGL fallback |
 | 16 | Jupyter/Python | 完了 | dependency-free deep-link client、dataset/pipeline復元、OIDC returnTo |

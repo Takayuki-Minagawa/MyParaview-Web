@@ -104,7 +104,7 @@ def test_delete_pipeline_and_project_with_deterministic_self_references(client, 
     from app.models import Dataset, Pipeline, PipelineNode, Project
     from app.storage import store
 
-    def add_chain(project_id: str, suffix: str) -> str:
+    def add_chain(project_id: str, suffix: str, dataset_id: str | None = None) -> str:
         with SessionLocal() as db:
             pipeline = Pipeline(id=f"pipeline-{suffix}", project_id=project_id, name="chain")
             db.add(pipeline)
@@ -115,6 +115,7 @@ def test_delete_pipeline_and_project_with_deterministic_self_references(client, 
                 node_type="reader",
                 name="Reader",
                 params={},
+                dataset_id=dataset_id,
             )
             db.add(reader)
             db.flush()
@@ -140,7 +141,7 @@ def test_delete_pipeline_and_project_with_deterministic_self_references(client, 
 
     project_id = _new_project(client, "fk-project-delete")
     dataset = _upload(client, project_id, data_dir, "sample_surface.vtp").json()
-    add_chain(project_id, "cascade")
+    add_chain(project_id, "cascade", dataset["id"])
     with SessionLocal() as db:
         object_key = db.get(Dataset, dataset["id"]).object_key
     assert store.exists(object_key)

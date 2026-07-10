@@ -40,7 +40,7 @@ Python 3.9+、Node.js 20+を使用します。
 cd backend
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
-PVWEB_AUTH_MODE=dev ./.venv/bin/uvicorn app.main:app --reload
+PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 ./.venv/bin/uvicorn app.main:app --reload
 ```
 
 別ターミナルで:
@@ -63,11 +63,12 @@ set -a
 source infra/.env.example
 set +a
 cd backend
-PVWEB_AUTH_MODE=dev ./.venv/bin/uvicorn app.main:app
+PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 ./.venv/bin/uvicorn app.main:app
 ```
 
-`dev` modeはloopback上のローカル開発専用です。`X-PVWeb-User`を検証しないため、外部へ公開する
-環境では使用せず、`PVWEB_AUTH_MODE=oidc`とOIDC 3値を設定してください。
+`dev` modeはloopback上のローカル開発専用です。`X-PVWeb-User`を検証しないため、
+`PVWEB_ALLOW_INSECURE_DEV_AUTH=1`も明示しない限り503になります。外部へ公開する環境では
+使用せず、`PVWEB_AUTH_MODE=oidc`とOIDC 3値を設定してください。
 
 MinIO bucketは`minio-init`が作成します。S3 objectはimmutable key + local read-through
 cacheでVTK reader/FileResponseへ渡されます。cacheは
@@ -75,7 +76,8 @@ cacheでVTK reader/FileResponseへ渡されます。cacheは
 
 ## OIDC / RBAC
 
-Backendはデフォルトでfail closedです。ローカル開発だけ`PVWEB_AUTH_MODE=dev`を明示し、
+Backendはデフォルトでfail closedです。ローカル開発だけ`PVWEB_AUTH_MODE=dev`と
+`PVWEB_ALLOW_INSECURE_DEV_AUTH=1`を明示し、
 本番では`PVWEB_AUTH_MODE=oidc`と次の3値をすべて設定します。欠落時は503になります。
 
 ```text

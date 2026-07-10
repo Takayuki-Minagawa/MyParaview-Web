@@ -120,6 +120,8 @@ def test_session_delete_failure_retains_local_record(client, monkeypatch):
 
 
 def test_project_delete_stops_and_cascades_render_sessions(client, monkeypatch):
+    from app.db import SessionLocal
+
     project_id = _project(client)
     dataset_id = _dataset(client, project_id)
     monkeypatch.setattr(settings, "trame_broker_url", "http://broker.internal")
@@ -132,14 +134,50 @@ def test_project_delete_stops_and_cascades_render_sessions(client, monkeypatch):
         ),
     )
     deleted: list[str] = []
-    monkeypatch.setattr(
-        "app.routers.sessions.httpx.delete",
-        lambda url, **_kwargs: deleted.append(url) or httpx.Response(204),
-    )
+    broker_saw_unlocked_database = False
+
+    def fake_delete(url, **_kwargs):
+        nonlocal broker_saw_unlocked_database
+        # The broker call must happen after the project-delete transaction has
+        # committed. BEGIN IMMEDIATE would fail here if SQLite were still held.
+        with SessionLocal() as db:
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            broker_saw_unlocked_database = True
+            db.rollback()
+        deleted.append(url)
+        return httpx.Response(204)
+
+    monkeypatch.setattr("app.routers.sessions.httpx.delete", fake_delete)
     created = client.post(
         "/sessions",
         json={"project_id": project_id, "dataset_id": dataset_id, "mode": "remote"},
     ).json()
     assert client.delete(f"/projects/{project_id}").status_code == 204
+    assert broker_saw_unlocked_database
     assert deleted == ["http://broker.internal/sessions/remote-project"]
     assert client.get(f"/sessions/{created['id']}").status_code == 404
+
+
+def test_project_delete_is_committed_when_remote_cleanup_fails(client, monkeypatch):
+    project_id = _project(client)
+    dataset_id = _dataset(client, project_id)
+    monkeypatch.setattr(settings, "trame_broker_url", "http://broker.internal")
+    monkeypatch.setattr(
+        "app.routers.sessions.httpx.post",
+        lambda url, **_kwargs: httpx.Response(
+            201,
+            json={"id": "remote-failure", "websocket_url": "ws://broker.internal/ws/failure"},
+            request=httpx.Request("POST", url),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.routers.sessions.httpx.delete",
+        lambda url, **_kwargs: httpx.Response(500, request=httpx.Request("DELETE", url)),
+    )
+    client.post(
+        "/sessions",
+        json={"project_id": project_id, "dataset_id": dataset_id, "mode": "remote"},
+    ).raise_for_status()
+
+    assert client.delete(f"/projects/{project_id}").status_code == 204
+    assert client.get(f"/projects/{project_id}").status_code == 404

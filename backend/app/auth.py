@@ -1,8 +1,9 @@
 """OIDC authentication and project-scoped role checks.
 
 Authentication is fail-closed by default. Local development must explicitly
-select ``PVWEB_AUTH_MODE=dev`` before the ``X-PVWeb-User`` header is accepted;
-OIDC mode only trusts validated bearer-token subjects.
+select ``PVWEB_AUTH_MODE=dev`` and acknowledge insecure header authentication
+before the ``X-PVWeb-User`` header is accepted; OIDC mode only trusts validated
+bearer-token subjects.
 """
 
 from __future__ import annotations
@@ -80,6 +81,11 @@ def get_principal(
             raise HTTPException(401, "bearer token required")
         principal = _decode_oidc_token(token)
     else:
+        if not settings.allow_insecure_dev_auth:
+            raise HTTPException(
+                503,
+                "dev auth requires PVWEB_ALLOW_INSECURE_DEV_AUTH=1",
+            )
         principal = Principal(id=(x_pvweb_user or "anonymous").strip() or "anonymous")
 
     user = db.get(User, principal.id)

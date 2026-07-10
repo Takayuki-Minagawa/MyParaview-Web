@@ -14,11 +14,13 @@ def detach_pipeline_inputs(
     pipeline_id: str | None = None,
     project_id: str | None = None,
 ) -> None:
-    """Break graph edges before deleting/replacing pipeline nodes.
+    """Break graph and dataset edges before deleting/replacing pipeline nodes.
 
-    The database FK is also ``ON DELETE SET NULL`` as a final boundary. This
+    The database FKs are also ``ON DELETE SET NULL`` as a final boundary. This
     explicit update keeps existing pre-migration databases and ORM delete order
-    deterministic while rolling deployments are upgraded.
+    deterministic while rolling deployments are upgraded. Dataset references
+    only need detaching for project deletion; replacing one pipeline does not
+    delete its datasets.
     """
     if (pipeline_id is None) == (project_id is None):
         raise ValueError("exactly one pipeline scope is required")
@@ -27,5 +29,8 @@ def detach_pipeline_inputs(
         predicate = PipelineNode.pipeline_id.in_(
             select(Pipeline.id).where(Pipeline.project_id == project_id)
         )
-    db.execute(update(PipelineNode).where(predicate).values(input_id=None))
+    values = {"input_id": None}
+    if project_id is not None:
+        values["dataset_id"] = None
+    db.execute(update(PipelineNode).where(predicate).values(**values))
     db.flush()

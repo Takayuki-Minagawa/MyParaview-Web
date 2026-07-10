@@ -10,6 +10,7 @@ export interface CsvPointData {
   arrays: PointArray[];
   numberOfPoints: number;
   skippedRows: number;
+  invalidScalarCells: number;
 }
 
 export function parseCsv(text: string): string[][] {
@@ -90,10 +91,12 @@ export function csvToPointData(
   });
 
   const arrays: PointArray[] = [];
+  let invalidScalarCells = 0;
   header.forEach((name, columnIndex) => {
     if (!name) return;
     const values = new Float32Array(accepted.length);
     let sawFinite = false;
+    let columnInvalidCells = 0;
     for (let rowIndex = 0; rowIndex < accepted.length; rowIndex += 1) {
       const cell = accepted[rowIndex].row[columnIndex];
       if (cell === undefined || cell.trim() === "") {
@@ -101,11 +104,18 @@ export function csvToPointData(
         continue;
       }
       const value = Number(cell);
-      if (!Number.isFinite(value)) return;
+      if (!Number.isFinite(value)) {
+        values[rowIndex] = Number.NaN;
+        columnInvalidCells += 1;
+        continue;
+      }
       values[rowIndex] = value;
       sawFinite = true;
     }
-    if (sawFinite) arrays.push({ name, values });
+    if (sawFinite) {
+      arrays.push({ name, values });
+      invalidScalarCells += columnInvalidCells;
+    }
   });
-  return { points, arrays, numberOfPoints: accepted.length, skippedRows };
+  return { points, arrays, numberOfPoints: accepted.length, skippedRows, invalidScalarCells };
 }

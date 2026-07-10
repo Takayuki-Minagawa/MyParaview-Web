@@ -98,6 +98,17 @@ def test_pvd_rejects_non_finite_timestep(tmp_path, value):
         extract_metadata(str(pvd))
 
 
+def test_pvd_rejects_non_numeric_timestep_with_clear_error(tmp_path):
+    pvd = tmp_path / "invalid-time.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        '<DataSet timestep="abc" file="step.vtp"/>'
+        "</Collection></VTKFile>"
+    )
+    with pytest.raises(ValueError, match="PVD timestep must be a number"):
+        extract_metadata(str(pvd))
+
+
 def test_pvd_imagedata_preserves_grid_metadata(tmp_path):
     (tmp_path / "frame.vti").write_bytes((DATA / "sample_image.vti").read_bytes())
     pvd = tmp_path / "image-series.pvd"

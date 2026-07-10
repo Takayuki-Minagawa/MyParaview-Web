@@ -156,7 +156,9 @@ class PipelineNode(Base):
     input_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("pipeline_nodes.id", ondelete="SET NULL"), nullable=True
     )
-    dataset_id: Mapped[Optional[str]] = mapped_column(ForeignKey("datasets.id"), nullable=True)
+    dataset_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
     pipeline: Mapped[Pipeline] = relationship(back_populates="nodes")

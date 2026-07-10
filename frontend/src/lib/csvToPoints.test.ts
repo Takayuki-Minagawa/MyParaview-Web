@@ -54,4 +54,17 @@ describe("CSV Table-to-Points", () => {
     );
     expect(result.arrays.map((array) => array.name)).toEqual(["x", "y", "z"]);
   });
+
+  it("keeps numeric scalar columns with nonnumeric cells and reports the replacement", () => {
+    const result = csvToPointData(
+      "x,y,z,temp\n0,1,2,10\n4,5,6,N/A\n7,8,9,30\n",
+      { x: "x", y: "y", z: "z" },
+    );
+    const temperature = result.arrays.find((array) => array.name === "temp");
+    expect(temperature).toBeDefined();
+    expect([...temperature!.values].slice(0, 1)).toEqual([10]);
+    expect(Number.isNaN(temperature!.values[1])).toBe(true);
+    expect(temperature!.values[2]).toBe(30);
+    expect(result.invalidScalarCells).toBe(1);
+  });
 });

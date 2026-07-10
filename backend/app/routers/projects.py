@@ -11,7 +11,7 @@ from ..db import get_db
 from ..models import Artifact, AuditEvent, Dataset, DatasetFile, Job, Project, ProjectMember, User
 from ..project_locks import locked_project
 from ..pipeline_lifecycle import detach_pipeline_inputs
-from .sessions import _delete_remote_session
+from .sessions import _delete_remote_id
 from ..schemas import (
     AuditEventOut,
     ProjectCreate,
@@ -79,6 +79,7 @@ def delete_project(
     principal: Principal = Depends(get_principal),
 ):
     object_keys: set[str] = set()
+    remote_session_ids: list[str] = []
     with locked_project(db, project_id, principal, "admin") as project:
         active_job = db.scalar(
             select(Job.id).where(
@@ -91,11 +92,9 @@ def delete_project(
         request.state.audit_project_id = project.id
         request.state.audit_resource_type = "project"
         request.state.audit_resource_id = project.id
-        try:
-            for render_session in list(project.render_sessions):
-                _delete_remote_session(render_session)
-        except httpx.HTTPError as exc:
-            raise HTTPException(502, "failed to stop a project render session") from exc
+        remote_session_ids = [
+            render_session.remote_session_id for render_session in project.render_sessions
+        ]
         dataset_ids = list(db.scalars(select(Dataset.id).where(Dataset.project_id == project_id)))
         job_ids = list(db.scalars(select(Job.id).where(Job.project_id == project_id)))
         object_keys = set(db.scalars(select(Dataset.object_key).where(Dataset.project_id == project_id)))
@@ -114,6 +113,18 @@ def delete_project(
             )
         detach_pipeline_inputs(db, project_id=project_id)
         db.delete(project)
+    for remote_session_id in remote_session_ids:
+        try:
+            _delete_remote_id(remote_session_id)
+        except httpx.HTTPError:
+            # The project and its local session records are already deleted.
+            # Keep external cleanup best-effort so an unavailable broker does
+            # not hold a database write lock or misreport the committed delete.
+            logger.exception(
+                "failed to delete remote session %s for project %s",
+                remote_session_id,
+                project_id,
+            )
     for object_key in object_keys:
         try:
             store.delete(object_key)

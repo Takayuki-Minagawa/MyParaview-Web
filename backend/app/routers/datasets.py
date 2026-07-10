@@ -100,7 +100,10 @@ def _pvd_references(path: str) -> list[str]:
         raise ValueError("PVD collection has no referenced DataSet files")
     seen_times: set[float] = set()
     for child in datasets:
-        timestep = float(child.get("timestep", "0") or "0")
+        try:
+            timestep = float(child.get("timestep", "0") or "0")
+        except ValueError as exc:
+            raise ValueError("PVD timestep must be a number") from exc
         if not math.isfinite(timestep):
             raise ValueError("PVD timestep must be finite")
         if timestep in seen_times:

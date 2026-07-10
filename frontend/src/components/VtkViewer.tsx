@@ -163,7 +163,7 @@ function tableToPolyData(text: string, coordinates: TableCoordinates) {
       values: source.values,
     }));
   }
-  return polyData;
+  return { output: polyData, invalidScalarCells: parsed.invalidScalarCells };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -355,7 +355,7 @@ export function VtkViewer(props: Props) {
       if (!display.colorRange && display.colorBy && resolvedRange) {
         rangeCallbackRef.current?.(display.colorBy, resolvedRange);
       }
-      let displayDiagnostic = "";
+      let displayDiagnostic = scene.dataDiagnostic ?? "";
       if (scene.kind === "geometry") {
         applyRepresentation(scene, display.representation);
         applyGeometryColor(scene, display.colorBy, resolvedRange, display.colorMap);
@@ -414,8 +414,13 @@ export function VtkViewer(props: Props) {
       } else if (datasetType === "Table" && tableCoordinates) {
         const response = await authorizedFetch(url, { signal: abortController.signal });
         if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-        const output = tableToPolyData(await response.text(), tableCoordinates);
+        const { output, invalidScalarCells } = tableToPolyData(
+          await response.text(), tableCoordinates,
+        );
         if (disposed) return;
+        if (invalidScalarCells > 0) {
+          scene.dataDiagnostic = `CSVの非数値セル${invalidScalarCells}件をNaNとして読み込みました。`;
+        }
         const useGlyphs = output.getNumberOfPoints() <= 2_000;
         const bounds = output.getBounds();
         const diagonal = Math.hypot(

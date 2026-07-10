@@ -285,7 +285,10 @@ def _extract_pvd(path: str, *, enrich_siblings: bool = False) -> DatasetMetadata
     for entry in entries:
         if not entry.get("file"):
             continue
-        timestep = float(entry.get("timestep", "0") or "0")
+        try:
+            timestep = float(entry.get("timestep", "0") or "0")
+        except ValueError as exc:
+            raise ValueError("PVD timestep must be a number") from exc
         if not math.isfinite(timestep):
             raise ValueError("PVD timestep must be finite")
         try:

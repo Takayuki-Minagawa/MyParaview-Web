@@ -25,6 +25,9 @@ class Settings:
         # Authentication is fail-closed by default. Local development must opt
         # into the header-based identity provider explicitly.
         self.auth_mode = os.environ.get("PVWEB_AUTH_MODE", "oidc").lower()
+        self.allow_insecure_dev_auth = os.environ.get(
+            "PVWEB_ALLOW_INSECURE_DEV_AUTH", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self.oidc_issuer = os.environ.get("PVWEB_OIDC_ISSUER") or None
         self.oidc_audience = os.environ.get("PVWEB_OIDC_AUDIENCE") or None
         self.oidc_jwks_url = os.environ.get("PVWEB_OIDC_JWKS_URL") or None

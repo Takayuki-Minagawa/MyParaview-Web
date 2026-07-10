@@ -15,7 +15,21 @@ from app.config import Settings, settings
 
 def test_settings_default_auth_mode_is_fail_closed(monkeypatch):
     monkeypatch.delenv("PVWEB_AUTH_MODE", raising=False)
-    assert Settings().auth_mode == "oidc"
+    monkeypatch.delenv("PVWEB_ALLOW_INSECURE_DEV_AUTH", raising=False)
+    configured = Settings()
+    assert configured.auth_mode == "oidc"
+    assert configured.allow_insecure_dev_auth is False
+
+
+def test_dev_auth_requires_explicit_insecure_opt_in(client, monkeypatch):
+    monkeypatch.setattr(settings, "auth_mode", "dev")
+    monkeypatch.setattr(settings, "allow_insecure_dev_auth", False)
+    denied = client.get("/projects", headers={"X-PVWeb-User": "spoofed"})
+    assert denied.status_code == 503
+    assert "PVWEB_ALLOW_INSECURE_DEV_AUTH=1" in denied.text
+
+    monkeypatch.setattr(settings, "allow_insecure_dev_auth", True)
+    assert client.get("/projects", headers={"X-PVWeb-User": "local-user"}).status_code == 200
 
 
 def test_oidc_rs256_claim_and_signature_validation(monkeypatch):

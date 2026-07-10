@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from ..auth import Principal, get_principal, require_project_role
+from ..config import settings
 from ..db import SessionLocal, get_db
 from ..jobs import manager
 from ..models import Dataset, Job, Project
@@ -86,7 +87,8 @@ async def stream_jobs(
     """Server-sent events with job snapshots for a project.
 
     Emits every job whose ``updated_at`` advanced since the last poll tick, plus
-    heartbeat comments. Connections close after 5 minutes; clients reconnect.
+    heartbeat comments. Connections close after PVWEB_JOB_STREAM_MAX_SECONDS
+    (default 5 minutes); clients reconnect.
     """
     if db.get(Project, project_id) is None:
         raise HTTPException(404, "project not found")
@@ -108,7 +110,7 @@ async def stream_jobs(
 
     async def event_stream():
         cursor = None
-        for _ in range(300):
+        for _ in range(max(1, settings.job_stream_max_seconds)):
             jobs = await run_in_threadpool(snapshot, cursor)
             for payload, updated_at in jobs:
                 cursor = updated_at if cursor is None else max(cursor, updated_at)

@@ -24,3 +24,20 @@
 
 「接続契約完了」は、外部native/runtimeをrepositoryに同梱したという意味ではありません。
 capabilityを設定した環境で実処理へ接続し、未設定時は誤成功させないAPI/UI境界が完成した状態です。
+
+## 2026-07-10 レビュー是正での追加
+
+コードレビュー全指摘への対応として、上記17件に加えて次を実装しました。
+
+- リファクタリング: 監査ミドルウェアのthreadpool化、アップロード系ブロッキングI/O解消、
+  ingest重複ガード、アップロード3endpoint共通化、`run_dataset_operation`分割、
+  App.tsx/PropertiesPanelのフック・セクション分割、VtkViewerのScene型付けと依存配列修正、
+  MessagesContext、i18nカタログ完全化、エラーバナー多重化+ErrorBoundary
+- 追加機能: メンバー削除、監査ログUI+CSV export、一覧フィルタ/ページング、S3 presigned
+  download、Artifact→Dataset昇格、統計JSONジョブ、サーバrender/movieジョブ、
+  Pipelineフィルタ連鎖のサーバ実行、assist提案の永続化+apply/dismiss、ジョブSSE、
+  共有リンク、Pipelineリネーム、VTP変換UI、colormap 2種追加、6方向カメラプリセット、
+  axes/背景トグル、timestep単体download、CSVスキップ行表示、Volume TFエディタ、
+  クライアントジオメトリexport、trameリモートビューアUI
+- テスト: バックエンド129件（+40件追加）、フロントエンドunit+コンポーネントテスト
+  （jsdom/testing-library基盤を導入）

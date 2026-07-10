@@ -12,6 +12,8 @@ os.environ["PVWEB_DATA_ROOT"] = _TMP
 os.environ["PVWEB_DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
 os.environ["PVWEB_AUTH_MODE"] = "dev"
 os.environ["PVWEB_ALLOW_INSECURE_DEV_AUTH"] = "1"
+# Keep /jobs/stream teardown from stalling the suite for the full 5 minutes.
+os.environ["PVWEB_JOB_STREAM_MAX_SECONDS"] = "2"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

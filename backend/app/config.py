@@ -56,6 +56,11 @@ class Settings:
             os.environ.get("PVWEB_MAX_ARTIFACT_BYTES", str(32 * 1024 * 1024))
         )
         self.audit_list_limit = int(os.environ.get("PVWEB_AUDIT_LIST_LIMIT", "500"))
+        # How long one /jobs/stream SSE connection lives before the client must
+        # reconnect. Tests shrink this so stream teardown does not stall runs.
+        self.job_stream_max_seconds = int(
+            os.environ.get("PVWEB_JOB_STREAM_MAX_SECONDS", "300")
+        )
         self.cors_origins = [
             origin.strip()
             for origin in os.environ.get("PVWEB_CORS_ORIGINS", "http://localhost:5173").split(",")

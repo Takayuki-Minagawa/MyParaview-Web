@@ -82,6 +82,74 @@ def test_run_valid_slice_chain_fails_without_worker(client, data_dir):
     assert "PVWEB_PVPYTHON" in finished["log"]
 
 
+def test_run_executes_complete_filter_chain_in_one_worker_call(
+    client, data_dir, monkeypatch
+):
+    project_id = _project(client, "pipeline-run-chain")
+    dataset = _upload(client, project_id, data_dir / "sample_surface.vtp")
+    pipeline = _pipeline(
+        client,
+        project_id,
+        [
+            {
+                "node_type": "reader",
+                "name": "read",
+                "local_id": "r1",
+                "dataset_id": dataset["id"],
+                "params": {},
+            },
+            {
+                "node_type": "filter",
+                "name": "first threshold",
+                "local_id": "f1",
+                "input_id": "r1",
+                "params": {
+                    "filter": "threshold",
+                    "array": "temperature",
+                    "association": "POINTS",
+                    "minimum": 0,
+                    "maximum": 100,
+                },
+            },
+            {
+                "node_type": "filter",
+                "name": "second threshold",
+                "local_id": "f2",
+                "input_id": "f1",
+                "params": {
+                    "filter": "threshold",
+                    "array": "temperature",
+                    "association": "POINTS",
+                    "minimum": 20,
+                    "maximum": 30,
+                },
+            },
+        ],
+    )
+    calls = []
+
+    def fake_pipeline_transform(source, output, filters, _ctx):
+        calls.append((source, output, filters))
+        output.write_bytes((data_dir / "sample_surface.vtp").read_bytes())
+
+    monkeypatch.setattr(
+        "app.services.run_pipeline_transform", fake_pipeline_transform
+    )
+
+    response = client.post(f"/pipelines/{pipeline['id']}/run")
+    assert response.status_code == 202, response.text
+    finished = wait_for_job(client, response.json()["id"])
+
+    assert finished["status"] == "succeeded", finished
+    assert len(calls) == 1
+    assert calls[0][0].name.endswith(".vtp")
+    assert calls[0][1].name.endswith("-pipeline.vtp")
+    assert [item["filter"] for item in calls[0][2]] == [
+        "threshold",
+        "threshold",
+    ]
+
+
 def test_run_rejects_invalid_filter_params(client, data_dir):
     project_id = _project(client, "pipeline-run-bogus")
     dataset = _upload(client, project_id, data_dir / "sample_surface.vtp")

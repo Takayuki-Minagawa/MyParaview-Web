@@ -24,7 +24,12 @@ from .models import Artifact, Dataset, DatasetFile, Job, Pipeline
 from .project_locks import locked_project
 from .stats import compute_dataset_statistics
 from .storage import store
-from .worker import extract_external_metadata, run_movie_frames, run_transform
+from .worker import (
+    extract_external_metadata,
+    run_movie_frames,
+    run_pipeline_transform,
+    run_transform,
+)
 
 
 def _set_dataset_status(dataset_id: str, status: str, *, error: Optional[str]) -> None:
@@ -517,17 +522,17 @@ def run_pipeline_execution(pipeline_id: str, dataset_id: str, filters: list[dict
                     if source.bundle_files
                     else source_path
                 )
-                for index, filter_params in enumerate(filters):
-                    ctx.check_cancelled()
-                    ctx.update(
-                        progress=0.1 + 0.7 * index / len(filters),
-                        log_line=f"applying filter {index + 1}/{len(filters)}: "
-                        f"{filter_params.get('filter')}",
-                    )
-                    stage_output = root / f"stage-{index:02d}.vtp"
-                    run_transform(Path(current), stage_output, "filter", filter_params, ctx)
-                    current = stage_output
-                size = store.copy_in(object_key, Path(current))
+                filter_names = ", ".join(str(item.get("filter")) for item in filters)
+                ctx.update(
+                    progress=0.1,
+                    log_line=f"applying {len(filters)} pipeline filters: {filter_names}",
+                )
+                worker_output = root / filename
+                run_pipeline_transform(
+                    Path(current), worker_output, filters, ctx
+                )
+                ctx.update(progress=0.8, log_line="pipeline filters complete")
+                size = store.copy_in(object_key, worker_output)
             ctx.check_cancelled()
             artifact_id = persist_job_artifact(
                 ctx,

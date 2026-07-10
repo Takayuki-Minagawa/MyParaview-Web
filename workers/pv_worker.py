@@ -65,6 +65,37 @@ def metadata(source: str) -> None:
     print(json.dumps(payload, allow_nan=False))
 
 
+def _apply_filter(simple, source, params: dict):
+    operation = params["filter"]
+    if operation == "slice":
+        result = simple.Slice(Input=source)
+        result.SliceType = "Plane"
+        result.SliceType.Origin = params["origin"]
+        result.SliceType.Normal = params["normal"]
+    elif operation == "clip":
+        result = simple.Clip(Input=source)
+        result.ClipType = "Plane"
+        result.ClipType.Origin = params["origin"]
+        result.ClipType.Normal = params["normal"]
+    elif operation == "contour":
+        contour_input = source
+        contour_association = params.get("association", "POINTS")
+        if contour_association == "CELLS":
+            contour_input = simple.CellDatatoPointData(Input=source)
+            contour_association = "POINTS"
+        result = simple.Contour(Input=contour_input)
+        result.ContourBy = [contour_association, params["array"]]
+        result.Isosurfaces = [params["value"]]
+    elif operation == "threshold":
+        result = simple.Threshold(Input=source)
+        result.Scalars = [params.get("association", "POINTS"), params["array"]]
+        result.LowerThreshold = params["minimum"]
+        result.UpperThreshold = params["maximum"]
+    else:
+        raise ValueError(f"unsupported filter {operation!r}")
+    return result
+
+
 def transform(kind: str, source: str, output: str, params_file: str) -> None:
     simple = _paraview()
     params = json.loads(Path(params_file).read_text(encoding="utf-8"))
@@ -73,33 +104,15 @@ def transform(kind: str, source: str, output: str, params_file: str) -> None:
         raise RuntimeError(f"ParaView has no reader for {source}")
     result = reader
     if kind == "filter":
-        operation = params["filter"]
-        if operation == "slice":
-            result = simple.Slice(Input=reader)
-            result.SliceType = "Plane"
-            result.SliceType.Origin = params["origin"]
-            result.SliceType.Normal = params["normal"]
-        elif operation == "clip":
-            result = simple.Clip(Input=reader)
-            result.ClipType = "Plane"
-            result.ClipType.Origin = params["origin"]
-            result.ClipType.Normal = params["normal"]
-        elif operation == "contour":
-            contour_input = reader
-            contour_association = params.get("association", "POINTS")
-            if contour_association == "CELLS":
-                contour_input = simple.CellDatatoPointData(Input=reader)
-                contour_association = "POINTS"
-            result = simple.Contour(Input=contour_input)
-            result.ContourBy = [contour_association, params["array"]]
-            result.Isosurfaces = [params["value"]]
-        elif operation == "threshold":
-            result = simple.Threshold(Input=reader)
-            result.Scalars = [params.get("association", "POINTS"), params["array"]]
-            result.LowerThreshold = params["minimum"]
-            result.UpperThreshold = params["maximum"]
-        else:
-            raise ValueError(f"unsupported filter {operation!r}")
+        result = _apply_filter(simple, reader, params)
+    elif kind == "pipeline":
+        filters = params.get("filters")
+        if not isinstance(filters, list) or not filters:
+            raise ValueError("pipeline requires a non-empty filters list")
+        for filter_params in filters:
+            if not isinstance(filter_params, dict):
+                raise ValueError("pipeline filters must be objects")
+            result = _apply_filter(simple, result, filter_params)
     # VTP artifacts must be PolyData regardless of the reader/filter output
     # (external readers and Threshold commonly produce composite/UG datasets).
     multiblock = simple.ConvertToMultiBlock(Input=result)
@@ -166,7 +179,7 @@ def main(argv: list[str]) -> None:
     if len(argv) == 3 and argv[1] == "metadata":
         metadata(argv[2])
         return
-    if len(argv) == 5 and argv[1] in {"filter", "convert"}:
+    if len(argv) == 5 and argv[1] in {"filter", "convert", "pipeline"}:
         transform(argv[1], argv[2], argv[3], argv[4])
         return
     if len(argv) == 5 and argv[1] == "render":
@@ -176,7 +189,7 @@ def main(argv: list[str]) -> None:
         movie(argv[2], argv[3], argv[4])
         return
     raise SystemExit(
-        "usage: pv_worker.py metadata SOURCE | (filter|convert|render) SOURCE OUTPUT PARAMS"
+        "usage: pv_worker.py metadata SOURCE | (filter|convert|pipeline|render) SOURCE OUTPUT PARAMS"
         " | movie SOURCE OUTPUT_DIR PARAMS"
     )
 

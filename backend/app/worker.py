@@ -111,6 +111,27 @@ def run_transform(
         raise RuntimeError("ParaView worker produced no output artifact")
 
 
+def run_pipeline_transform(
+    source: Path,
+    output: Path,
+    filters: list[dict],
+    ctx: JobContext,
+) -> None:
+    """Run a complete filter chain in one ParaView process.
+
+    Intermediate ParaView proxies stay in their native dataset types.  The
+    worker converts only the final proxy to the VTP artifact contract.
+    """
+    params_path = output.with_suffix(".json")
+    params_path.write_text(
+        json.dumps({"filters": filters}, allow_nan=False),
+        encoding="utf-8",
+    )
+    _run(_command("pipeline", str(source), str(output), str(params_path)), ctx)
+    if not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError("ParaView worker produced no output artifact")
+
+
 def run_movie_frames(
     source: Path,
     frames_dir: Path,

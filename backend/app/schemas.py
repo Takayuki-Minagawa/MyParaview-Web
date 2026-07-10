@@ -243,9 +243,24 @@ def validate_filter_params(params: dict[str, Any]) -> dict[str, Any]:
     return {**params, "filter": operation, "association": association}
 
 
+def _integer_param(params: dict[str, Any], name: str, default: int) -> int:
+    """Return an integer job parameter without silently truncating values."""
+    value = params.get(name, default)
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, float) and (
+        not math.isfinite(value) or not value.is_integer()
+    ):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be an integer") from None
+
+
 def validate_render_params(params: dict[str, Any]) -> dict[str, Any]:
-    width = int(params.get("width", 1280))
-    height = int(params.get("height", 960))
+    width = _integer_param(params, "width", 1280)
+    height = _integer_param(params, "height", 960)
     if not (16 <= width <= 4096 and 16 <= height <= 4096):
         raise ValueError("width and height must be between 16 and 4096")
     normalized: dict[str, Any] = {**params, "width": width, "height": height}
@@ -261,7 +276,7 @@ def validate_render_params(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_stats_params(params: dict[str, Any]) -> dict[str, Any]:
-    bins = int(params.get("bins", 32))
+    bins = _integer_param(params, "bins", 32)
     if not (1 <= bins <= 256):
         raise ValueError("bins must be between 1 and 256")
     return {**params, "bins": bins}

@@ -7,6 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..auth import Principal, get_principal, require_project_role
+from ..config import settings
 from ..db import get_db
 from ..models import Artifact, AuditEvent, Dataset, DatasetFile, Job, Project, ProjectMember, User
 from ..project_locks import locked_project
@@ -239,6 +240,6 @@ def list_audit_events(
         select(AuditEvent)
         .where(AuditEvent.project_id == project_id)
         .order_by(AuditEvent.created_at.desc())
-        .limit(500)
+        .limit(settings.audit_list_limit)
     )
     return list(db.scalars(stmt))

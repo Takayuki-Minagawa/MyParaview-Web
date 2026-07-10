@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
@@ -23,31 +24,48 @@ router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
 
 def _valid_png(path: Path) -> bool:
-    data = path.read_bytes()
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return False
-    offset = 8
-    saw_header = False
-    while offset + 12 <= len(data):
-        length = struct.unpack(">I", data[offset : offset + 4])[0]
-        chunk_type = data[offset + 4 : offset + 8]
-        end = offset + 12 + length
-        if end > len(data):
+    """Validate PNG structure and per-chunk CRCs by streaming, not read_bytes()."""
+    total = path.stat().st_size
+    with open(path, "rb") as source:
+        if source.read(8) != b"\x89PNG\r\n\x1a\n":
             return False
-        payload = data[offset + 8 : offset + 8 + length]
-        expected_crc = struct.unpack(">I", data[offset + 8 + length : end])[0]
-        if zlib.crc32(chunk_type + payload) & 0xFFFFFFFF != expected_crc:
-            return False
-        if not saw_header:
-            if chunk_type != b"IHDR" or length != 13:
+        offset = 8
+        saw_header = False
+        while offset + 12 <= total:
+            header = source.read(8)
+            if len(header) != 8:
                 return False
-            width, height = struct.unpack(">II", payload[:8])
-            if width == 0 or height == 0:
+            length = struct.unpack(">I", header[:4])[0]
+            chunk_type = header[4:8]
+            end = offset + 12 + length
+            if end > total:
                 return False
-            saw_header = True
-        if chunk_type == b"IEND":
-            return saw_header and length == 0 and end == len(data)
-        offset = end
+            crc = zlib.crc32(chunk_type)
+            remaining = length
+            first_payload = b""
+            while remaining > 0:
+                chunk = source.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    return False
+                if not first_payload:
+                    first_payload = chunk
+                crc = zlib.crc32(chunk, crc)
+                remaining -= len(chunk)
+            crc_bytes = source.read(4)
+            if len(crc_bytes) != 4:
+                return False
+            if crc & 0xFFFFFFFF != struct.unpack(">I", crc_bytes)[0]:
+                return False
+            if not saw_header:
+                if chunk_type != b"IHDR" or length != 13 or len(first_payload) < 8:
+                    return False
+                width, height = struct.unpack(">II", first_payload[:8])
+                if width == 0 or height == 0:
+                    return False
+                saw_header = True
+            if chunk_type == b"IEND":
+                return saw_header and length == 0 and end == total
+            offset = end
     return False
 
 
@@ -101,15 +119,20 @@ async def upload_artifact(
     await file.seek(0)
     object_key = store.new_key(suffix)
     try:
-        size = store.save_stream(
+        # Blocking store/validation work stays off the event loop.
+        size = await run_in_threadpool(
+            store.save_stream,
             object_key,
             file.file,
-            max_bytes=min(settings.max_upload_bytes, 32 * 1024 * 1024),
+            max_bytes=min(settings.max_upload_bytes, settings.max_artifact_bytes),
         )
         if kind == "screenshot":
-            with store.local_path(object_key) as local_object:
-                if not _valid_png(local_object):
-                    raise HTTPException(400, "screenshot artifact is not a valid PNG")
+            def _validate() -> bool:
+                with store.local_path(object_key) as local_object:
+                    return _valid_png(local_object)
+
+            if not await run_in_threadpool(_validate):
+                raise HTTPException(400, "screenshot artifact is not a valid PNG")
         project_id = dataset.project_id
         with locked_project(db, project_id, principal, "editor"):
             dataset = db.get(Dataset, dataset_id)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -67,19 +67,28 @@ def create_job(
 
 @router.get("", response_model=list[JobOut])
 def list_jobs(
-    project_id: Optional[str] = None,
+    project_id: str = Query(min_length=1),
+    status: Optional[str] = Query(default=None, pattern="^(queued|running|succeeded|failed|canceled)$"),
+    kind: Optional[str] = Query(default=None, max_length=40),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if project_id:
-        if db.get(Project, project_id) is None:
-            raise HTTPException(404, "project not found")
-        require_project_role(db, project_id, principal)
-    else:
-        raise HTTPException(422, "project_id is required")
-    stmt = select(Job).order_by(Job.created_at.desc())
-    if project_id:
-        stmt = stmt.where(Job.project_id == project_id)
+    if db.get(Project, project_id) is None:
+        raise HTTPException(404, "project not found")
+    require_project_role(db, project_id, principal)
+    stmt = (
+        select(Job)
+        .where(Job.project_id == project_id)
+        .order_by(Job.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    if status:
+        stmt = stmt.where(Job.status == status)
+    if kind:
+        stmt = stmt.where(Job.kind == kind)
     return list(db.scalars(stmt))
 
 

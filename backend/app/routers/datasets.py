@@ -12,6 +12,7 @@ from defusedxml.common import DefusedXmlException
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..auth import Principal, get_principal, require_project_role
 from ..bundles import bundle_reference_path as _bundle_reference_path
@@ -133,6 +134,74 @@ def _sniff_ok(ext: str, head: bytes) -> bool:
     return False
 
 
+def _normalize_bundle_uploads(
+    files: list[UploadFile], allowed_extensions: set[str]
+) -> list[tuple[str, UploadFile, str]]:
+    """Validate bundle member paths/extensions and reject duplicates."""
+    normalized: list[tuple[str, UploadFile, str]] = []
+    seen: set[str] = set()
+    for upload in files:
+        try:
+            relative_path = _safe_relative_path(upload.filename or "")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if relative_path in seen:
+            raise HTTPException(400, f"duplicate bundle path {relative_path!r}")
+        seen.add(relative_path)
+        ext = PurePosixPath(relative_path).suffix.lower()
+        if ext not in allowed_extensions:
+            raise HTTPException(415, f"unsupported extension {ext!r}")
+        normalized.append((relative_path, upload, ext))
+    return normalized
+
+
+async def _sniff_upload(upload: UploadFile, ext: str, label: str) -> None:
+    head = await upload.read(4096)
+    if not _sniff_ok(ext, head):
+        raise HTTPException(400, f"file content does not match a {ext} file: {label}")
+    await upload.seek(0)
+
+
+async def _persist_bundle_uploads(
+    normalized: list[tuple[str, UploadFile, str]],
+    persisted: list[tuple[str, str, int]],
+    *,
+    sniff_members: bool,
+) -> int:
+    """Stream every member to the object store within the shared upload budget.
+
+    Appends each stored member to ``persisted`` (which the caller owns) before
+    streaming it, so cleanup after a mid-bundle failure sees every created key.
+    Returns the total stored size.
+    """
+    total_size = 0
+    for relative_path, upload, ext in normalized:
+        if sniff_members:
+            await _sniff_upload(upload, ext, relative_path)
+        remaining = settings.max_upload_bytes - total_size
+        if remaining <= 0:
+            raise HTTPException(413, f"upload exceeds max_bytes={settings.max_upload_bytes}")
+        key = store.new_key(ext)
+        persisted.append((relative_path, key, 0))
+        try:
+            # save_stream copies up to max_upload_bytes synchronously; keep it
+            # off the event loop.
+            size = await run_in_threadpool(
+                store.save_stream, key, upload.file, max_bytes=remaining
+            )
+        except ValueError as exc:
+            raise HTTPException(413, str(exc)) from exc
+        total_size += size
+        persisted[-1] = (relative_path, key, size)
+    return total_size
+
+
+def _cleanup_persisted(db: Session, persisted: list[tuple[str, str, int]]) -> None:
+    db.rollback()
+    for _, key, _ in persisted:
+        store.delete(key)
+
+
 @router.post("/projects/{project_id}/datasets", response_model=DatasetOut, status_code=201)
 async def upload_dataset(
     project_id: str,
@@ -152,15 +221,14 @@ async def upload_dataset(
     if ext in {".case", ".xdmf", ".xmf"}:
         raise HTTPException(400, "descriptor datasets must be uploaded with all referenced files")
 
-    head = await file.read(4096)
-    if not _sniff_ok(ext, head):
-        raise HTTPException(400, f"file content does not match a {ext} file")
-    await file.seek(0)
+    await _sniff_upload(file, ext, filename)
 
     key = store.new_key(ext)
     try:
         try:
-            size = store.save_stream(key, file.file, max_bytes=settings.max_upload_bytes)
+            size = await run_in_threadpool(
+                store.save_stream, key, file.file, max_bytes=settings.max_upload_bytes
+            )
         except ValueError as exc:
             raise HTTPException(413, str(exc)) from exc
         with locked_project(db, project_id, principal, "editor"):
@@ -199,20 +267,7 @@ async def upload_dataset_bundle(
     if not files:
         raise HTTPException(400, "at least one file is required")
 
-    normalized: list[tuple[str, UploadFile, str]] = []
-    seen: set[str] = set()
-    for upload in files:
-        try:
-            relative_path = _safe_relative_path(upload.filename or "")
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        if relative_path in seen:
-            raise HTTPException(400, f"duplicate bundle path {relative_path!r}")
-        seen.add(relative_path)
-        ext = PurePosixPath(relative_path).suffix.lower()
-        if ext not in settings.allowed_extensions:
-            raise HTTPException(415, f"unsupported extension {ext!r}")
-        normalized.append((relative_path, upload, ext))
+    normalized = _normalize_bundle_uploads(files, settings.allowed_extensions)
 
     pvd_members = [item for item in normalized if item[2] == ".pvd"]
     if len(pvd_members) != 1:
@@ -220,23 +275,8 @@ async def upload_dataset_bundle(
     primary_path = pvd_members[0][0]
 
     persisted: list[tuple[str, str, int]] = []
-    total_size = 0
     try:
-        for relative_path, upload, ext in normalized:
-            head = await upload.read(4096)
-            if not _sniff_ok(ext, head):
-                raise HTTPException(400, f"file content does not match a {ext} file: {relative_path}")
-            await upload.seek(0)
-            remaining = settings.max_upload_bytes - total_size
-            if remaining <= 0:
-                raise HTTPException(413, f"upload exceeds max_bytes={settings.max_upload_bytes}")
-            key = store.new_key(ext)
-            try:
-                size = store.save_stream(key, upload.file, max_bytes=remaining)
-            except ValueError as exc:
-                raise HTTPException(413, str(exc)) from exc
-            total_size += size
-            persisted.append((relative_path, key, size))
+        total_size = await _persist_bundle_uploads(normalized, persisted, sniff_members=True)
 
         by_path = {relative_path: key for relative_path, key, _ in persisted}
         primary_key = by_path[primary_path]
@@ -282,9 +322,7 @@ async def upload_dataset_bundle(
         request.state.audit_resource_id = dataset.id
         return dataset
     except Exception:
-        db.rollback()
-        for _, key, _ in persisted:
-            store.delete(key)
+        _cleanup_persisted(db, persisted)
         raise
 
 
@@ -307,20 +345,7 @@ async def upload_external_dataset_bundle(
     if not files:
         raise HTTPException(400, "at least one file is required")
 
-    normalized: list[tuple[str, UploadFile, str]] = []
-    seen: set[str] = set()
-    for upload in files:
-        try:
-            relative_path = _safe_relative_path(upload.filename or "")
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        if relative_path in seen:
-            raise HTTPException(400, f"duplicate bundle path {relative_path!r}")
-        seen.add(relative_path)
-        ext = PurePosixPath(relative_path).suffix.lower()
-        if ext not in settings.external_bundle_extensions:
-            raise HTTPException(415, f"unsupported external bundle extension {ext!r}")
-        normalized.append((relative_path, upload, ext))
+    normalized = _normalize_bundle_uploads(files, settings.external_bundle_extensions)
 
     primaries = [item for item in normalized if item[2] in {".case", ".xdmf", ".xmf"}]
     if len(primaries) != 1:
@@ -333,19 +358,8 @@ async def upload_external_dataset_bundle(
     await primary_upload.seek(0)
 
     persisted: list[tuple[str, str, int]] = []
-    total_size = 0
     try:
-        for relative_path, upload, ext in normalized:
-            remaining = settings.max_upload_bytes - total_size
-            if remaining <= 0:
-                raise HTTPException(413, f"upload exceeds max_bytes={settings.max_upload_bytes}")
-            key = store.new_key(ext)
-            try:
-                size = store.save_stream(key, upload.file, max_bytes=remaining)
-            except ValueError as exc:
-                raise HTTPException(413, str(exc)) from exc
-            total_size += size
-            persisted.append((relative_path, key, size))
+        total_size = await _persist_bundle_uploads(normalized, persisted, sniff_members=False)
 
         primary_key = next(key for path, key, _ in persisted if path == primary_path)
         try:
@@ -385,9 +399,7 @@ async def upload_external_dataset_bundle(
         request.state.audit_resource_id = dataset.id
         return dataset
     except Exception:
-        db.rollback()
-        for _, key, _ in persisted:
-            store.delete(key)
+        _cleanup_persisted(db, persisted)
         raise
 
 
@@ -423,11 +435,8 @@ def get_metadata(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    ds = db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, ds.project_id, principal)
-    return ds
+    """Alias kept for API compatibility; metadata lives on the dataset row."""
+    return get_dataset(dataset_id, db, principal)
 
 
 def _collection_entries(dataset: Dataset) -> list[dict]:
@@ -435,6 +444,10 @@ def _collection_entries(dataset: Dataset) -> list[dict]:
     if dataset.dataset_type != "Collection" or not isinstance(entries, list):
         raise HTTPException(409, "dataset is not an ingested PVD collection")
     return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _collection_times(dataset: Dataset, entries: list[dict]) -> list[float]:
+    return list(dataset.timesteps or sorted({float(entry["timestep"]) for entry in entries}))
 
 
 @router.get("/datasets/{dataset_id}/timesteps", response_model=list[CollectionStepOut])
@@ -448,7 +461,7 @@ def list_collection_timesteps(
         raise HTTPException(404, "dataset not found")
     require_project_role(db, dataset.project_id, principal)
     entries = _collection_entries(dataset)
-    times = list(dataset.timesteps or sorted({float(entry["timestep"]) for entry in entries}))
+    times = _collection_times(dataset, entries)
     return [
         CollectionStepOut(
             index=index,
@@ -473,7 +486,7 @@ def download_collection_timestep(
         raise HTTPException(404, "dataset not found")
     require_project_role(db, dataset.project_id, principal)
     entries = _collection_entries(dataset)
-    times = list(dataset.timesteps or sorted({float(entry["timestep"]) for entry in entries}))
+    times = _collection_times(dataset, entries)
     if step_index < 0 or step_index >= len(times):
         raise HTTPException(404, "timestep not found")
     candidates = [entry for entry in entries if float(entry["timestep"]) == times[step_index]]
@@ -529,6 +542,17 @@ def ingest_dataset(
         ds = db.get(Dataset, dataset_id)
         if ds is None or ds.project_id != project_id:
             raise HTTPException(404, "dataset not found")
+        if ds.status == "ingesting":
+            raise HTTPException(409, "dataset ingest is already running")
+        active_ingest = db.scalar(
+            select(Job.id).where(
+                Job.kind == "ingest",
+                Job.target_id == dataset_id,
+                Job.status.in_(("queued", "running")),
+            ).limit(1)
+        )
+        if active_ingest:
+            raise HTTPException(409, "dataset ingest is already running")
         job = Job(project_id=project_id, kind="ingest", status="queued", target_id=dataset_id)
         db.add(job)
         db.flush()

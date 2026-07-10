@@ -47,6 +47,15 @@ class Settings:
         self.session_ttl_seconds = int(os.environ.get("PVWEB_SESSION_TTL", "3600"))
         # Upload guardrails (work_plan 8.3 security).
         self.max_upload_bytes = int(os.environ.get("PVWEB_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
+        self.max_artifact_bytes = int(
+            os.environ.get("PVWEB_MAX_ARTIFACT_BYTES", str(32 * 1024 * 1024))
+        )
+        self.audit_list_limit = int(os.environ.get("PVWEB_AUDIT_LIST_LIMIT", "500"))
+        self.cors_origins = [
+            origin.strip()
+            for origin in os.environ.get("PVWEB_CORS_ORIGINS", "http://localhost:5173").split(",")
+            if origin.strip()
+        ]
         # Extension allow-list; magic/header checks live in datasets router.
         self.allowed_extensions = {
             ".vtp", ".vti", ".vtu", ".vts", ".vtr", ".pvd", ".csv",

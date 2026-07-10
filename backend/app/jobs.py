@@ -14,12 +14,40 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from .db import SessionLocal
-from .models import Job
+from .models import Artifact, Dataset, Job
+from .storage import store
 
 
 class JobCancelled(Exception):
     """Raised inside a job body when cancellation was requested."""
+
+
+def recover_interrupted_jobs() -> int:
+    """Fail persisted in-process jobs that cannot survive an API restart."""
+    with SessionLocal() as db:
+        interrupted = list(
+            db.scalars(select(Job).where(Job.status.in_(("queued", "running"))))
+        )
+        for job in interrupted:
+            previous = job.status
+            job.status = "failed"
+            job.log = (job.log or "") + (
+                f"ERROR: {previous} in-process job was interrupted by service restart; retry required\n"
+            )
+            if job.kind == "ingest" and job.target_id:
+                dataset = db.get(Dataset, job.target_id)
+                if dataset is not None and dataset.status == "ingesting":
+                    dataset.status = "registered"
+                    dataset.error = None
+                    db.add(dataset)
+            db.add(job)
+        if interrupted:
+            db.commit()
+        return len(interrupted)
 
 
 class JobContext:
@@ -65,20 +93,35 @@ class JobManager:
             self._cancels[job_id] = event
         self._pool.submit(self._run, job_id, body, event)
 
-    def cancel(self, job_id: str) -> bool:
+    def shutdown(self, *, wait: bool = True) -> None:
+        self._pool.shutdown(wait=wait)
+
+    def cancel(self, job_id: str, *, db: Session | None = None) -> bool:
         """Request cancellation. Returns True if the job was cancellable."""
         with self._lock:
             event = self._cancels.get(job_id)
-        if event is None:
-            return False
-        event.set()
+            if event is None:
+                return False
+            # Set while holding the same lock used by the worker's terminal
+            # pop/is_set pair. A successful cancel can no longer be overtaken
+            # by publication of a succeeded result.
+            event.set()
         # if still queued/running, mark canceled promptly
-        with SessionLocal() as db:
-            job = db.get(Job, job_id)
+        def mark_canceled(session: Session, *, commit: bool) -> None:
+            job = session.get(Job, job_id)
             if job and job.status in ("queued", "running"):
                 job.status = "canceled"
-                db.add(job)
-                db.commit()
+                session.add(job)
+                if commit:
+                    session.commit()
+                else:
+                    session.flush()
+
+        if db is None:
+            with SessionLocal() as session:
+                mark_canceled(session, commit=True)
+        else:
+            mark_canceled(db, commit=False)
         return True
 
     def _run(self, job_id: str, body: JobBody, event: threading.Event) -> None:
@@ -97,11 +140,19 @@ class JobManager:
             db.commit()
         try:
             result = body(ctx)
+            # Close the cancellation window before publishing the terminal
+            # state. A cancel that arrived before this lock is honored; later
+            # callers see an untracked/terminal job instead of racing success.
+            with self._lock:
+                self._cancels.pop(job_id, None)
+                canceled = event.is_set()
+            if canceled:
+                self._cleanup_result(result)
             with SessionLocal() as db:
                 job = db.get(Job, job_id)
                 if job is None:
                     return
-                if event.is_set():
+                if canceled:
                     job.status = "canceled"
                 else:
                     job.status = "succeeded"
@@ -128,6 +179,20 @@ class JobManager:
         finally:
             with self._lock:
                 self._cancels.pop(job_id, None)
+
+    @staticmethod
+    def _cleanup_result(result: dict) -> None:
+        artifact_id = result.get("artifact_id")
+        if not artifact_id:
+            return
+        with SessionLocal() as db:
+            artifact = db.get(Artifact, artifact_id)
+            if artifact is None:
+                return
+            object_key = artifact.object_key
+            db.delete(artifact)
+            db.commit()
+        store.delete(object_key)
 
 
 manager = JobManager()

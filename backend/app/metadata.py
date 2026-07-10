@@ -1,8 +1,9 @@
 """Dataset metadata extraction.
 
 Self-contained parsers for VTK XML native formats (.vtp/.vti/.vtu/.vts/.vtr),
-the .pvd time-series collection format, and CSV tables. Uses only the Python
-standard library so that the ingestion worker needs no VTK/ParaView install.
+the .pvd time-series collection format, and CSV tables. XML parsing uses
+``defusedxml`` so untrusted uploads cannot expand entities; no VTK install is
+required for the browser-direct formats.
 
 Scope (per work_plan M0-D / M1-B):
   * Structural metadata is always extracted (dataset type, counts, array names,
@@ -22,6 +23,8 @@ import os
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from typing import List, Optional
+
+from defusedxml import ElementTree as SafeET
 
 
 @dataclass
@@ -237,7 +240,7 @@ _XML_TYPE_DISPATCH = {
 
 
 def _extract_vtk_xml(path: str) -> DatasetMetadata:
-    root = ET.parse(path).getroot()
+    root = SafeET.parse(path).getroot()
     if _local(root.tag) != "VTKFile":
         raise UnsupportedFormatError(f"Not a VTKFile: root tag {root.tag!r}")
     vtk_type = root.get("type", "")
@@ -271,35 +274,78 @@ def _contained_sibling(pvd_path: str, rel: str) -> Optional[str]:
     return candidate
 
 
-def _extract_pvd(path: str) -> DatasetMetadata:
-    root = ET.parse(path).getroot()
+def _extract_pvd(path: str, *, enrich_siblings: bool = False) -> DatasetMetadata:
+    root = SafeET.parse(path).getroot()
     collection = _find_child(root, "Collection")
     meta = DatasetMetadata(dataset_type="Collection")
     if collection is None:
         return meta
     entries = _find_children(collection, "DataSet")
-    timesteps = sorted({float(e.get("timestep", "0") or "0") for e in entries})
-    files = [e.get("file") for e in entries if e.get("file")]
-    parts = {int(e.get("part", "0") or "0") for e in entries}
+    parsed_entries = []
+    for entry in entries:
+        if not entry.get("file"):
+            continue
+        try:
+            timestep = float(entry.get("timestep", "0") or "0")
+        except ValueError as exc:
+            raise ValueError("PVD timestep must be a number") from exc
+        if not math.isfinite(timestep):
+            raise ValueError("PVD timestep must be finite")
+        try:
+            part = int(entry.get("part", "0") or "0")
+        except ValueError as exc:
+            raise ValueError("PVD part must be an integer") from exc
+        parsed_entries.append(
+            {
+                "timestep": timestep,
+                "part": part,
+                "group": entry.get("group", "") or "",
+                "file": entry.get("file", "") or "",
+            }
+        )
+    timesteps = sorted({entry["timestep"] for entry in parsed_entries})
+    files = [entry["file"] for entry in parsed_entries]
+    parts = {entry["part"] for entry in parsed_entries}
     meta.timesteps = timesteps
     meta.num_blocks = len(parts)
-    meta.extra = {"num_timesteps": len(timesteps), "files": files}
-    # enrich arrays/counts from the first referenced piece if resolvable & XML.
+    meta.extra = {
+        "num_timesteps": len(timesteps),
+        "files": files,
+        "entries": parsed_entries,
+    }
+    # Enrich arrays/counts from only the first referenced piece, best-effort.
+    # Time-series can contain thousands of frames and metadata extraction must
+    # not become O(N), nor should a damaged later frame make the whole
+    # collection undiscoverable.
     # The referenced path is restricted to the .pvd's own directory: a crafted
     # collection must not read absolute paths or escape via ".." into the rest
     # of the object store or the filesystem.
-    first = _contained_sibling(path, files[0]) if files else None
-    if first is not None:
-        if os.path.isfile(first) and first.lower().endswith((".vtp", ".vti", ".vtu", ".vts", ".vtr")):
+    first_inner: Optional[DatasetMetadata] = None
+    if files:
+        first_extension = os.path.splitext(files[0])[1].lower()
+        inferred_types = {
+            ".vtp": "PolyData",
+            ".vti": "ImageData",
+            ".vtu": "UnstructuredGrid",
+            ".vts": "StructuredGrid",
+            ".vtr": "RectilinearGrid",
+        }
+        if first_extension in inferred_types:
+            meta.extra["inner_type"] = inferred_types[first_extension]
+        sibling = _contained_sibling(path, files[0]) if enrich_siblings else None
+        if sibling is not None and os.path.isfile(sibling) and first_extension in inferred_types:
             try:
-                inner = _extract_vtk_xml(first)
-                meta.num_points = inner.num_points
-                meta.num_cells = inner.num_cells
-                meta.bounds = inner.bounds
-                meta.arrays = inner.arrays
-                meta.extra["inner_type"] = inner.dataset_type
-            except Exception:  # noqa: BLE001 - enrichment is best-effort
-                pass
+                first_inner = _extract_vtk_xml(sibling)
+            except Exception as exc:  # noqa: BLE001 - optional enrichment only
+                meta.extra["enrichment_warning"] = str(exc)
+    if first_inner is not None:
+        meta.num_points = first_inner.num_points
+        meta.num_cells = first_inner.num_cells
+        meta.bounds = first_inner.bounds
+        meta.arrays = first_inner.arrays
+        meta.extra["inner_type"] = first_inner.dataset_type
+        for key, value in (first_inner.extra or {}).items():
+            meta.extra.setdefault(key, value)
     return meta
 
 
@@ -354,13 +400,13 @@ def _extract_csv(path: str) -> DatasetMetadata:
 _XML_EXTENSIONS = {".vtp", ".vti", ".vtu", ".vts", ".vtr"}
 
 
-def extract_metadata(path: str) -> DatasetMetadata:
+def extract_metadata(path: str, *, pvd_enrich_siblings: bool = False) -> DatasetMetadata:
     """Extract metadata from a dataset file, dispatched by extension."""
     ext = os.path.splitext(path)[1].lower()
     if ext in _XML_EXTENSIONS:
         return _extract_vtk_xml(path)
     if ext == ".pvd":
-        return _extract_pvd(path)
+        return _extract_pvd(path, enrich_siblings=pvd_enrich_siblings)
     if ext == ".csv":
         return _extract_csv(path)
     raise UnsupportedFormatError(

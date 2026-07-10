@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 
 
@@ -13,16 +14,53 @@ class Settings:
         self.database_url = os.environ.get(
             "PVWEB_DATABASE_URL", f"sqlite:///{self.data_root / 'pvweb.db'}"
         )
+        self.object_store = os.environ.get("PVWEB_OBJECT_STORE", "local").lower()
+        self.s3_bucket = os.environ.get("PVWEB_S3_BUCKET", "pvweb")
+        self.s3_endpoint_url = os.environ.get("PVWEB_S3_ENDPOINT_URL") or None
+        self.s3_region = os.environ.get("PVWEB_S3_REGION", "us-east-1")
+        self.s3_cache_max_bytes = int(
+            os.environ.get("PVWEB_S3_CACHE_MAX_BYTES", str(5 * 1024 * 1024 * 1024))
+        )
+        self.s3_cache_ttl_seconds = int(os.environ.get("PVWEB_S3_CACHE_TTL_SECONDS", "86400"))
+        # Authentication is fail-closed by default. Local development must opt
+        # into the header-based identity provider explicitly.
+        self.auth_mode = os.environ.get("PVWEB_AUTH_MODE", "oidc").lower()
+        self.allow_insecure_dev_auth = os.environ.get(
+            "PVWEB_ALLOW_INSECURE_DEV_AUTH", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.oidc_issuer = os.environ.get("PVWEB_OIDC_ISSUER") or None
+        self.oidc_audience = os.environ.get("PVWEB_OIDC_AUDIENCE") or None
+        self.oidc_jwks_url = os.environ.get("PVWEB_OIDC_JWKS_URL") or None
+        self.bootstrap_admin_subjects = {
+            subject.strip()
+            for subject in os.environ.get("PVWEB_BOOTSTRAP_ADMIN_SUBS", "").split(",")
+            if subject.strip()
+        }
+        self.worker_command = shlex.split(os.environ.get("PVWEB_PVPYTHON", ""))
+        self.worker_timeout_seconds = int(os.environ.get("PVWEB_WORKER_TIMEOUT", "900"))
+        self.trame_broker_url = os.environ.get("PVWEB_TRAME_BROKER_URL") or None
+        self.trame_broker_token = os.environ.get("PVWEB_TRAME_BROKER_TOKEN") or None
+        configured_ws_hosts = os.environ.get("PVWEB_TRAME_ALLOWED_WS_HOSTS", "")
+        self.trame_allowed_ws_hosts = {
+            host.strip().lower() for host in configured_ws_hosts.split(",") if host.strip()
+        }
+        self.session_ttl_seconds = int(os.environ.get("PVWEB_SESSION_TTL", "3600"))
         # Upload guardrails (work_plan 8.3 security).
         self.max_upload_bytes = int(os.environ.get("PVWEB_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
         # Extension allow-list; magic/header checks live in datasets router.
         self.allowed_extensions = {
             ".vtp", ".vti", ".vtu", ".vts", ".vtr", ".pvd", ".csv",
+            ".cgns", ".exo", ".e", ".case", ".xdmf", ".xmf",
+        }
+        self.external_extensions = {".cgns", ".exo", ".e", ".case", ".xdmf", ".xmf"}
+        self.external_bundle_extensions = self.external_extensions | {
+            ".h5", ".hdf5", ".geo", ".scl", ".vec", ".dat", ".bin",
         }
 
     def ensure_dirs(self) -> None:
         self.data_root.mkdir(parents=True, exist_ok=True)
         (self.data_root / "objects").mkdir(parents=True, exist_ok=True)
+        (self.data_root / "s3-cache").mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

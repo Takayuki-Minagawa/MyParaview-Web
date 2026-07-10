@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { colorForValue, coolToWarm, normalize } from "./colormap";
+import {
+  colorForValue,
+  colorMapCssGradient,
+  colorMapStops,
+  coolToWarm,
+  normalize,
+  sampleColorMap,
+} from "./colormap";
 
 describe("normalize", () => {
   it("maps within range", () => {
@@ -7,6 +14,10 @@ describe("normalize", () => {
   });
   it("guards a degenerate range", () => {
     expect(normalize(5, [3, 3])).toBe(0);
+  });
+  it("clamps values outside the range", () => {
+    expect(normalize(-5, [0, 10])).toBe(0);
+    expect(normalize(15, [0, 10])).toBe(1);
   });
 });
 
@@ -31,5 +42,26 @@ describe("colorForValue", () => {
     expect(r).toBeCloseTo(0.87, 2);
     expect(g).toBeCloseTo(0.87, 2);
     expect(b).toBeCloseTo(0.87, 2);
+  });
+});
+
+describe("registered colormaps", () => {
+  it("returns defensive copies of transfer-function stops", () => {
+    const first = colorMapStops("viridis");
+    first[0].rgb[0] = 1;
+    expect(colorMapStops("viridis")[0].rgb[0]).toBeCloseTo(0.267);
+  });
+
+  it("interpolates grayscale at the midpoint", () => {
+    const [r, g, b] = sampleColorMap("grayscale", 0.5);
+    expect(r).toBeCloseTo(g);
+    expect(g).toBeCloseTo(b);
+    expect(r).toBeCloseTo(0.515);
+  });
+
+  it("builds a CSS legend gradient", () => {
+    const gradient = colorMapCssGradient("cool-to-warm");
+    expect(gradient).toContain("linear-gradient");
+    expect(gradient).toContain("50%");
   });
 });

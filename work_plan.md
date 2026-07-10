@@ -79,15 +79,12 @@
 
 **目的**: 認証付きで、アップロード→メタデータ抽出→表示→基本フィルタ→スクショまでの一連が動く最小製品。
 
-> **実装状況 (2026-07-09)**: このリポジトリでM1コアを実装済み。
-> - ✅ 実装: FastAPIバックエンド（Project/Dataset/Pipeline/Job/Artifactモデル、REST API）、
->   標準ライブラリによるメタデータ抽出（VTP/VTI/VTU/PVD/CSV）、ローカルオブジェクトストア、
->   キャンセル可能なスレッドジョブ、アップロードガード（拡張子/magic/quota）、
->   React+vtk.jsフロント（4パネル・PolyDataのブラウザ描画・scalar coloring・representation・
->   スクショ・カメラリセット）、pytest 16件 + vitest 12件。
-> - ⏭ 繰り延べ（M2+）: OIDC/RBAC・監査ログ、PostgreSQL、WebSocket/trameサーバレンダリング
->   セッション、slice/clip/contour/thresholdのサーバ実行、外部形式（CGNS/Exodus/EnSight/XDMF）。
-> 詳細は [README](./README.md) と [docs/ADR-0001-stack.md](./docs/ADR-0001-stack.md) を参照。
+> **実装状況 (2026-07-10)**: M1コアに加え、追加機能候補17件の最小スライスを実装済み。
+> browser-directはVTP/CSV/VTI/PVD、production adapterはPostgreSQL/S3/OIDC/RBAC、
+> server capabilityはpvpython filter/external readerとtrame broker/WS proxyを実装した。
+> WebGPU/WASMは検出+WebGL fallback、ParaView/trameは外部runtimeを必要とする。
+> 詳細は[機能対応表](./docs/implementation-status.md)と
+> [全機能検証](./docs/verify-all-features.md)を参照。
 
 ### M1-A: 基盤・バックエンド
 - [ ] FastAPIプロジェクト、PostgreSQLスキーマ、S3互換ストレージ、ジョブキューを結線

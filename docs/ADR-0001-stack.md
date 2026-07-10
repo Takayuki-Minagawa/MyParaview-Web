@@ -1,6 +1,6 @@
 # ADR-0001: M1 MVP technology stack
 
-Status: Accepted · Date: 2026-07-09
+Status: Accepted, amended by ADR-0002 · Date: 2026-07-09
 
 ## Context
 
@@ -17,8 +17,8 @@ environment without VTK/ParaView/GPU installed.
    cheap. JSON columns hold array/timestep detail instead of separate
    `ArrayInfo`/`TimeStep` tables to keep the schema small.
 
-2. **Metadata extraction without VTK.** VTK XML / PVD / CSV are parsed with the
-   Python standard library (`xml.etree`, `csv`). This removes a heavy native
+2. **Metadata extraction without VTK.** VTK XML / PVD / CSV are parsed with
+   lightweight Python code (`defusedxml`, `csv`). This removes a heavy native
    dependency from the ingestion path and keeps the MVP installable anywhere.
    The trade-off — no ranges for binary/appended arrays, no CGNS/Exodus/EnSight
    — is exactly the boundary where a server-side VTK/`pvpython` worker takes
@@ -42,6 +42,6 @@ environment without VTK/ParaView/GPU installed.
 
 - The MVP runs with only Python and Node — no GPU, VTK, or ParaView — which
   makes it CI-friendly and easy to evaluate.
-- Several M2+ items (server rendering via trame/`VtkRemoteView`, external
-  scientific formats, volume rendering, Postgres, a real queue, OIDC/RBAC) are
-  deliberately deferred and tracked in the work plan.
+- The original local defaults remain available. PostgreSQL/S3/OIDC, external
+  ParaView processing, and trame session contracts were subsequently added as
+  optional capabilities in [ADR-0002](./ADR-0002-production-capabilities.md).

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from defusedxml.common import DefusedXmlException
 
 from app.metadata import UnsupportedFormatError, extract_metadata
 
@@ -61,7 +62,7 @@ def test_csv_table():
 
 
 def test_pvd_collection_timesteps_and_enrichment():
-    meta = extract_metadata(str(DATA / "sample_series.pvd"))
+    meta = extract_metadata(str(DATA / "sample_series.pvd"), pvd_enrich_siblings=True)
     assert meta.dataset_type == "Collection"
     assert meta.timesteps == [0.0, 1.5]
     assert meta.num_blocks == 1
@@ -69,6 +70,57 @@ def test_pvd_collection_timesteps_and_enrichment():
     assert meta.num_points == 3
     assert _array(meta, "temperature").value_range == [0.0, 10.0]
     assert meta.extra["files"] == ["series_step0.vtp", "series_step1.vtp"]
+
+
+def test_vtk_xml_rejects_internal_entities(tmp_path):
+    payload = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE VTKFile [<!ENTITY expanded "0 0 0">]>'
+        '<VTKFile type="PolyData"><PolyData><Piece NumberOfPoints="1" NumberOfPolys="0">'
+        '<Points><DataArray type="Float32" NumberOfComponents="3" format="ascii">'
+        '&expanded;</DataArray></Points></Piece></PolyData></VTKFile>'
+    )
+    path = tmp_path / "entity.vtp"
+    path.write_text(payload)
+    with pytest.raises(DefusedXmlException):
+        extract_metadata(str(path))
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_pvd_rejects_non_finite_timestep(tmp_path, value):
+    pvd = tmp_path / "invalid-time.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        f'<DataSet timestep="{value}" file="step.vtp"/>'
+        "</Collection></VTKFile>"
+    )
+    with pytest.raises(ValueError, match="timestep must be finite"):
+        extract_metadata(str(pvd))
+
+
+def test_pvd_rejects_non_numeric_timestep_with_clear_error(tmp_path):
+    pvd = tmp_path / "invalid-time.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        '<DataSet timestep="abc" file="step.vtp"/>'
+        "</Collection></VTKFile>"
+    )
+    with pytest.raises(ValueError, match="PVD timestep must be a number"):
+        extract_metadata(str(pvd))
+
+
+def test_pvd_imagedata_preserves_grid_metadata(tmp_path):
+    (tmp_path / "frame.vti").write_bytes((DATA / "sample_image.vti").read_bytes())
+    pvd = tmp_path / "image-series.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        '<DataSet timestep="0" file="frame.vti"/>'
+        "</Collection></VTKFile>"
+    )
+    meta = extract_metadata(str(pvd), pvd_enrich_siblings=True)
+    assert meta.extra["inner_type"] == "ImageData"
+    assert meta.extra["dimensions"] == [2, 2, 2]
+    assert meta.extra["whole_extent"] == [0, 1, 0, 1, 0, 1]
 
 
 _MINI_VTP = (
@@ -96,7 +148,7 @@ def test_pvd_does_not_read_outside_its_directory(tmp_path):
         '<DataSet timestep="0" file="../outside/secret.vtp"/>'
         "</Collection></VTKFile>\n"
     )
-    meta = extract_metadata(str(pvd))
+    meta = extract_metadata(str(pvd), pvd_enrich_siblings=True)
     assert meta.dataset_type == "Collection"
     assert meta.timesteps == [0.0]
     # enrichment is blocked -> counts stay unset despite the reachable target
@@ -117,7 +169,7 @@ def test_pvd_rejects_absolute_path_reference(tmp_path):
         f'<DataSet timestep="0" file="{target}"/>'
         "</Collection></VTKFile>\n"
     )
-    meta = extract_metadata(str(pvd))
+    meta = extract_metadata(str(pvd), pvd_enrich_siblings=True)
     assert meta.timesteps == [0.0]
     assert meta.num_points is None  # absolute reference not enriched
 
@@ -133,8 +185,51 @@ def test_pvd_enriches_from_sibling_in_same_directory(tmp_path):
         '<DataSet timestep="0" file="step0.vtp"/>'
         "</Collection></VTKFile>\n"
     )
-    meta = extract_metadata(str(pvd))
+    meta = extract_metadata(str(pvd), pvd_enrich_siblings=True)
     assert meta.num_points == 3  # in-directory enrichment still works
+
+
+def test_pvd_broken_first_piece_keeps_collection_metadata(tmp_path):
+    (tmp_path / "broken.vtp").write_text(
+        '<?xml version="1.0"?><VTKFile type="PolyData"><PolyData>'
+    )
+    pvd = tmp_path / "series.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        '<DataSet timestep="0" file="broken.vtp"/>'
+        '</Collection></VTKFile>'
+    )
+    meta = extract_metadata(str(pvd), pvd_enrich_siblings=True)
+    assert meta.dataset_type == "Collection"
+    assert meta.timesteps == [0.0]
+    assert meta.extra["inner_type"] == "PolyData"
+    assert "enrichment_warning" in meta.extra
+
+
+def test_pvd_ignores_fileless_invalid_part_and_counts_parsed_entries(tmp_path):
+    pvd = tmp_path / "fileless-part.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        '<DataSet part="1.5"/>'
+        '<DataSet timestep="0" part="2" file="step.vtp"/>'
+        '</Collection></VTKFile>'
+    )
+    meta = extract_metadata(str(pvd), pvd_enrich_siblings=False)
+    assert meta.num_blocks == 1
+    assert meta.extra["entries"] == [
+        {"timestep": 0.0, "part": 2, "group": "", "file": "step.vtp"}
+    ]
+
+
+def test_pvd_rejects_non_integer_part_on_referenced_entry(tmp_path):
+    pvd = tmp_path / "invalid-part.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        '<DataSet timestep="0" part="1.5" file="step.vtp"/>'
+        '</Collection></VTKFile>'
+    )
+    with pytest.raises(ValueError, match="part must be an integer"):
+        extract_metadata(str(pvd))
 
 
 def test_imagedata_tolerates_malformed_origin(tmp_path):

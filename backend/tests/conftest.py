@@ -10,6 +10,8 @@ from pathlib import Path
 _TMP = tempfile.mkdtemp(prefix="pvweb-test-")
 os.environ["PVWEB_DATA_ROOT"] = _TMP
 os.environ["PVWEB_DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
+os.environ["PVWEB_AUTH_MODE"] = "dev"
+os.environ["PVWEB_ALLOW_INSECURE_DEV_AUTH"] = "1"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

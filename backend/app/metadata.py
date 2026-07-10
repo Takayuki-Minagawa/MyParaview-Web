@@ -274,7 +274,7 @@ def _contained_sibling(pvd_path: str, rel: str) -> Optional[str]:
     return candidate
 
 
-def _extract_pvd(path: str) -> DatasetMetadata:
+def _extract_pvd(path: str, *, enrich_siblings: bool = False) -> DatasetMetadata:
     root = SafeET.parse(path).getroot()
     collection = _find_child(root, "Collection")
     meta = DatasetMetadata(dataset_type="Collection")
@@ -288,17 +288,21 @@ def _extract_pvd(path: str) -> DatasetMetadata:
         timestep = float(entry.get("timestep", "0") or "0")
         if not math.isfinite(timestep):
             raise ValueError("PVD timestep must be finite")
+        try:
+            part = int(entry.get("part", "0") or "0")
+        except ValueError as exc:
+            raise ValueError("PVD part must be an integer") from exc
         parsed_entries.append(
             {
                 "timestep": timestep,
-                "part": int(entry.get("part", "0") or "0"),
+                "part": part,
                 "group": entry.get("group", "") or "",
                 "file": entry.get("file", "") or "",
             }
         )
     timesteps = sorted({entry["timestep"] for entry in parsed_entries})
     files = [entry["file"] for entry in parsed_entries]
-    parts = {int(e.get("part", "0") or "0") for e in entries}
+    parts = {entry["part"] for entry in parsed_entries}
     meta.timesteps = timesteps
     meta.num_blocks = len(parts)
     meta.extra = {
@@ -325,7 +329,7 @@ def _extract_pvd(path: str) -> DatasetMetadata:
         }
         if first_extension in inferred_types:
             meta.extra["inner_type"] = inferred_types[first_extension]
-        sibling = _contained_sibling(path, files[0])
+        sibling = _contained_sibling(path, files[0]) if enrich_siblings else None
         if sibling is not None and os.path.isfile(sibling) and first_extension in inferred_types:
             try:
                 first_inner = _extract_vtk_xml(sibling)
@@ -393,13 +397,13 @@ def _extract_csv(path: str) -> DatasetMetadata:
 _XML_EXTENSIONS = {".vtp", ".vti", ".vtu", ".vts", ".vtr"}
 
 
-def extract_metadata(path: str) -> DatasetMetadata:
+def extract_metadata(path: str, *, pvd_enrich_siblings: bool = False) -> DatasetMetadata:
     """Extract metadata from a dataset file, dispatched by extension."""
     ext = os.path.splitext(path)[1].lower()
     if ext in _XML_EXTENSIONS:
         return _extract_vtk_xml(path)
     if ext == ".pvd":
-        return _extract_pvd(path)
+        return _extract_pvd(path, enrich_siblings=pvd_enrich_siblings)
     if ext == ".csv":
         return _extract_csv(path)
     raise UnsupportedFormatError(

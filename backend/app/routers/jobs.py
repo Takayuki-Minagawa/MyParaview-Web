@@ -10,6 +10,7 @@ from ..auth import Principal, get_principal, require_project_role
 from ..db import get_db
 from ..jobs import manager
 from ..models import Dataset, Job, Project
+from ..project_locks import locked_project
 from ..schemas import JobCreate, JobOut
 from ..services import run_dataset_operation
 
@@ -23,43 +24,40 @@ def create_job(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, payload.project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, payload.project_id, principal, "editor")
-    dataset = db.get(Dataset, payload.target_id)
-    if dataset is None:
-        raise HTTPException(404, "target dataset not found")
-    if dataset.project_id != payload.project_id:
-        raise HTTPException(422, "target dataset belongs to a different project")
-    if payload.kind == "filter" and payload.params.get("filter") in {"contour", "threshold"}:
-        expected_association = (
-            "cell" if payload.params.get("association") == "CELLS" else "point"
-        )
-        selected_array = next(
-            (
-                array
-                for array in (dataset.arrays or [])
-                if array.get("name") == payload.params.get("array")
-                and array.get("association") == expected_association
-                and int(array.get("num_components", 1)) == 1
-            ),
-            None,
-        )
-        if selected_array is None:
-            raise HTTPException(
-                422,
-                "filter array must match an ingested scalar array and association",
+    with locked_project(db, payload.project_id, principal, "editor"):
+        dataset = db.get(Dataset, payload.target_id)
+        if dataset is None:
+            raise HTTPException(404, "target dataset not found")
+        if dataset.project_id != payload.project_id:
+            raise HTTPException(422, "target dataset belongs to a different project")
+        if payload.kind == "filter" and payload.params.get("filter") in {"contour", "threshold"}:
+            expected_association = (
+                "cell" if payload.params.get("association") == "CELLS" else "point"
             )
-    job = Job(
-        project_id=payload.project_id,
-        kind=payload.kind,
-        status="queued",
-        target_id=dataset.id,
-        params=payload.params,
-    )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
+            selected_array = next(
+                (
+                    array
+                    for array in (dataset.arrays or [])
+                    if array.get("name") == payload.params.get("array")
+                    and array.get("association") == expected_association
+                    and int(array.get("num_components", 1)) == 1
+                ),
+                None,
+            )
+            if selected_array is None:
+                raise HTTPException(
+                    422,
+                    "filter array must match an ingested scalar array and association",
+                )
+        job = Job(
+            project_id=payload.project_id,
+            kind=payload.kind,
+            status="queued",
+            target_id=dataset.id,
+            params=payload.params,
+        )
+        db.add(job)
+        db.flush()
     request.state.audit_project_id = payload.project_id
     request.state.audit_resource_type = "job"
     request.state.audit_resource_id = job.id
@@ -111,13 +109,16 @@ def cancel_job(
         raise HTTPException(404, "job not found")
     if not job.project_id:
         raise HTTPException(403, "unscoped job access is forbidden")
-    require_project_role(db, job.project_id, principal, "editor")
-    if job.status in ("succeeded", "failed", "canceled"):
-        raise HTTPException(409, f"job already {job.status}")
-    cancelled = manager.cancel(job_id)
-    db.refresh(job)
-    # manager is an in-process singleton (single-worker MVP assumption). If the
-    # job is not tracked here yet still non-terminal, we cannot cancel it.
-    if not cancelled and job.status not in ("succeeded", "failed", "canceled"):
-        raise HTTPException(409, "job is not cancellable on this instance")
-    return job
+    project_id = job.project_id
+    with locked_project(db, project_id, principal, "editor"):
+        job = db.get(Job, job_id)
+        if job is None:
+            raise HTTPException(404, "job not found")
+        if job.status in ("succeeded", "failed", "canceled"):
+            raise HTTPException(409, f"job already {job.status}")
+        cancelled = manager.cancel(job_id, db=db)
+        # The manager remains in-process; a job owned by another worker cannot
+        # be canceled here, but the database mutation is still serialized.
+        if not cancelled and job.status not in ("succeeded", "failed", "canceled"):
+            raise HTTPException(409, "job is not cancellable on this instance")
+        return job

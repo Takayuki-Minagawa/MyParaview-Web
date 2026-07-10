@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseViewState } from "./viewState";
+import { clampSliceIndex, parseViewState } from "./viewState";
 
 const VALID = {
   schema_version: 1,
@@ -26,6 +26,8 @@ describe("parseViewState", () => {
     expect(parseViewState({ ...VALID, schema_version: 2 })).toBeNull();
     expect(parseViewState({ ...VALID, opacity: 3 })).toBeNull();
     expect(parseViewState({ ...VALID, color_by: { name: "x", association: "field" } })).toBeNull();
+    expect(parseViewState({ ...VALID, color_range: [10, 0] })).toBeNull();
+    expect(parseViewState({ ...VALID, color_range: [1, 1] })).toBeNull();
   });
 
   it("round-trips CSV and ImageData display controls", () => {
@@ -40,5 +42,11 @@ describe("parseViewState", () => {
     expect(parseViewState(extended)).toEqual(extended);
     expect(parseViewState({ ...extended, table_coordinates: { x: "a", y: "a", z: "b" } }))
       .toBeNull();
+  });
+
+  it("clamps restored slices to the active extent while allowing negative extents", () => {
+    expect(clampSliceIndex(-1, 0, 10)).toBe(0);
+    expect(clampSliceIndex(11, 0, 10)).toBe(10);
+    expect(clampSliceIndex(-1, -5, 5)).toBe(-1);
   });
 });

@@ -22,9 +22,10 @@ import { DatasetPanel } from "./components/DatasetPanel";
 import { PropertiesPanel } from "./components/PropertiesPanel";
 import { VtkViewer } from "./components/VtkViewer";
 import { mergeJobSnapshots } from "./lib/job";
-import { parseViewState } from "./lib/viewState";
+import { clampSliceIndex, parseViewState } from "./lib/viewState";
 import { initializeOidc, login, logout } from "./oidc";
 import { detectBrowserCapabilities } from "./lib/capabilities";
+import { defaultImageScalar } from "./lib/imageData";
 
 export function App() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -407,7 +408,7 @@ export function App() {
       table_coordinates: tableCoordinates,
       image_mode: imageMode,
       slice_axis: sliceAxis,
-      slice_index: sliceIndex,
+      slice_index: clampedSliceIndex,
       timestep_index: timestepIndex,
     };
     try {
@@ -541,8 +542,8 @@ export function App() {
       }
     }
     if (viewerDatasetType === "ImageData" && !colorBy) {
-      const scalar = (selectedDataset.arrays ?? []).find((array) => array.association === "point");
-      if (scalar) setColorByState({ name: scalar.name, association: "point" });
+      const scalar = defaultImageScalar(selectedDataset.arrays ?? []);
+      if (scalar) setColorByState(scalar);
     }
   }, [selectedDataset, tableCoordinates, colorBy, viewerDatasetType]);
 
@@ -579,10 +580,11 @@ export function App() {
   const extentOffset = { X: 0, Y: 2, Z: 4 }[sliceAxis];
   const sliceMin = wholeExtent[extentOffset] ?? 0;
   const sliceMax = Math.max(sliceMin, wholeExtent[extentOffset + 1] ?? sliceMin);
+  const clampedSliceIndex = clampSliceIndex(sliceIndex, sliceMin, sliceMax);
 
   useEffect(() => {
-    setSliceIndex((index) => Math.max(sliceMin, Math.min(index, sliceMax)));
-  }, [sliceMin, sliceMax]);
+    if (sliceIndex !== clampedSliceIndex) setSliceIndex(clampedSliceIndex);
+  }, [sliceIndex, clampedSliceIndex]);
 
   const exportDataset = async () => {
     const projectId = currentProjectRef.current;
@@ -778,7 +780,7 @@ export function App() {
             tableCoordinates={tableCoordinates}
             imageMode={imageMode}
             sliceAxis={sliceAxis}
-            sliceIndex={sliceIndex}
+            sliceIndex={clampedSliceIndex}
             cameraState={cameraState}
             onCameraChange={setCameraState}
             onScreenshotCaptured={(blob, datasetId) => {
@@ -845,7 +847,7 @@ export function App() {
             const offset = { X: 0, Y: 2, Z: 4 }[axis];
             setSliceIndex(wholeExtent[offset] ?? 0);
           }}
-          sliceIndex={sliceIndex}
+          sliceIndex={clampedSliceIndex}
           onSliceIndex={setSliceIndex}
           sliceMin={sliceMin}
           sliceMax={sliceMax}

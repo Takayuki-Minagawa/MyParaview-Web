@@ -10,8 +10,6 @@ from typing import Optional
 from defusedxml import ElementTree as SafeET
 from defusedxml.common import DefusedXmlException
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,7 +20,8 @@ from ..config import settings
 from ..db import get_db
 from ..jobs import manager
 from ..models import Dataset, DatasetFile, Job, Project
-from ..project_locks import project_guard
+from ..project_locks import locked_project
+from ..responses import LeasedFileResponse
 from ..schemas import CollectionStepOut, DatasetOut, JobOut
 from ..services import run_ingest
 from ..storage import store
@@ -161,21 +160,13 @@ async def upload_dataset(
             size = store.save_stream(key, file.file, max_bytes=settings.max_upload_bytes)
         except ValueError as exc:
             raise HTTPException(413, str(exc)) from exc
-        with project_guard(project_id):
-            db.expire_all()
-            project = db.scalar(
-                select(Project).where(Project.id == project_id).with_for_update()
-            )
-            if project is None:
-                raise HTTPException(409, "project was deleted during upload")
-            require_project_role(db, project_id, principal, "editor")
+        with locked_project(db, project_id, principal, "editor"):
             ds = Dataset(
                 project_id=project_id, filename=filename, ext=ext,
                 size_bytes=size, object_key=key, status="registered",
             )
             db.add(ds)
-            db.commit()
-            db.refresh(ds)
+            db.flush()
     except Exception:
         db.rollback()
         store.delete(key)
@@ -263,26 +254,26 @@ async def upload_dataset_bundle(
         if len(referenced_extensions) != 1:
             raise HTTPException(422, "PVD members must use one consistent browser-renderable format")
 
-        dataset = Dataset(
-            project_id=project_id,
-            filename=PurePosixPath(primary_path).name,
-            ext=".pvd",
-            size_bytes=total_size,
-            object_key=primary_key,
-            status="registered",
-        )
-        db.add(dataset)
-        db.flush()
-        for relative_path, key, size in persisted:
-            db.add(DatasetFile(
-                dataset_id=dataset.id,
-                relative_path=relative_path,
-                object_key=key,
-                size_bytes=size,
-                is_primary=relative_path == primary_path,
-            ))
-        db.commit()
-        db.refresh(dataset)
+        with locked_project(db, project_id, principal, "editor"):
+            dataset = Dataset(
+                project_id=project_id,
+                filename=PurePosixPath(primary_path).name,
+                ext=".pvd",
+                size_bytes=total_size,
+                object_key=primary_key,
+                status="registered",
+            )
+            db.add(dataset)
+            db.flush()
+            for relative_path, key, size in persisted:
+                db.add(DatasetFile(
+                    dataset_id=dataset.id,
+                    relative_path=relative_path,
+                    object_key=key,
+                    size_bytes=size,
+                    is_primary=relative_path == primary_path,
+                ))
+            db.flush()
         request.state.audit_project_id = project_id
         request.state.audit_resource_type = "dataset"
         request.state.audit_resource_id = dataset.id
@@ -364,28 +355,28 @@ async def upload_external_dataset_bundle(
                 )
         except (ET.ParseError, DefusedXmlException, UnicodeDecodeError, ValueError) as exc:
             raise HTTPException(422, f"invalid external descriptor: {exc}") from exc
-        dataset = Dataset(
-            project_id=project_id,
-            filename=PurePosixPath(primary_path).name,
-            ext=primary_ext,
-            size_bytes=total_size,
-            object_key=primary_key,
-            status="registered",
-        )
-        db.add(dataset)
-        db.flush()
-        for relative_path, key, size in persisted:
-            db.add(
-                DatasetFile(
-                    dataset_id=dataset.id,
-                    relative_path=relative_path,
-                    object_key=key,
-                    size_bytes=size,
-                    is_primary=relative_path == primary_path,
-                )
+        with locked_project(db, project_id, principal, "editor"):
+            dataset = Dataset(
+                project_id=project_id,
+                filename=PurePosixPath(primary_path).name,
+                ext=primary_ext,
+                size_bytes=total_size,
+                object_key=primary_key,
+                status="registered",
             )
-        db.commit()
-        db.refresh(dataset)
+            db.add(dataset)
+            db.flush()
+            for relative_path, key, size in persisted:
+                db.add(
+                    DatasetFile(
+                        dataset_id=dataset.id,
+                        relative_path=relative_path,
+                        object_key=key,
+                        size_bytes=size,
+                        is_primary=relative_path == primary_path,
+                    )
+                )
+            db.flush()
         request.state.audit_project_id = project_id
         request.state.audit_resource_type = "dataset"
         request.state.audit_resource_id = dataset.id
@@ -513,10 +504,11 @@ def download_collection_timestep(
     if not path.is_file():
         store.release_path(member.object_key)
         raise HTTPException(410, "timestep object is unavailable")
-    return FileResponse(
+    return LeasedFileResponse(
         str(path),
+        store=store,
+        object_key=member.object_key,
         filename=PurePosixPath(relative_path).name,
-        background=BackgroundTask(store.release_path, member.object_key),
     )
 
 
@@ -529,11 +521,14 @@ def ingest_dataset(
     ds = db.get(Dataset, dataset_id)
     if ds is None:
         raise HTTPException(404, "dataset not found")
-    require_project_role(db, ds.project_id, principal, "editor")
-    job = Job(project_id=ds.project_id, kind="ingest", status="queued", target_id=dataset_id)
-    db.add(job)
-    db.commit()
-    db.refresh(job)
+    project_id = ds.project_id
+    with locked_project(db, project_id, principal, "editor"):
+        ds = db.get(Dataset, dataset_id)
+        if ds is None or ds.project_id != project_id:
+            raise HTTPException(404, "dataset not found")
+        job = Job(project_id=project_id, kind="ingest", status="queued", target_id=dataset_id)
+        db.add(job)
+        db.flush()
     manager.submit(job.id, run_ingest(dataset_id))
     return job
 
@@ -552,8 +547,9 @@ def download_dataset(
     if not path.is_file():
         store.release_path(ds.object_key)
         raise HTTPException(410, "object no longer available")
-    return FileResponse(
+    return LeasedFileResponse(
         str(path),
+        store=store,
+        object_key=ds.object_key,
         filename=ds.filename,
-        background=BackgroundTask(store.release_path, ds.object_key),
     )

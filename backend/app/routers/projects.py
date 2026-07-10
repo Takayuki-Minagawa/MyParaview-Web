@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from ..auth import Principal, get_principal, require_project_role
 from ..db import get_db
 from ..models import Artifact, AuditEvent, Dataset, DatasetFile, Job, Project, ProjectMember, User
-from ..project_locks import project_guard
+from ..project_locks import locked_project
+from ..pipeline_lifecycle import detach_pipeline_inputs
 from .sessions import _delete_remote_session
 from ..schemas import (
     AuditEventOut,
@@ -77,17 +78,8 @@ def delete_project(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    project = db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal, "admin")
-    with project_guard(project_id):
-        db.expire_all()
-        project = db.scalar(
-            select(Project).where(Project.id == project_id).with_for_update()
-        )
-        if project is None:
-            raise HTTPException(404, "project not found")
+    object_keys: set[str] = set()
+    with locked_project(db, project_id, principal, "admin") as project:
         active_job = db.scalar(
             select(Job.id).where(
                 Job.project_id == project_id,
@@ -120,13 +112,13 @@ def delete_project(
             object_keys.update(
                 db.scalars(select(Artifact.object_key).where(or_(*artifact_filter)))
             )
+        detach_pipeline_inputs(db, project_id=project_id)
         db.delete(project)
-        db.commit()
-        for object_key in object_keys:
-            try:
-                store.delete(object_key)
-            except Exception:  # noqa: BLE001 - DB deletion already committed
-                logger.exception("failed to delete object %s for project %s", object_key, project_id)
+    for object_key in object_keys:
+        try:
+            store.delete(object_key)
+        except Exception:  # noqa: BLE001 - DB deletion already committed
+            logger.exception("failed to delete object %s for project %s", object_key, project_id)
 
 
 @router.get("/{project_id}/members", response_model=list[ProjectMemberOut])
@@ -170,14 +162,7 @@ def _put_member(
 ):
     if payload.user_id != user_id:
         raise HTTPException(422, "path and payload user_id must match")
-    with project_guard(project_id):
-        db.expire_all()
-        project = db.scalar(
-            select(Project).where(Project.id == project_id).with_for_update()
-        )
-        if project is None:
-            raise HTTPException(404, "project not found")
-        require_project_role(db, project_id, principal, "admin")
+    with locked_project(db, project_id, principal, "admin"):
         user = db.get(User, user_id)
         if user is None:
             user = User(id=user_id, email=payload.email, display_name=payload.display_name)
@@ -203,8 +188,7 @@ def _put_member(
         else:
             membership.role = payload.role
         db.add(membership)
-        db.commit()
-        db.refresh(membership)
+        db.flush()
         return membership
 
 

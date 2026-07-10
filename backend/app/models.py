@@ -154,7 +154,7 @@ class PipelineNode(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     params: Mapped[dict] = mapped_column(JSON, default=dict)
     input_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("pipeline_nodes.id"), nullable=True
+        ForeignKey("pipeline_nodes.id", ondelete="SET NULL"), nullable=True
     )
     dataset_id: Mapped[Optional[str]] = mapped_column(ForeignKey("datasets.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_now)

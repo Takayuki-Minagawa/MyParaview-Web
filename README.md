@@ -40,7 +40,7 @@ Python 3.9+、Node.js 20+を使用します。
 cd backend
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
-./.venv/bin/uvicorn app.main:app --reload
+PVWEB_AUTH_MODE=dev ./.venv/bin/uvicorn app.main:app --reload
 ```
 
 別ターミナルで:
@@ -65,6 +65,9 @@ set +a
 cd backend
 PVWEB_AUTH_MODE=dev ./.venv/bin/uvicorn app.main:app
 ```
+
+`dev` modeはloopback上のローカル開発専用です。`X-PVWeb-User`を検証しないため、外部へ公開する
+環境では使用せず、`PVWEB_AUTH_MODE=oidc`とOIDC 3値を設定してください。
 
 MinIO bucketは`minio-init`が作成します。S3 objectはimmutable key + local read-through
 cacheでVTK reader/FileResponseへ渡されます。cacheは

@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .models import Artifact, Dataset, Job
@@ -95,7 +96,7 @@ class JobManager:
     def shutdown(self, *, wait: bool = True) -> None:
         self._pool.shutdown(wait=wait)
 
-    def cancel(self, job_id: str) -> bool:
+    def cancel(self, job_id: str, *, db: Session | None = None) -> bool:
         """Request cancellation. Returns True if the job was cancellable."""
         with self._lock:
             event = self._cancels.get(job_id)
@@ -106,12 +107,21 @@ class JobManager:
             # by publication of a succeeded result.
             event.set()
         # if still queued/running, mark canceled promptly
-        with SessionLocal() as db:
-            job = db.get(Job, job_id)
+        def mark_canceled(session: Session, *, commit: bool) -> None:
+            job = session.get(Job, job_id)
             if job and job.status in ("queued", "running"):
                 job.status = "canceled"
-                db.add(job)
-                db.commit()
+                session.add(job)
+                if commit:
+                    session.commit()
+                else:
+                    session.flush()
+
+        if db is None:
+            with SessionLocal() as session:
+                mark_canceled(session, commit=True)
+        else:
+            mark_canceled(db, commit=False)
         return True
 
     def _run(self, job_id: str, body: JobBody, event: threading.Event) -> None:

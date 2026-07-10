@@ -12,6 +12,7 @@ import type {
 } from "../types";
 import { api } from "../api";
 import { formatBounds, formatCount, humanFileSize } from "../lib/format";
+import { isImageScalarArray } from "../lib/imageData";
 
 interface Props {
   dataset: Dataset | null;
@@ -204,10 +205,11 @@ export function PropertiesPanel({
   const isImageData = renderType === "ImageData";
   const timesteps = dataset.timesteps ?? [];
   const colorArrays = (dataset.arrays ?? []).filter(
-    (a) =>
-      a.association === "point" ||
-      (a.association === "cell" && !isImageData) ||
-      (dataset.dataset_type === "Table" && a.association === "table" && a.data_type === "numeric"),
+    (a) => isImageData
+      ? isImageScalarArray(a)
+      : a.association === "point" ||
+        a.association === "cell" ||
+        (dataset.dataset_type === "Table" && a.association === "table" && a.data_type === "numeric"),
   );
   const selectionValue = colorBy ? `${colorBy.association}:${colorBy.name}` : "";
   const displayedRange = customColorRange ?? dataColorRange;

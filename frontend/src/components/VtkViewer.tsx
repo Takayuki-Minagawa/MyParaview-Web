@@ -11,6 +11,7 @@ import type {
 import { colorMapCssGradient, colorMapStops } from "../lib/colormap";
 import { csvToPointData } from "../lib/csvToPoints";
 import { authorizedFetch } from "../api";
+import { isRuntimeImageScalar } from "../lib/imageData";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Volume";
@@ -112,6 +113,8 @@ function applyGeometryColor(scene: any, selection: ScalarSelection | null, range
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyImageColor(scene: any, selection: ScalarSelection | null, range: [number, number] | null, map: ColorMapName, opacity: number) {
   if (!scene.output || !selection || selection.association !== "point" || !range) return false;
+  const selectedArray = scene.output.getPointData?.().getArrayByName?.(selection.name);
+  if (!isRuntimeImageScalar(selectedArray)) return false;
   scene.output.getPointData().setActiveScalars(selection.name);
   scene.lut?.delete?.();
   scene.opacityFunction?.delete?.();
@@ -363,7 +366,12 @@ export function VtkViewer(props: Props) {
           scene.mapper.setSlicingMode(vtkImageMapper.SlicingMode[SLICE_MODE[display.sliceAxis]]);
           scene.mapper.setSlice(display.sliceIndex);
         }
-        const pointArrayCount = scene.output?.getPointData?.().getNumberOfArrays?.() ?? 0;
+        const pointArrays = scene.output?.getPointData?.().getArrays?.() ?? [];
+        const pointArrayCount = pointArrays.length;
+        const pointScalarCount = pointArrays.filter(
+          (array: { getNumberOfComponents?: () => number }) =>
+            array.getNumberOfComponents?.() === 1,
+        ).length;
         const cellArrayCount = scene.output?.getCellData?.().getNumberOfArrays?.() ?? 0;
         const applied = applyImageColor(
           scene, display.colorBy, resolvedRange, display.colorMap, display.opacity,
@@ -373,7 +381,9 @@ export function VtkViewer(props: Props) {
             ? "ImageDataにpoint dataがありません。cell dataはサーバ側でpoint dataへ変換してください。"
             : pointArrayCount === 0
               ? "ImageDataに表示可能なpoint data配列がありません。"
-              : "表示するpoint data配列または有限な値域を選択してください。";
+              : pointScalarCount === 0
+                ? "ImageDataの表示には1成分point scalar配列が必要です。"
+                : "表示するpoint scalar配列または有限な値域を選択してください。";
         }
         if (scene.kind === "slice") renderer.addActor(scene.prop);
         else renderer.addVolume(scene.prop);

@@ -39,10 +39,12 @@ PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db \
 
 ## Security boundary test
 
-- PVD: missing/escaping/non-finite/repeated timestep/broken frameを拒否。
+- PVD: missing/escaping/non-finite/repeated timestep、不正part、standalone sibling分離を検証。
 - VTK/PVD XML: DTD/internal entityをdefusedxmlで拒否。
 - XDMF/EnSight: absolute path、external URI、未upload sidecarを拒否。
 - RBAC: viewer write=403、非member read=403、unscoped legacy job/artifactはfail closed。
-- OIDC: issuer/audience/JWKSの部分設定=503、不正/expired token=401。
+- OIDC: issuer/audience/JWKSの部分設定=503、不正/expired/exp欠落token=401。
+- Pipeline: reader→filter→representationの自己参照chainを保持したPipeline/Project削除が204。
+- S3 download: 正常、Range 400/416、client disconnectの全経路でcache leaseを解放。
 - Session: broker WS host allowlist外=502、TTL到達でproxy/remote cleanup。
 - Worker: timeout/cancelでprocess tree停止、stdout/stderr大量出力でもdeadlockしない。

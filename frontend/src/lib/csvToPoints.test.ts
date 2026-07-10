@@ -33,13 +33,25 @@ describe("CSV Table-to-Points", () => {
     ).toThrow(/limit/);
   });
 
-  it("skips empty coordinates and does not turn empty scalar cells into zero", () => {
+  it("skips empty coordinates and preserves sparse numeric scalars as NaN", () => {
     const result = csvToPointData(
       "x,y,z,temp\n0,1,2,10\n,2,3,20\n4,5,6,\n",
       { x: "x", y: "y", z: "z" },
     );
     expect(result.numberOfPoints).toBe(2);
     expect(result.skippedRows).toBe(1);
+    expect(result.arrays.map((array) => array.name)).toEqual(["x", "y", "z", "temp"]);
+    const temperature = result.arrays.find((array) => array.name === "temp");
+    expect(temperature).toBeDefined();
+    expect(temperature!.values[0]).toBe(10);
+    expect(Number.isNaN(temperature!.values[1])).toBe(true);
+  });
+
+  it("excludes nonnumeric and all-empty scalar columns", () => {
+    const result = csvToPointData(
+      "x,y,z,label,empty\n0,1,2,a,\n4,5,6,b,\n",
+      { x: "x", y: "y", z: "z" },
+    );
     expect(result.arrays.map((array) => array.name)).toEqual(["x", "y", "z"]);
   });
 });

@@ -68,5 +68,5 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: alembic -c alembic.ini upgrade head
         working-directory: backend
-      - run: python -c "from sqlalchemy import create_engine,text; from app.config import settings; e=create_engine(settings.database_url); assert e.connect().execute(text('select version_num from alembic_version')).scalar() == '0005'"
+      - run: python -c "from sqlalchemy import create_engine,text; from app.config import settings; e=create_engine(settings.database_url); assert e.connect().execute(text('select version_num from alembic_version')).scalar() == '0006'"
         working-directory: backend

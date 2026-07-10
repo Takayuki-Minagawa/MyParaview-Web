@@ -93,12 +93,19 @@ export function csvToPointData(
   header.forEach((name, columnIndex) => {
     if (!name) return;
     const values = new Float32Array(accepted.length);
+    let sawFinite = false;
     for (let rowIndex = 0; rowIndex < accepted.length; rowIndex += 1) {
-      const value = finiteCell(accepted[rowIndex].row[columnIndex]);
-      if (value === null) return;
+      const cell = accepted[rowIndex].row[columnIndex];
+      if (cell === undefined || cell.trim() === "") {
+        values[rowIndex] = Number.NaN;
+        continue;
+      }
+      const value = Number(cell);
+      if (!Number.isFinite(value)) return;
       values[rowIndex] = value;
+      sawFinite = true;
     }
-    arrays.push({ name, values });
+    if (sawFinite) arrays.push({ name, values });
   });
   return { points, arrays, numberOfPoints: accepted.length, skippedRows };
 }

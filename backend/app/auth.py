@@ -46,6 +46,7 @@ def _decode_oidc_token(token: str) -> Principal:
             algorithms=["RS256"],
             audience=settings.oidc_audience,
             issuer=settings.oidc_issuer,
+            options={"require": ["exp", "sub", "iss", "aud"]},
         )
     except jwt.PyJWTError as exc:
         raise HTTPException(401, "invalid bearer token") from exc

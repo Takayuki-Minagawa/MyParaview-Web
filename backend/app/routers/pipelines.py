@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from ..auth import Principal, get_principal, require_project_role
 from ..db import get_db
 from ..models import Dataset, Pipeline, PipelineNode, Project
+from ..pipeline_lifecycle import detach_pipeline_inputs
+from ..project_locks import locked_project
 from ..schemas import PipelineCreate, PipelineOut, PipelineUpdate, ViewState
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
@@ -17,9 +19,7 @@ def _replace_nodes(db: Session, pipeline: Pipeline, node_specs) -> None:
     # in-memory relationship consistent so serialization sees the new nodes.
     # Break self-referential edges first so SQLite/PostgreSQL FK enforcement
     # does not reject deleting an input node and its consumer together.
-    for existing in pipeline.nodes:
-        existing.input_id = None
-    db.flush()
+    detach_pipeline_inputs(db, pipeline_id=pipeline.id)
     pipeline.nodes.clear()
     db.flush()
     created: list[tuple] = []
@@ -72,18 +72,15 @@ def create_pipeline(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, payload.project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, payload.project_id, principal, "editor")
-    pipeline = Pipeline(project_id=payload.project_id, name=payload.name)
-    db.add(pipeline)
-    db.flush()
+    with locked_project(db, payload.project_id, principal, "editor"):
+        pipeline = Pipeline(project_id=payload.project_id, name=payload.name)
+        db.add(pipeline)
+        db.flush()
+        _replace_nodes(db, pipeline, payload.nodes)
+        db.flush()
     request.state.audit_project_id = payload.project_id
     request.state.audit_resource_type = "pipeline"
     request.state.audit_resource_id = pipeline.id
-    _replace_nodes(db, pipeline, payload.nodes)
-    db.commit()
-    db.refresh(pipeline)
     return pipeline
 
 
@@ -127,14 +124,17 @@ def update_pipeline(
     pipeline = db.get(Pipeline, pipeline_id)
     if pipeline is None:
         raise HTTPException(404, "pipeline not found")
-    require_project_role(db, pipeline.project_id, principal, "editor")
-    if payload.name is not None:
-        pipeline.name = payload.name
-    if payload.nodes is not None:
-        _replace_nodes(db, pipeline, payload.nodes)
-    db.add(pipeline)
-    db.commit()
-    db.refresh(pipeline)
+    project_id = pipeline.project_id
+    with locked_project(db, project_id, principal, "editor"):
+        pipeline = db.get(Pipeline, pipeline_id)
+        if pipeline is None:
+            raise HTTPException(404, "pipeline not found")
+        if payload.name is not None:
+            pipeline.name = payload.name
+        if payload.nodes is not None:
+            _replace_nodes(db, pipeline, payload.nodes)
+        db.add(pipeline)
+        db.flush()
     return pipeline
 
 
@@ -148,9 +148,13 @@ def delete_pipeline(
     pipeline = db.get(Pipeline, pipeline_id)
     if pipeline is None:
         raise HTTPException(404, "pipeline not found")
-    require_project_role(db, pipeline.project_id, principal, "editor")
-    request.state.audit_project_id = pipeline.project_id
-    request.state.audit_resource_type = "pipeline"
-    request.state.audit_resource_id = pipeline.id
-    db.delete(pipeline)
-    db.commit()
+    project_id = pipeline.project_id
+    with locked_project(db, project_id, principal, "editor"):
+        pipeline = db.get(Pipeline, pipeline_id)
+        if pipeline is None:
+            raise HTTPException(404, "pipeline not found")
+        request.state.audit_project_id = project_id
+        request.state.audit_resource_type = "pipeline"
+        request.state.audit_resource_id = pipeline.id
+        detach_pipeline_inputs(db, pipeline_id=pipeline.id)
+        db.delete(pipeline)

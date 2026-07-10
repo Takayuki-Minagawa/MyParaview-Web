@@ -7,16 +7,15 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from starlette.background import BackgroundTask
 
 from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
 from ..db import get_db
-from ..models import Artifact, Dataset, Job, Project
-from ..project_locks import project_guard
+from ..models import Artifact, Dataset, Job
+from ..project_locks import locked_project
+from ..responses import LeasedFileResponse
 from ..schemas import ArtifactOut
 from ..storage import store
 
@@ -112,15 +111,10 @@ async def upload_artifact(
                 if not _valid_png(local_object):
                     raise HTTPException(400, "screenshot artifact is not a valid PNG")
         project_id = dataset.project_id
-        with project_guard(project_id):
-            db.expire_all()
+        with locked_project(db, project_id, principal, "editor"):
             dataset = db.get(Dataset, dataset_id)
-            project = db.scalar(
-                select(Project).where(Project.id == project_id).with_for_update()
-            )
-            if dataset is None or project is None or dataset.project_id != project_id:
+            if dataset is None or dataset.project_id != project_id:
                 raise HTTPException(409, "dataset project was deleted during artifact upload")
-            require_project_role(db, project_id, principal, "editor")
             artifact = Artifact(
                 dataset_id=dataset.id,
                 kind=kind,
@@ -130,8 +124,7 @@ async def upload_artifact(
                 content_type=file.content_type or "application/octet-stream",
             )
             db.add(artifact)
-            db.commit()
-            db.refresh(artifact)
+            db.flush()
         request.state.audit_project_id = dataset.project_id
         request.state.audit_resource_type = "artifact"
         request.state.audit_resource_id = artifact.id
@@ -171,9 +164,10 @@ def get_artifact(
     if not path.is_file():
         store.release_path(art.object_key)
         raise HTTPException(410, "artifact object no longer available")
-    return FileResponse(
+    return LeasedFileResponse(
         str(path),
+        store=store,
+        object_key=art.object_key,
         media_type=art.content_type,
         filename=art.filename,
-        background=BackgroundTask(store.release_path, art.object_key),
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import threading
 import time
@@ -7,7 +8,8 @@ import time
 import boto3
 from botocore.exceptions import ClientError
 
-from app.storage import S3ObjectStore
+from app.responses import LeasedFileResponse
+from app.storage import ObjectStore, S3ObjectStore
 
 
 class FakeS3Client:
@@ -40,6 +42,52 @@ class FakeS3Client:
 
     def delete_object(self, *, Bucket: str, Key: str) -> None:
         self.objects.pop((Bucket, Key), None)
+
+
+def test_leased_file_response_releases_on_normal_range_errors_and_disconnect(tmp_path):
+    storage = ObjectStore(tmp_path)
+    key = storage.new_key(".bin")
+    storage.save_bytes(key, b"payload")
+
+    async def invoke(headers=(), *, disconnect=False):
+        path = storage.acquire_path(key)
+        response = LeasedFileResponse(path, store=storage, object_key=key)
+        messages = []
+
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if disconnect and message["type"] == "http.response.body":
+                raise OSError("client disconnected")
+            messages.append(message)
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "headers": list(headers),
+        }
+        try:
+            await response(scope, receive, send)
+        except OSError:
+            if not disconnect:
+                raise
+        return messages
+
+    normal = asyncio.run(invoke())
+    assert normal[0]["status"] == 200
+    assert storage._leases == {}
+
+    malformed = asyncio.run(invoke([(b"range", b"wat")]))
+    assert malformed[0]["status"] == 400
+    assert storage._leases == {}
+
+    unsatisfiable = asyncio.run(invoke([(b"range", b"bytes=999-1000")]))
+    assert unsatisfiable[0]["status"] == 416
+    assert storage._leases == {}
+
+    asyncio.run(invoke(disconnect=True))
+    assert storage._leases == {}
 
 
 def test_s3_store_stream_cache_and_delete(monkeypatch):

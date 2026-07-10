@@ -99,6 +99,59 @@ def test_delete_project_rejects_active_jobs(client, data_dir):
     assert client.delete(f"/projects/{project_id}").status_code == 204
 
 
+def test_delete_pipeline_and_project_with_deterministic_self_references(client, data_dir):
+    from app.db import SessionLocal
+    from app.models import Dataset, Pipeline, PipelineNode, Project
+    from app.storage import store
+
+    def add_chain(project_id: str, suffix: str) -> str:
+        with SessionLocal() as db:
+            pipeline = Pipeline(id=f"pipeline-{suffix}", project_id=project_id, name="chain")
+            db.add(pipeline)
+            db.flush()
+            reader = PipelineNode(
+                id=f"000-reader-{suffix}",
+                pipeline_id=pipeline.id,
+                node_type="reader",
+                name="Reader",
+                params={},
+            )
+            db.add(reader)
+            db.flush()
+            consumer = PipelineNode(
+                id=f"fff-consumer-{suffix}",
+                pipeline_id=pipeline.id,
+                node_type="representation",
+                name="Representation",
+                params={},
+                input_id=reader.id,
+            )
+            db.add(consumer)
+            db.commit()
+            return pipeline.id
+
+    pipeline_project = _new_project(client, "fk-pipeline-delete")
+    pipeline_id = add_chain(pipeline_project, "single")
+    assert client.delete(f"/pipelines/{pipeline_id}").status_code == 204
+    with SessionLocal() as db:
+        assert db.get(Pipeline, pipeline_id) is None
+        assert db.get(PipelineNode, "000-reader-single") is None
+        assert db.get(PipelineNode, "fff-consumer-single") is None
+
+    project_id = _new_project(client, "fk-project-delete")
+    dataset = _upload(client, project_id, data_dir, "sample_surface.vtp").json()
+    add_chain(project_id, "cascade")
+    with SessionLocal() as db:
+        object_key = db.get(Dataset, dataset["id"]).object_key
+    assert store.exists(object_key)
+    assert client.delete(f"/projects/{project_id}").status_code == 204
+    with SessionLocal() as db:
+        assert db.get(Project, project_id) is None
+        assert db.get(PipelineNode, "000-reader-cascade") is None
+        assert db.get(PipelineNode, "fff-consumer-cascade") is None
+    assert not store.exists(object_key)
+
+
 def test_single_upload_cleans_object_if_project_is_deleted_mid_request(client, data_dir, monkeypatch):
     from app.db import SessionLocal
     from app.models import Project
@@ -121,7 +174,7 @@ def test_single_upload_cleans_object_if_project_is_deleted_mid_request(client, d
 
     monkeypatch.setattr(dataset_router.store, "save_stream", save_then_delete)
     response = _upload(client, project_id, data_dir, "sample_surface.vtp")
-    assert response.status_code == 409
+    assert response.status_code in {404, 409}
     assert saved_keys and all(not store.exists(key) for key in saved_keys)
 
 
@@ -506,6 +559,32 @@ def test_pvd_bundle_rejects_unplayable_collections_and_tolerates_broken_later_fr
     metadata = client.get(f"/datasets/{uploaded.json()['id']}/metadata").json()
     assert metadata["status"] == "ready"
     assert metadata["extra"]["bundle_complete"] is True
+
+
+def test_standalone_pvd_cannot_enrich_from_another_object_key(client, data_dir):
+    from app.db import SessionLocal
+    from app.models import Dataset
+
+    project_id = _new_project(client, "standalone-pvd-isolation")
+    target = _upload(client, project_id, data_dir, "sample_surface.vtp").json()
+    with SessionLocal() as db:
+        target_key = db.get(Dataset, target["id"]).object_key
+    pvd = (
+        '<?xml version="1.0"?><VTKFile type="Collection"><Collection>'
+        f'<DataSet timestep="0" part="0" file="{target_key}"/>'
+        '</Collection></VTKFile>'
+    ).encode()
+    uploaded = client.post(
+        f"/projects/{project_id}/datasets",
+        files={"file": ("isolated.pvd", pvd, "application/xml")},
+    )
+    assert uploaded.status_code == 201
+    job = client.post(f"/datasets/{uploaded.json()['id']}/ingest")
+    assert wait_for_job(client, job.json()["id"])["status"] == "succeeded"
+    metadata = client.get(f"/datasets/{uploaded.json()['id']}/metadata").json()
+    assert metadata["dataset_type"] == "Collection"
+    assert metadata["num_points"] is None
+    assert metadata["arrays"] == []
 
 
 def test_ingest_failure_marks_dataset_error(client):

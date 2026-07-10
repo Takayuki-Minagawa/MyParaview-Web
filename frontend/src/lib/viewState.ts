@@ -43,6 +43,7 @@ export function parseViewState(value: unknown): ViewState | null {
       ? [state.color_range[0], state.color_range[1]] as [number, number]
       : null;
   if (state.color_range !== null && colorRange === null) return null;
+  if (colorRange !== null && colorRange[0] >= colorRange[1]) return null;
 
   let camera: CameraState | null = null;
   if (state.camera !== null) {
@@ -82,6 +83,8 @@ export function parseViewState(value: unknown): ViewState | null {
   if (state.slice_axis !== undefined && !["X", "Y", "Z"].includes(state.slice_axis as string)) {
     return null;
   }
+  // VTK WholeExtent may start below zero, so sign is dataset-dependent. App
+  // clamps the restored integer against the active dataset's actual extent.
   if (state.slice_index !== undefined && (!Number.isInteger(state.slice_index))) return null;
   if (
     state.timestep_index !== undefined &&
@@ -105,4 +108,8 @@ export function parseViewState(value: unknown): ViewState | null {
       ? { timestep_index: state.timestep_index as number }
       : {}),
   };
+}
+
+export function clampSliceIndex(index: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(index, maximum));
 }

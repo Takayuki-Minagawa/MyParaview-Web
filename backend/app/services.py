@@ -17,8 +17,8 @@ from .config import settings
 from .db import SessionLocal
 from .jobs import JobCancelled, JobContext
 from .metadata import extract_metadata
-from .models import Artifact, Dataset, DatasetFile, Job, Project
-from .project_locks import project_guard
+from .models import Artifact, Dataset, DatasetFile, Job
+from .project_locks import locked_project
 from .storage import store
 from .worker import extract_external_metadata, run_transform
 
@@ -107,7 +107,9 @@ def run_ingest(dataset_id: str):
                                 first_target.parent.mkdir(parents=True, exist_ok=True)
                                 with store.local_path(first_object_key) as local_object:
                                     shutil.copyfile(local_object, first_target)
-                                meta = extract_metadata(str(primary_path))
+                                meta = extract_metadata(
+                                    str(primary_path), pvd_enrich_siblings=True
+                                )
                     else:
                         meta = (
                             extract_external_metadata(primary_path, ctx)
@@ -119,7 +121,10 @@ def run_ingest(dataset_id: str):
                     meta = (
                         extract_external_metadata(local_object, ctx)
                         if source_ext in settings.external_extensions
-                        else extract_metadata(str(local_object))
+                        else extract_metadata(
+                            str(local_object),
+                            pvd_enrich_siblings=source_ext != ".pvd",
+                        )
                     )
             if source_ext == ".pvd":
                 # A standalone PVD can provide useful collection metadata, but
@@ -254,19 +259,15 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
                 if is_bundle_export
                 else mimetypes.guess_type(filename)[0] or "application/octet-stream"
             )
-            with project_guard(project_id):
-                with SessionLocal() as db:
+            with SessionLocal() as db:
+                with locked_project(db, project_id):
                     current_dataset = db.get(Dataset, dataset_id)
                     current_job = db.get(Job, ctx.job_id)
-                    current_project = db.scalar(
-                        select(Project).where(Project.id == project_id).with_for_update()
-                    )
                     if (
                         current_dataset is None
                         or current_dataset.project_id != project_id
                         or current_job is None
                         or current_job.project_id != project_id
-                        or current_project is None
                     ):
                         raise ValueError("project was deleted while creating artifact")
                     artifact = Artifact(
@@ -281,7 +282,6 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
                     db.add(artifact)
                     db.flush()
                     artifact_id = artifact.id
-                    db.commit()
             persisted = True
             ctx.check_cancelled()
             ctx.update(progress=1.0, log_line=f"artifact created id={artifact_id}")

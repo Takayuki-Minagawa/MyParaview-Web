@@ -55,6 +55,7 @@ def test_oidc_rs256_claim_and_signature_validation(monkeypatch):
         {**base, "iss": "https://wrong-issuer.example"},
         {**base, "exp": now - timedelta(seconds=1)},
         {key: value for key, value in base.items() if key != "sub"},
+        {key: value for key, value in base.items() if key != "exp"},
     ]
     rejected_tokens = [jwt.encode(claims, private_key, algorithm="RS256") for claims in rejected]
     rejected_tokens.append(jwt.encode(base, other_key, algorithm="RS256"))

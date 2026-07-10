@@ -10,7 +10,13 @@ import type {
 } from "../types";
 
 const REPRESENTATIONS = new Set<Representation>(["surface", "wireframe", "points"]);
-const COLOR_MAPS = new Set<ColorMapName>(["cool-to-warm", "viridis", "grayscale"]);
+const COLOR_MAPS = new Set<ColorMapName>([
+  "cool-to-warm",
+  "viridis",
+  "grayscale",
+  "plasma",
+  "turbo",
+]);
 
 function finiteTuple(value: unknown, length: number): value is number[] {
   return Array.isArray(value) && value.length === length && value.every(Number.isFinite);

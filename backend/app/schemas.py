@@ -123,7 +123,7 @@ class ViewState(BaseModel):
     color_by: Optional[ScalarSelectionState] = None
     color_range: Optional[list[float]] = Field(default=None, min_length=2, max_length=2)
     opacity: float = Field(ge=0, le=1)
-    color_map: str = Field(pattern="^(cool-to-warm|viridis|grayscale)$")
+    color_map: str = Field(pattern="^(cool-to-warm|viridis|grayscale|plasma|turbo)$")
     legend_visible: bool
     camera: Optional[CameraState] = None
     table_coordinates: Optional[TableCoordinatesState] = None

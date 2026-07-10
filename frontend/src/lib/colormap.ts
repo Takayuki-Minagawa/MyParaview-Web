@@ -1,5 +1,7 @@
+import type { ColorMapName } from "../types";
+
+export type { ColorMapName };
 export type RGB = [number, number, number];
-export type ColorMapName = "cool-to-warm" | "viridis" | "grayscale";
 export interface ColorStop {
   position: number;
   rgb: RGB;
@@ -21,6 +23,20 @@ const MAPS: Record<ColorMapName, ColorStop[]> = {
   grayscale: [
     { position: 0, rgb: [0.08, 0.08, 0.08] },
     { position: 1, rgb: [0.95, 0.95, 0.95] },
+  ],
+  plasma: [
+    { position: 0, rgb: [0.05, 0.03, 0.528] },
+    { position: 0.25, rgb: [0.494, 0.012, 0.658] },
+    { position: 0.5, rgb: [0.798, 0.28, 0.47] },
+    { position: 0.75, rgb: [0.973, 0.585, 0.252] },
+    { position: 1, rgb: [0.94, 0.975, 0.131] },
+  ],
+  turbo: [
+    { position: 0, rgb: [0.19, 0.072, 0.232] },
+    { position: 0.25, rgb: [0.098, 0.708, 0.884] },
+    { position: 0.5, rgb: [0.633, 0.991, 0.237] },
+    { position: 0.75, rgb: [0.984, 0.49, 0.083] },
+    { position: 1, rgb: [0.48, 0.016, 0.011] },
   ],
 };
 

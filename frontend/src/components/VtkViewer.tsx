@@ -7,11 +7,13 @@ import type {
   ScalarSelection,
   SliceAxis,
   TableCoordinates,
+  VolumeOpacityPoint,
 } from "../types";
 import { colorMapCssGradient, colorMapStops } from "../lib/colormap";
 import { csvToPointData } from "../lib/csvToPoints";
 import { authorizedFetch } from "../api";
 import { isRuntimeImageScalar } from "../lib/imageData";
+import { useMessages } from "../i18n-context";
 import type { Messages } from "../i18n";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
@@ -19,6 +21,7 @@ import "@kitware/vtk.js/Rendering/Profiles/Volume";
 import vtkGenericRenderWindow from "@kitware/vtk.js/Rendering/Misc/GenericRenderWindow";
 import vtkXMLPolyDataReader from "@kitware/vtk.js/IO/XML/XMLPolyDataReader";
 import vtkXMLImageDataReader from "@kitware/vtk.js/IO/XML/XMLImageDataReader";
+import vtkXMLPolyDataWriter from "@kitware/vtk.js/IO/XML/XMLPolyDataWriter";
 import vtkActor from "@kitware/vtk.js/Rendering/Core/Actor";
 import vtkMapper from "@kitware/vtk.js/Rendering/Core/Mapper";
 import vtkColorTransferFunction from "@kitware/vtk.js/Rendering/Core/ColorTransferFunction";
@@ -38,10 +41,52 @@ import vtkSphereSource from "@kitware/vtk.js/Filters/Sources/SphereSource";
 
 const REPR_CODE: Record<Representation, number> = { points: 0, wireframe: 1, surface: 2 };
 const SLICE_MODE: Record<SliceAxis, "I" | "J" | "K"> = { X: "I", Y: "J", Z: "K" };
-type CameraPreset = "front" | "side" | "top" | "isometric";
+type CameraPreset = "front" | "side" | "top" | "back" | "bottom" | "isometric";
+
+/** vtk.js deep imports are untyped (see vtk-shim.d.ts); VtkHandle documents the
+ * lifecycle contract we rely on while keeping Scene field names type-checked. */
+interface VtkHandle {
+  delete?: () => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [member: string]: any;
+}
+
+interface DisplaySettings {
+  representation: Representation;
+  colorBy: ScalarSelection | null;
+  colorRange: [number, number] | null;
+  opacity: number;
+  colorMap: ColorMapName;
+  cameraState: CameraState | null;
+  legendVisible: boolean;
+  sliceAxis: SliceAxis;
+  sliceIndex: number;
+  volumeOpacityPoints: VolumeOpacityPoint[];
+}
+
+interface Scene {
+  kind: "geometry" | "slice" | "volume";
+  grw: VtkHandle;
+  renderer: VtkHandle;
+  renderWindow: VtkHandle;
+  axes: VtkHandle;
+  orientationWidget: VtkHandle;
+  resizeObserver: ResizeObserver;
+  mapper: VtkHandle | null;
+  prop: VtkHandle | null;
+  reader: VtkHandle | null;
+  output: VtkHandle | null;
+  createdOutput: boolean;
+  glyphSource: VtkHandle | null;
+  pointGlyph: boolean;
+  lut: VtkHandle | null;
+  opacityFunction: VtkHandle | null;
+  cameraSubscription: { unsubscribe?: () => void } | null;
+  emitCamera: () => void;
+  dataDiagnostic?: string;
+}
 
 interface Props {
-  messages: Messages;
   datasetId: string | null;
   url: string | null;
   datasetType?: string | null;
@@ -52,16 +97,20 @@ interface Props {
   opacity: number;
   colorMap: ColorMapName;
   legendVisible: boolean;
+  axesVisible: boolean;
   tableCoordinates: TableCoordinates | null;
   imageMode: ImageMode;
   sliceAxis: SliceAxis;
   sliceIndex: number;
+  volumeOpacityPoints: VolumeOpacityPoint[];
   onColorRangeResolved?: (selection: ScalarSelection, range: [number, number]) => void;
   onLoadComplete?: () => void;
   cameraState: CameraState | null;
   onCameraChange: (camera: CameraState) => void;
   onScreenshotCaptured?: (blob: Blob, datasetId: string | null) => void;
+  onGeometryExported?: (blob: Blob, datasetId: string | null) => void;
   screenshotNonce: number;
+  exportNonce: number;
   resetNonce: number;
   viewerBackground: [number, number, number];
 }
@@ -80,8 +129,7 @@ function createLut(range: [number, number], colorMap: ColorMapName) {
   return lut;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function arrayRange(output: any, selection: ScalarSelection): [number, number] | null {
+function arrayRange(output: VtkHandle | null, selection: ScalarSelection): [number, number] | null {
   const attributes =
     selection.association === "cell" ? output?.getCellData?.() : output?.getPointData?.();
   const array = attributes?.getArrayByName?.(selection.name);
@@ -94,10 +142,10 @@ function arrayRange(output: any, selection: ScalarSelection): [number, number] |
   return [range[0], range[1]];
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyGeometryColor(scene: any, selection: ScalarSelection | null, range: [number, number] | null, map: ColorMapName) {
+function applyGeometryColor(scene: Scene, selection: ScalarSelection | null, range: [number, number] | null, map: ColorMapName) {
   scene.lut?.delete?.();
   scene.lut = null;
+  if (!scene.mapper) return;
   if (!selection || !range) {
     scene.mapper.setScalarVisibility(false);
     return;
@@ -113,9 +161,22 @@ function applyGeometryColor(scene: any, selection: ScalarSelection | null, range
   scene.mapper.setUseLookupTableScalarRange(true);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyImageColor(scene: any, selection: ScalarSelection | null, range: [number, number] | null, map: ColorMapName, opacity: number) {
-  if (!scene.output || !selection || selection.association !== "point" || !range) return false;
+/** Default two-point ramp matching the historical fixed volume transfer function. */
+export const DEFAULT_VOLUME_OPACITY_POINTS: VolumeOpacityPoint[] = [
+  { value: 0, alpha: 0 },
+  { value: 1, alpha: 0.85 },
+];
+
+function applyImageColor(
+  scene: Scene,
+  selection: ScalarSelection | null,
+  range: [number, number] | null,
+  map: ColorMapName,
+  opacity: number,
+  volumeOpacityPoints: VolumeOpacityPoint[],
+) {
+  if (!scene.output || !scene.prop || !scene.mapper) return false;
+  if (!selection || selection.association !== "point" || !range) return false;
   const selectedArray = scene.output.getPointData?.().getArrayByName?.(selection.name);
   if (!isRuntimeImageScalar(selectedArray)) return false;
   scene.output.getPointData().setActiveScalars(selection.name);
@@ -134,8 +195,16 @@ function applyImageColor(scene: any, selection: ScalarSelection | null, range: [
       ? range
       : [range[0] - epsilon, range[1] + epsilon];
     const opacityFunction = vtkPiecewiseFunction.newInstance();
-    opacityFunction.addPoint(opacityRange[0], 0);
-    opacityFunction.addPoint(opacityRange[1], Math.max(0, opacity * 0.85));
+    const points = volumeOpacityPoints.length >= 2
+      ? volumeOpacityPoints
+      : DEFAULT_VOLUME_OPACITY_POINTS;
+    const span = opacityRange[1] - opacityRange[0];
+    for (const point of [...points].sort((a, b) => a.value - b.value)) {
+      opacityFunction.addPoint(
+        opacityRange[0] + Math.max(0, Math.min(1, point.value)) * span,
+        Math.max(0, Math.min(1, point.alpha)) * Math.max(0, opacity),
+      );
+    }
     scene.opacityFunction = opacityFunction;
     property.setScalarOpacity(0, opacityFunction);
     property.setInterpolationTypeToLinear();
@@ -166,11 +235,33 @@ function tableToPolyData(text: string, coordinates: TableCoordinates) {
       values: source.values,
     }));
   }
-  return { output: polyData, invalidScalarCells: parsed.invalidScalarCells };
+  return {
+    output: polyData,
+    invalidScalarCells: parsed.invalidScalarCells,
+    skippedRows: parsed.skippedRows,
+  };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyRepresentation(scene: any, representation: Representation) {
+function csvDiagnostics(
+  messages: Messages,
+  invalidScalarCells: number,
+  skippedRows: number,
+): string {
+  const parts: string[] = [];
+  if (skippedRows > 0) {
+    parts.push(
+      `${messages.viewer.csvSkippedRowsPrefix}${skippedRows}${messages.viewer.csvSkippedRowsSuffix}`,
+    );
+  }
+  if (invalidScalarCells > 0) {
+    parts.push(
+      `${messages.viewer.csvInvalidCellsPrefix}${invalidScalarCells}${messages.viewer.csvInvalidCellsSuffix}`,
+    );
+  }
+  return parts.join(" ");
+}
+
+function applyRepresentation(scene: Scene, representation: Representation) {
   if (scene.kind !== "geometry" || !scene.prop) return;
   const property = scene.prop.getProperty();
   property.setRepresentation(scene.pointGlyph ? REPR_CODE.surface : REPR_CODE[representation]);
@@ -178,8 +269,7 @@ function applyRepresentation(scene: any, representation: Representation) {
   property.setPointSize(representation === "points" ? 7 : 1);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyCameraPreset(scene: any, preset: CameraPreset) {
+function applyCameraPreset(scene: Scene | null, preset: CameraPreset) {
   if (!scene) return;
   const camera = scene.renderer.getActiveCamera();
   const focal = camera.getFocalPoint();
@@ -188,6 +278,8 @@ function applyCameraPreset(scene: any, preset: CameraPreset) {
     front: { direction: [0, -1, 0], up: [0, 0, 1] },
     side: { direction: [1, 0, 0], up: [0, 0, 1] },
     top: { direction: [0, 0, 1], up: [0, 1, 0] },
+    back: { direction: [0, 1, 0], up: [0, 0, 1] },
+    bottom: { direction: [0, 0, -1], up: [0, -1, 0] },
     isometric: { direction: [1, -1, 1], up: [0, 0, 1] },
   };
   const { direction, up } = definitions[preset];
@@ -203,8 +295,7 @@ function applyCameraPreset(scene: any, preset: CameraPreset) {
   scene.emitCamera?.();
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function readCamera(scene: any): CameraState {
+function readCamera(scene: Scene): CameraState {
   const camera = scene.renderer.getActiveCamera();
   return {
     position: [...camera.getPosition()] as CameraState["position"],
@@ -214,8 +305,7 @@ function readCamera(scene: any): CameraState {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applySavedCamera(scene: any, state: CameraState) {
+function applySavedCamera(scene: Scene, state: CameraState) {
   const camera = scene.renderer.getActiveCamera();
   camera.setPosition(...state.position);
   camera.setFocalPoint(...state.focal_point);
@@ -273,15 +363,15 @@ async function createScreenshotBlob(dataUrl: string, settings: {
 
 export function VtkViewer(props: Props) {
   const {
-    messages,
     datasetId, url, datasetType, emptyMessage, representation, colorBy, colorRange, opacity, colorMap,
-    legendVisible, tableCoordinates, imageMode, sliceAxis, sliceIndex,
+    legendVisible, axesVisible, tableCoordinates, imageMode, sliceAxis, sliceIndex,
+    volumeOpacityPoints,
     onColorRangeResolved, onLoadComplete, cameraState, onCameraChange, onScreenshotCaptured,
-    screenshotNonce, resetNonce, viewerBackground,
+    onGeometryExported, screenshotNonce, exportNonce, resetNonce, viewerBackground,
   } = props;
+  const messages = useMessages();
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = useRef<any>(null);
+  const ctx = useRef<Scene | null>(null);
   const [status, setStatus] = useState("");
   const rangeCallbackRef = useRef(onColorRangeResolved);
   rangeCallbackRef.current = onColorRangeResolved;
@@ -291,15 +381,26 @@ export function VtkViewer(props: Props) {
   cameraCallbackRef.current = onCameraChange;
   const screenshotCallbackRef = useRef(onScreenshotCaptured);
   screenshotCallbackRef.current = onScreenshotCaptured;
+  const exportCallbackRef = useRef(onGeometryExported);
+  exportCallbackRef.current = onGeometryExported;
   const datasetIdRef = useRef(datasetId);
   datasetIdRef.current = datasetId;
-  const displayRef = useRef({
+  // The scene-building effect must not rebuild (and re-fetch the dataset) when
+  // only display settings, translations, or theme background change — those are
+  // read through refs / applied by light effects instead.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const backgroundRef = useRef(viewerBackground);
+  backgroundRef.current = viewerBackground;
+  const axesVisibleRef = useRef(axesVisible);
+  axesVisibleRef.current = axesVisible;
+  const displayRef = useRef<DisplaySettings>({
     representation, colorBy, colorRange, opacity, colorMap, cameraState, legendVisible,
-    sliceAxis, sliceIndex,
+    sliceAxis, sliceIndex, volumeOpacityPoints,
   });
   displayRef.current = {
     representation, colorBy, colorRange, opacity, colorMap, cameraState, legendVisible,
-    sliceAxis, sliceIndex,
+    sliceAxis, sliceIndex, volumeOpacityPoints,
   };
 
   const supported = datasetType === "PolyData" || datasetType === "ImageData" || datasetType === "Table";
@@ -312,8 +413,9 @@ export function VtkViewer(props: Props) {
     if (!containerRef.current || !renderable || !url || !datasetType) return;
     let disposed = false;
     const abortController = new AbortController();
-    setStatus(messages.viewer.loading);
-    const grw = vtkGenericRenderWindow.newInstance({ background: viewerBackground });
+    const strings = messagesRef.current;
+    setStatus(strings.viewer.loading);
+    const grw = vtkGenericRenderWindow.newInstance({ background: backgroundRef.current });
     grw.setContainer(containerRef.current);
     grw.resize();
     const renderer = grw.getRenderer();
@@ -323,7 +425,7 @@ export function VtkViewer(props: Props) {
       actor: axes,
       interactor: renderWindow.getInteractor(),
     });
-    orientationWidget.setEnabled(true);
+    orientationWidget.setEnabled(axesVisibleRef.current);
     orientationWidget.setViewportCorner(vtkOrientationMarkerWidget.Corners.BOTTOM_LEFT);
     orientationWidget.setViewportSize(0.14);
     orientationWidget.setMinPixelSize(48);
@@ -336,7 +438,7 @@ export function VtkViewer(props: Props) {
     });
     resizeObserver.observe(containerRef.current);
 
-    const scene: any = {
+    const scene: Scene = {
       kind: "geometry", grw, renderer, renderWindow, axes, orientationWidget, resizeObserver,
       mapper: null, prop: null, reader: null, output: null, createdOutput: false,
       glyphSource: null, pointGlyph: false,
@@ -363,12 +465,12 @@ export function VtkViewer(props: Props) {
       if (scene.kind === "geometry") {
         applyRepresentation(scene, display.representation);
         applyGeometryColor(scene, display.colorBy, resolvedRange, display.colorMap);
-        scene.prop.getProperty().setOpacity(display.opacity);
-        renderer.addActor(scene.prop);
+        scene.prop?.getProperty().setOpacity(display.opacity);
+        scene.renderer.addActor(scene.prop);
       } else {
         if (scene.kind === "slice") {
-          scene.mapper.setSlicingMode(vtkImageMapper.SlicingMode[SLICE_MODE[display.sliceAxis]]);
-          scene.mapper.setSlice(display.sliceIndex);
+          scene.mapper?.setSlicingMode(vtkImageMapper.SlicingMode[SLICE_MODE[display.sliceAxis]]);
+          scene.mapper?.setSlice(display.sliceIndex);
         }
         const pointArrays = scene.output?.getPointData?.().getArrays?.() ?? [];
         const pointArrayCount = pointArrays.length;
@@ -379,18 +481,19 @@ export function VtkViewer(props: Props) {
         const cellArrayCount = scene.output?.getCellData?.().getNumberOfArrays?.() ?? 0;
         const applied = applyImageColor(
           scene, display.colorBy, resolvedRange, display.colorMap, display.opacity,
+          display.volumeOpacityPoints,
         );
         if (!applied) {
           displayDiagnostic = pointArrayCount === 0 && cellArrayCount > 0
-            ? messages.viewer.imageNoPointData
+            ? strings.viewer.imageNoPointData
             : pointArrayCount === 0
-              ? messages.viewer.imageNoDisplayableArrays
+              ? strings.viewer.imageNoDisplayableArrays
               : pointScalarCount === 0
-                ? messages.viewer.imageNeedsScalar
-                : messages.viewer.imageSelectScalar;
+                ? strings.viewer.imageNeedsScalar
+                : strings.viewer.imageSelectScalar;
         }
-        if (scene.kind === "slice") renderer.addActor(scene.prop);
-        else renderer.addVolume(scene.prop);
+        if (scene.kind === "slice") scene.renderer.addActor(scene.prop);
+        else scene.renderer.addVolume(scene.prop);
       }
       renderer.resetCamera();
       if (display.cameraState) applySavedCamera(scene, display.cameraState);
@@ -418,14 +521,12 @@ export function VtkViewer(props: Props) {
       } else if (datasetType === "Table" && tableCoordinates) {
         const response = await authorizedFetch(url, { signal: abortController.signal });
         if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-        const { output, invalidScalarCells } = tableToPolyData(
+        const { output, invalidScalarCells, skippedRows } = tableToPolyData(
           await response.text(), tableCoordinates,
         );
         if (disposed) return;
-        if (invalidScalarCells > 0) {
-          scene.dataDiagnostic =
-            `${messages.viewer.csvInvalidCellsPrefix}${invalidScalarCells}${messages.viewer.csvInvalidCellsSuffix}`;
-        }
+        const diagnostic = csvDiagnostics(strings, invalidScalarCells, skippedRows);
+        if (diagnostic) scene.dataDiagnostic = diagnostic;
         const useGlyphs = output.getNumberOfPoints() <= 2_000;
         const bounds = output.getBounds();
         const diagonal = Math.hypot(
@@ -484,7 +585,7 @@ export function VtkViewer(props: Props) {
     };
     void load().catch((error: unknown) => {
       if (!disposed && !(error instanceof DOMException && error.name === "AbortError")) {
-        setStatus(`${messages.viewer.renderError}: ${String(error)}`);
+        setStatus(`${messagesRef.current.viewer.renderError}: ${String(error)}`);
       }
     });
 
@@ -496,8 +597,8 @@ export function VtkViewer(props: Props) {
         scene.cameraSubscription?.unsubscribe?.();
         orientationWidget.setEnabled(false);
         if (scene.prop) {
-          if (scene.kind === "volume") renderer.removeVolume(scene.prop);
-          else renderer.removeActor(scene.prop);
+          if (scene.kind === "volume") scene.renderer.removeVolume(scene.prop);
+          else scene.renderer.removeActor(scene.prop);
         }
         scene.lut?.delete?.();
         scene.opacityFunction?.delete?.();
@@ -515,9 +616,23 @@ export function VtkViewer(props: Props) {
       if (ctx.current === scene) ctx.current = null;
     };
   }, [
-    url, datasetType, renderable, imageMode, messages, viewerBackground,
+    url, datasetType, renderable, imageMode,
     tableCoordinates?.x, tableCoordinates?.y, tableCoordinates?.z,
   ]);
+
+  useEffect(() => {
+    const scene = ctx.current;
+    if (!scene) return;
+    scene.renderer.setBackground(...viewerBackground);
+    scene.renderWindow.render();
+  }, [viewerBackground]);
+
+  useEffect(() => {
+    const scene = ctx.current;
+    if (!scene) return;
+    scene.orientationWidget.setEnabled(axesVisible);
+    scene.renderWindow.render();
+  }, [axesVisible]);
 
   useEffect(() => {
     if (!ctx.current) return;
@@ -532,18 +647,20 @@ export function VtkViewer(props: Props) {
     if (!colorRange && colorBy && range) rangeCallbackRef.current?.(colorBy, range);
     if (scene.kind === "geometry") {
       applyGeometryColor(scene, colorBy, range, colorMap);
-      scene.prop.getProperty().setOpacity(Math.max(0, Math.min(1, opacity)));
+      scene.prop?.getProperty().setOpacity(Math.max(0, Math.min(1, opacity)));
     }
     else {
-      const applied = applyImageColor(scene, colorBy, range, colorMap, opacity);
+      const applied = applyImageColor(
+        scene, colorBy, range, colorMap, opacity, volumeOpacityPoints,
+      );
       if (applied) setStatus("");
     }
     scene.renderWindow.render();
-  }, [colorBy, colorRange, colorMap, opacity]);
+  }, [colorBy, colorRange, colorMap, opacity, volumeOpacityPoints]);
 
   useEffect(() => {
     const scene = ctx.current;
-    if (!scene || scene.kind !== "slice") return;
+    if (!scene || scene.kind !== "slice" || !scene.mapper) return;
     scene.mapper.setSlicingMode(vtkImageMapper.SlicingMode[SLICE_MODE[sliceAxis]]);
     scene.mapper.setSlice(sliceIndex);
     scene.renderer.resetCameraClippingRange();
@@ -571,9 +688,32 @@ export function VtkViewer(props: Props) {
           window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
           screenshotCallbackRef.current?.(blob, capturedDatasetId);
         })
-        .catch((error: unknown) => setStatus(`${messages.viewer.screenshotError}: ${String(error)}`)),
+        .catch((error: unknown) =>
+          setStatus(`${messagesRef.current.viewer.screenshotError}: ${String(error)}`),
+        ),
     );
-  }, [screenshotNonce, messages]);
+  }, [screenshotNonce]);
+
+  useEffect(() => {
+    const scene = ctx.current;
+    if (!exportNonce || !scene?.output || scene.kind !== "geometry") return;
+    const capturedDatasetId = datasetIdRef.current;
+    try {
+      const writer = vtkXMLPolyDataWriter.newInstance();
+      const xml: string = writer.write(scene.output);
+      writer.delete?.();
+      const blob = new Blob([xml], { type: "application/xml" });
+      const link = document.createElement("a");
+      const objectUrl = URL.createObjectURL(blob);
+      link.href = objectUrl;
+      link.download = "geometry.vtp";
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      exportCallbackRef.current?.(blob, capturedDatasetId);
+    } catch (error) {
+      setStatus(`${messagesRef.current.viewer.exportError}: ${String(error)}`);
+    }
+  }, [exportNonce]);
 
   useEffect(() => {
     if (!resetNonce || !ctx.current) return;
@@ -588,8 +728,10 @@ export function VtkViewer(props: Props) {
       {renderable && (
         <div className="viewer-toolbar" aria-label={messages.viewer.standardViews}>
           <button onClick={() => applyCameraPreset(ctx.current, "front")}>{messages.viewer.front}</button>
+          <button onClick={() => applyCameraPreset(ctx.current, "back")}>{messages.viewer.back}</button>
           <button onClick={() => applyCameraPreset(ctx.current, "side")}>{messages.viewer.side}</button>
           <button onClick={() => applyCameraPreset(ctx.current, "top")}>{messages.viewer.top}</button>
+          <button onClick={() => applyCameraPreset(ctx.current, "bottom")}>{messages.viewer.bottom}</button>
           <button onClick={() => applyCameraPreset(ctx.current, "isometric")}>{messages.viewer.isometric}</button>
         </div>
       )}

@@ -1,13 +1,13 @@
-import { useRef, useState } from "react";
-import type { Dataset, Job, Project, ProjectMember, ProjectRole } from "../types";
+import { memo, useRef, useState } from "react";
+import type { AuditEvent, Dataset, Job, Project, ProjectMember, ProjectRole } from "../types";
+import { api } from "../api";
 import { humanFileSize } from "../lib/format";
 import { isCancellable, lastLogLine } from "../lib/job";
 import { PipelinePanel } from "./PipelinePanel";
 import type { Pipeline } from "../types";
-import type { Messages } from "../i18n";
+import { useMessages } from "../i18n-context";
 
 interface Props {
-  messages: Messages;
   projects: Project[];
   currentProjectId: string | null;
   onSelectProject: (id: string) => void;
@@ -15,6 +15,7 @@ interface Props {
   membership: ProjectMember | null;
   members: ProjectMember[];
   onPutMember: (userId: string, role: ProjectRole) => void;
+  onDeleteMember: (userId: string) => void;
   datasets: Dataset[];
   selectedDatasetId: string | null;
   onSelectDataset: (id: string) => void;
@@ -25,18 +26,83 @@ interface Props {
   cancelingJobIds: ReadonlySet<string>;
   pipelines: Pipeline[];
   canSavePipeline: boolean;
+  serverRunAvailable: boolean;
   onSavePipeline: (name: string) => void;
   onRestorePipeline: (pipeline: Pipeline) => void;
   onDeletePipeline: (pipeline: Pipeline) => void;
+  onRenamePipeline: (pipeline: Pipeline, name: string) => void;
+  onRunPipeline: (pipeline: Pipeline) => void;
+  onError: (message: string) => void;
 }
 
-export function DatasetPanel(props: Props) {
+function AuditSection({
+  projectId,
+  onError,
+}: {
+  projectId: string;
+  onError: (message: string) => void;
+}) {
+  const t = useMessages();
+  const [events, setEvents] = useState<AuditEvent[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const toggle = () => {
+    if (events !== null) {
+      setEvents(null);
+      return;
+    }
+    setLoading(true);
+    api.listAuditEvents(projectId, 50)
+      .then(setEvents)
+      .catch((reason) => onError(String(reason)))
+      .finally(() => setLoading(false));
+  };
+
+  const downloadCsv = () => {
+    api.downloadAuditCsv(projectId)
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "audit.csv";
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      })
+      .catch((reason) => onError(String(reason)));
+  };
+
+  return (
+    <section className="audit-log" aria-label={t.datasetPanel.auditLog}>
+      <h3>{t.datasetPanel.auditLog}</h3>
+      <div className="row">
+        <button onClick={toggle} disabled={loading}>
+          {events === null ? t.datasetPanel.auditShow : t.datasetPanel.auditHide}
+        </button>
+        <button onClick={downloadCsv}>{t.datasetPanel.auditDownloadCsv}</button>
+      </div>
+      {events !== null && (
+        <ul className="audit-list">
+          {events.map((event) => (
+            <li key={event.id}>
+              <span className="mono">{new Date(event.created_at).toLocaleString()}</span>{" "}
+              <span className="badge">{event.action}</span> {event.resource_type}
+              {event.actor_id ? ` · ${event.actor_id}` : ""} · {event.status_code}
+            </li>
+          ))}
+          {events.length === 0 && <li className="empty">{t.datasetPanel.auditEmpty}</li>}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+export const DatasetPanel = memo(function DatasetPanel(props: Props) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const bundleRef = useRef<HTMLInputElement | null>(null);
   const [newName, setNewName] = useState("");
   const [memberId, setMemberId] = useState("");
   const [memberRole, setMemberRole] = useState<ProjectRole>("viewer");
-  const t = props.messages;
+  const t = useMessages();
 
   return (
     <aside className="panel panel-left">
@@ -80,6 +146,13 @@ export function DatasetPanel(props: Props) {
               <li key={member.id}>
                 <span title={member.user_id}>{member.user_id}</span>
                 <span className="badge">{member.role}</span>
+                <button
+                  className="danger-button"
+                  aria-label={`${member.user_id}${t.datasetPanel.removeMemberLabel}`}
+                  onClick={() => props.onDeleteMember(member.user_id)}
+                >
+                  {t.common.remove}
+                </button>
               </li>
             ))}
           </ul>
@@ -111,6 +184,9 @@ export function DatasetPanel(props: Props) {
               {t.datasetPanel.grant}
             </button>
           </div>
+          {props.currentProjectId && (
+            <AuditSection projectId={props.currentProjectId} onError={props.onError} />
+          )}
         </section>
       )}
 
@@ -195,13 +271,15 @@ export function DatasetPanel(props: Props) {
       </ul>
 
       <PipelinePanel
-        messages={t}
         pipelines={props.pipelines}
         canSave={props.canSavePipeline}
+        serverRunAvailable={props.serverRunAvailable}
         onSave={props.onSavePipeline}
         onRestore={props.onRestorePipeline}
         onDelete={props.onDeletePipeline}
+        onRename={props.onRenamePipeline}
+        onRun={props.onRunPipeline}
       />
     </aside>
   );
-}
+});

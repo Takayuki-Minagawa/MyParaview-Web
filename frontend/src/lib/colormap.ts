@@ -52,14 +52,6 @@ export function colorMapCssGradient(name: ColorMapName): string {
   return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
 
-/**
- * Cool-to-warm diverging colormap (blue -> white -> red), a common default for
- * scalar coloring in scientific visualization. Input is clamped to [0, 1].
- */
-export function coolToWarm(t: number): RGB {
-  return sampleColorMap("cool-to-warm", t);
-}
-
 /** Sample any registered colormap using piecewise-linear interpolation. */
 export function sampleColorMap(name: ColorMapName, t: number): RGB {
   const x = Math.max(0, Math.min(1, t));
@@ -71,20 +63,4 @@ export function sampleColorMap(name: ColorMapName, t: number): RGB {
   const width = right.position - left.position;
   const u = width > 0 ? (x - left.position) / width : 0;
   return left.rgb.map((value, index) => value + (right.rgb[index] - value) * u) as RGB;
-}
-
-/** Normalize a value into [0,1] given a [min,max] range. */
-export function normalize(value: number, range: [number, number]): number {
-  const [min, max] = range;
-  if (max <= min) return 0;
-  return Math.max(0, Math.min(1, (value - min) / (max - min)));
-}
-
-/** Map a scalar to an RGB color through the given range and colormap. */
-export function colorForValue(
-  value: number,
-  range: [number, number],
-  map: (t: number) => RGB = coolToWarm,
-): RGB {
-  return map(normalize(value, range));
 }

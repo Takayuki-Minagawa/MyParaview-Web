@@ -1,44 +1,21 @@
 import { describe, expect, it } from "vitest";
-import {
-  colorForValue,
-  colorMapCssGradient,
-  colorMapStops,
-  coolToWarm,
-  normalize,
-  sampleColorMap,
-} from "./colormap";
+import { colorMapCssGradient, colorMapStops, sampleColorMap } from "./colormap";
 
-describe("normalize", () => {
-  it("maps within range", () => {
-    expect(normalize(5, [0, 10])).toBe(0.5);
-  });
-  it("guards a degenerate range", () => {
-    expect(normalize(5, [3, 3])).toBe(0);
-  });
-  it("clamps values outside the range", () => {
-    expect(normalize(-5, [0, 10])).toBe(0);
-    expect(normalize(15, [0, 10])).toBe(1);
-  });
-});
-
-describe("coolToWarm", () => {
-  it("is blue-ish at the low end", () => {
-    const [r, , b] = coolToWarm(0);
+describe("sampleColorMap", () => {
+  it("is blue-ish at the low end of cool-to-warm", () => {
+    const [r, , b] = sampleColorMap("cool-to-warm", 0);
     expect(b).toBeGreaterThan(r);
   });
-  it("is red-ish at the high end", () => {
-    const [r, , b] = coolToWarm(1);
+  it("is red-ish at the high end of cool-to-warm", () => {
+    const [r, , b] = sampleColorMap("cool-to-warm", 1);
     expect(r).toBeGreaterThan(b);
   });
   it("clamps out-of-range input", () => {
-    expect(coolToWarm(-2)).toEqual(coolToWarm(0));
-    expect(coolToWarm(5)).toEqual(coolToWarm(1));
+    expect(sampleColorMap("cool-to-warm", -2)).toEqual(sampleColorMap("cool-to-warm", 0));
+    expect(sampleColorMap("cool-to-warm", 5)).toEqual(sampleColorMap("cool-to-warm", 1));
   });
-});
-
-describe("colorForValue", () => {
-  it("colors the midpoint near white", () => {
-    const [r, g, b] = colorForValue(5, [0, 10]);
+  it("colors the cool-to-warm midpoint near white", () => {
+    const [r, g, b] = sampleColorMap("cool-to-warm", 0.5);
     expect(r).toBeCloseTo(0.87, 2);
     expect(g).toBeCloseTo(0.87, 2);
     expect(b).toBeCloseTo(0.87, 2);
@@ -57,6 +34,13 @@ describe("registered colormaps", () => {
     expect(r).toBeCloseTo(g);
     expect(g).toBeCloseTo(b);
     expect(r).toBeCloseTo(0.515);
+  });
+
+  it("registers five colormaps including plasma and turbo", () => {
+    for (const name of ["cool-to-warm", "viridis", "grayscale", "plasma", "turbo"] as const) {
+      expect(colorMapStops(name).length).toBeGreaterThanOrEqual(2);
+      expect(colorMapCssGradient(name)).toContain("linear-gradient");
+    }
   });
 
   it("builds a CSS legend gradient", () => {

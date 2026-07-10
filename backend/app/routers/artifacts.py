@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -17,7 +18,7 @@ from ..db import get_db
 from ..models import Artifact, Dataset, Job
 from ..project_locks import locked_project
 from ..responses import LeasedFileResponse
-from ..schemas import ArtifactOut
+from ..schemas import ArtifactOut, DatasetOut
 from ..storage import store
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
@@ -160,6 +161,61 @@ async def upload_artifact(
         raise
 
 
+@router.post("/{artifact_id}/promote", response_model=DatasetOut, status_code=201)
+def promote_artifact(
+    artifact_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Register a derived artifact (e.g. converted VTP) as a first-class dataset.
+
+    The object is copied to a fresh key so dataset and artifact lifecycles stay
+    independent; the caller then runs the normal ingest job on the new dataset.
+    """
+    artifact = db.get(Artifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(404, "artifact not found")
+    if not artifact.dataset_id:
+        raise HTTPException(422, "artifact is not attached to a dataset")
+    source_dataset = db.get(Dataset, artifact.dataset_id)
+    if source_dataset is None:
+        raise HTTPException(410, "artifact dataset no longer exists")
+    project_id = source_dataset.project_id
+    ext = os.path.splitext(artifact.filename)[1].lower()
+    if ext not in settings.allowed_extensions:
+        raise HTTPException(422, f"artifact type {ext!r} cannot be promoted to a dataset")
+    require_project_role(db, project_id, principal, "editor")
+
+    new_key = store.new_key(ext)
+    try:
+        with store.local_path(artifact.object_key) as source_path:
+            if not source_path.is_file():
+                raise HTTPException(410, "artifact object no longer available")
+            size = store.copy_in(new_key, source_path)
+        with locked_project(db, project_id, principal, "editor"):
+            current = db.get(Artifact, artifact_id)
+            if current is None:
+                raise HTTPException(409, "artifact was deleted during promotion")
+            dataset = Dataset(
+                project_id=project_id,
+                filename=artifact.filename,
+                ext=ext,
+                size_bytes=size,
+                object_key=new_key,
+                status="registered",
+            )
+            db.add(dataset)
+            db.flush()
+    except Exception:
+        store.delete(new_key)
+        raise
+    request.state.audit_project_id = project_id
+    request.state.audit_resource_type = "dataset"
+    request.state.audit_resource_id = dataset.id
+    return dataset
+
+
 @router.get("/{artifact_id}")
 def get_artifact(
     artifact_id: str,
@@ -183,6 +239,9 @@ def get_artifact(
     if not project_id:
         raise HTTPException(410, "artifact has no accessible project scope")
     require_project_role(db, project_id, principal)
+    presigned = store.presigned_url(art.object_key, filename=art.filename)
+    if presigned:
+        return RedirectResponse(presigned, status_code=307)
     path = store.acquire_path(art.object_key)
     if not path.is_file():
         store.release_path(art.object_key)

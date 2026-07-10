@@ -22,6 +22,11 @@ class Settings:
             os.environ.get("PVWEB_S3_CACHE_MAX_BYTES", str(5 * 1024 * 1024 * 1024))
         )
         self.s3_cache_ttl_seconds = int(os.environ.get("PVWEB_S3_CACHE_TTL_SECONDS", "86400"))
+        # Optional: redirect dataset/artifact downloads straight to presigned
+        # S3 URLs instead of streaming through the API process.
+        self.s3_presigned_downloads = os.environ.get(
+            "PVWEB_S3_PRESIGNED_DOWNLOADS", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         # Authentication is fail-closed by default. Local development must opt
         # into the header-based identity provider explicitly.
         self.auth_mode = os.environ.get("PVWEB_AUTH_MODE", "oidc").lower()

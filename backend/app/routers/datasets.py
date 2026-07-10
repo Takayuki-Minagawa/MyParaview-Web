@@ -10,6 +10,7 @@ from typing import Optional
 from defusedxml import ElementTree as SafeET
 from defusedxml.common import DefusedXmlException
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -406,13 +407,26 @@ async def upload_external_dataset_bundle(
 @router.get("/projects/{project_id}/datasets", response_model=list[DatasetOut])
 def list_datasets(
     project_id: str,
+    status: Optional[str] = Query(
+        default=None, pattern="^(registered|ingesting|ready|error)$"
+    ),
+    limit: int = Query(default=500, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
     if db.get(Project, project_id) is None:
         raise HTTPException(404, "project not found")
     require_project_role(db, project_id, principal)
-    stmt = select(Dataset).where(Dataset.project_id == project_id).order_by(Dataset.created_at.desc())
+    stmt = (
+        select(Dataset)
+        .where(Dataset.project_id == project_id)
+        .order_by(Dataset.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    if status:
+        stmt = stmt.where(Dataset.status == status)
     return list(db.scalars(stmt))
 
 
@@ -570,6 +584,9 @@ def download_dataset(
     if ds is None:
         raise HTTPException(404, "dataset not found")
     require_project_role(db, ds.project_id, principal)
+    presigned = store.presigned_url(ds.object_key, filename=ds.filename)
+    if presigned:
+        return RedirectResponse(presigned, status_code=307)
     path = store.acquire_path(ds.object_key)
     if not path.is_file():
         store.release_path(ds.object_key)

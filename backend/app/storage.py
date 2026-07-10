@@ -110,6 +110,10 @@ class ObjectStore:
         shutil.copyfile(src, self.path_for(key))
         return self.path_for(key).stat().st_size
 
+    def presigned_url(self, key: str, *, filename: str, expires_seconds: int = 300) -> str | None:
+        """Return a direct-download URL when the backend supports one."""
+        return None
+
 
 class S3ObjectStore(ObjectStore):
     """S3/MinIO store with an immutable local read-through cache.
@@ -291,6 +295,19 @@ class S3ObjectStore(ObjectStore):
                 temporary.unlink(missing_ok=True)
         self._evict_cache(exclude=target)
         return target.stat().st_size
+
+    def presigned_url(self, key: str, *, filename: str, expires_seconds: int = 300) -> str | None:
+        if not settings.s3_presigned_downloads:
+            return None
+        return self.client.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": self.bucket,
+                "Key": Path(key).name,
+                "ResponseContentDisposition": f'attachment; filename="{filename}"',
+            },
+            ExpiresIn=expires_seconds,
+        )
 
 
 def create_store() -> ObjectStore:

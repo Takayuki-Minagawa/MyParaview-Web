@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import csv
+import io
 import httpx
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -227,19 +230,83 @@ def put_member(
     return _put_member(project_id, user_id, payload, db, principal)
 
 
+@router.delete("/{project_id}/members", response_model=ProjectMemberOut)
+def delete_member(
+    project_id: str,
+    user_id: str = Query(min_length=1),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Remove a member. Query parameter keeps OIDC subjects with '/' addressable."""
+    with locked_project(db, project_id, principal, "admin"):
+        membership = db.scalar(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user_id,
+            )
+        )
+        if membership is None:
+            raise HTTPException(404, "project member not found")
+        if membership.role == "admin":
+            admin_count = db.scalar(
+                select(func.count()).select_from(ProjectMember).where(
+                    ProjectMember.project_id == project_id,
+                    ProjectMember.role == "admin",
+                )
+            )
+            if (admin_count or 0) <= 1:
+                raise HTTPException(409, "cannot remove the project's last admin")
+        removed = ProjectMemberOut.model_validate(membership)
+        db.delete(membership)
+        db.flush()
+        return removed
+
+
+def _audit_csv(events: list[AuditEvent]) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        ["id", "created_at", "actor_id", "action", "resource_type", "resource_id", "status_code", "path"]
+    )
+    for event in events:
+        writer.writerow([
+            event.id,
+            event.created_at.isoformat(),
+            event.actor_id or "",
+            event.action,
+            event.resource_type,
+            event.resource_id or "",
+            event.status_code,
+            (event.detail or {}).get("path", ""),
+        ])
+    return buffer.getvalue()
+
+
 @router.get("/{project_id}/audit", response_model=list[AuditEventOut])
 def list_audit_events(
     project_id: str,
+    format: str = Query(default="json", pattern="^(json|csv)$"),
+    limit: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
     if db.get(Project, project_id) is None:
         raise HTTPException(404, "project not found")
     require_project_role(db, project_id, principal, "admin")
+    effective_limit = min(limit or settings.audit_list_limit, settings.audit_list_limit)
     stmt = (
         select(AuditEvent)
         .where(AuditEvent.project_id == project_id)
         .order_by(AuditEvent.created_at.desc())
-        .limit(settings.audit_list_limit)
+        .limit(effective_limit)
+        .offset(offset)
     )
-    return list(db.scalars(stmt))
+    events = list(db.scalars(stmt))
+    if format == "csv":
+        return PlainTextResponse(
+            _audit_csv(events),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="audit.csv"'},
+        )
+    return events

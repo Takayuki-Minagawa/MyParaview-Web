@@ -1,5 +1,7 @@
+import type { ColorMapName } from "../types";
+
+export type { ColorMapName };
 export type RGB = [number, number, number];
-export type ColorMapName = "cool-to-warm" | "viridis" | "grayscale";
 export interface ColorStop {
   position: number;
   rgb: RGB;
@@ -22,6 +24,20 @@ const MAPS: Record<ColorMapName, ColorStop[]> = {
     { position: 0, rgb: [0.08, 0.08, 0.08] },
     { position: 1, rgb: [0.95, 0.95, 0.95] },
   ],
+  plasma: [
+    { position: 0, rgb: [0.05, 0.03, 0.528] },
+    { position: 0.25, rgb: [0.494, 0.012, 0.658] },
+    { position: 0.5, rgb: [0.798, 0.28, 0.47] },
+    { position: 0.75, rgb: [0.973, 0.585, 0.252] },
+    { position: 1, rgb: [0.94, 0.975, 0.131] },
+  ],
+  turbo: [
+    { position: 0, rgb: [0.19, 0.072, 0.232] },
+    { position: 0.25, rgb: [0.098, 0.708, 0.884] },
+    { position: 0.5, rgb: [0.633, 0.991, 0.237] },
+    { position: 0.75, rgb: [0.984, 0.49, 0.083] },
+    { position: 1, rgb: [0.48, 0.016, 0.011] },
+  ],
 };
 
 export function colorMapStops(name: ColorMapName): ColorStop[] {
@@ -36,14 +52,6 @@ export function colorMapCssGradient(name: ColorMapName): string {
   return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
 
-/**
- * Cool-to-warm diverging colormap (blue -> white -> red), a common default for
- * scalar coloring in scientific visualization. Input is clamped to [0, 1].
- */
-export function coolToWarm(t: number): RGB {
-  return sampleColorMap("cool-to-warm", t);
-}
-
 /** Sample any registered colormap using piecewise-linear interpolation. */
 export function sampleColorMap(name: ColorMapName, t: number): RGB {
   const x = Math.max(0, Math.min(1, t));
@@ -55,20 +63,4 @@ export function sampleColorMap(name: ColorMapName, t: number): RGB {
   const width = right.position - left.position;
   const u = width > 0 ? (x - left.position) / width : 0;
   return left.rgb.map((value, index) => value + (right.rgb[index] - value) * u) as RGB;
-}
-
-/** Normalize a value into [0,1] given a [min,max] range. */
-export function normalize(value: number, range: [number, number]): number {
-  const [min, max] = range;
-  if (max <= min) return 0;
-  return Math.max(0, Math.min(1, (value - min) / (max - min)));
-}
-
-/** Map a scalar to an RGB color through the given range and colormap. */
-export function colorForValue(
-  value: number,
-  range: [number, number],
-  map: (t: number) => RGB = coolToWarm,
-): RGB {
-  return map(normalize(value, range));
 }

@@ -1,33 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, pollJob } from "./api";
+import { api, authorizedFetch, pollJob } from "./api";
 import type {
-  ColorMapName,
   Dataset,
-  Project,
-  Representation,
-  ScalarSelection,
   Job,
-  CameraState,
   Pipeline,
+  Project,
+  ProjectRole,
+  RenderSessionCreated,
+  ScalarSelection,
+  ServerCapabilities,
   ViewState,
   Artifact,
-  ImageMode,
-  SliceAxis,
-  TableCoordinates,
-  ServerCapabilities,
-  ProjectMember,
-  ProjectRole,
 } from "./types";
 import { DatasetPanel } from "./components/DatasetPanel";
 import { PropertiesPanel } from "./components/PropertiesPanel";
-import { VtkViewer } from "./components/VtkViewer";
-import { mergeJobSnapshots } from "./lib/job";
+import { DEFAULT_VOLUME_OPACITY_POINTS, VtkViewer } from "./components/VtkViewer";
+import { RemoteViewer } from "./components/RemoteViewer";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { clampSliceIndex, parseViewState } from "./lib/viewState";
+import { sliceRangeFor, wholeExtentFor, SLICE_EXTENT_OFFSET } from "./lib/slice";
 import { initializeOidc, login, logout } from "./oidc";
 import { detectBrowserCapabilities } from "./lib/capabilities";
 import { defaultImageScalar } from "./lib/imageData";
-import { MESSAGES } from "./i18n";
 import type { Language, ThemeMode } from "./i18n";
+import { MessagesProvider, useMessages } from "./i18n-context";
+import { useProjectScope } from "./hooks/useProjectScope";
+import { useDisplayState } from "./hooks/useDisplayState";
+import { useJobPolling } from "./hooks/useJobPolling";
+import { useProjectResources } from "./hooks/useProjectResources";
 
 const readStoredLanguage = (): Language => {
   const value = window.localStorage.getItem("pvweb-language");
@@ -40,55 +40,132 @@ const readStoredTheme = (): ThemeMode => {
   return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
 };
 
+const triggerBlobDownload = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+};
+
 export function App() {
   const [language, setLanguage] = useState<Language>(readStoredLanguage);
   const [theme, setTheme] = useState<ThemeMode>(readStoredTheme);
+  return (
+    <MessagesProvider language={language}>
+      <AppBody
+        language={language}
+        onLanguage={setLanguage}
+        theme={theme}
+        onTheme={setTheme}
+      />
+    </MessagesProvider>
+  );
+}
+
+interface AppBodyProps {
+  language: Language;
+  onLanguage: (language: Language) => void;
+  theme: ThemeMode;
+  onTheme: (theme: ThemeMode) => void;
+}
+
+function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
+  const t = useMessages();
   const [manualOpen, setManualOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
-  const [representation, setRepresentation] = useState<Representation>("surface");
-  const [colorBy, setColorByState] = useState<ScalarSelection | null>(null);
-  const [customColorRange, setCustomColorRange] = useState<[number, number] | null>(null);
-  const [runtimeColorRange, setRuntimeColorRange] = useState<[number, number] | null>(null);
-  const [opacity, setOpacity] = useState(1);
-  const [colorMap, setColorMap] = useState<ColorMapName>("cool-to-warm");
-  const [legendVisible, setLegendVisible] = useState(true);
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [cancelingJobIds, setCancelingJobIds] = useState<Set<string>>(() => new Set());
-  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
-  const [cameraState, setCameraState] = useState<CameraState | null>(null);
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [exportPending, setExportPending] = useState(false);
+  const [convertPending, setConvertPending] = useState(false);
+  const [statsPending, setStatsPending] = useState(false);
   const [filterPending, setFilterPending] = useState(false);
-  const [tableCoordinates, setTableCoordinates] = useState<TableCoordinates | null>(null);
-  const [imageMode, setImageMode] = useState<ImageMode>("slice");
-  const [sliceAxis, setSliceAxis] = useState<SliceAxis>("Z");
-  const [sliceIndex, setSliceIndex] = useState(0);
-  const [timestepIndex, setTimestepIndex] = useState(0);
-  const [playing, setPlaying] = useState(false);
+  const [clientExportPending, setClientExportPending] = useState(false);
+  const [promotePendingIds, setPromotePendingIds] = useState<Set<string>>(() => new Set());
+  const [remoteSession, setRemoteSession] = useState<RenderSessionCreated | null>(null);
+  const [remotePending, setRemotePending] = useState(false);
   const [viewerLoadedUrl, setViewerLoadedUrl] = useState<string | null>(null);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<string[]>([]);
   const [screenshotNonce, setScreenshotNonce] = useState(0);
+  const [exportNonce, setExportNonce] = useState(0);
   const [resetNonce, setResetNonce] = useState(0);
+  const [shareCopied, setShareCopied] = useState(false);
   const [authState, setAuthState] = useState({
     ready: false,
     configured: false,
     authenticated: false,
   });
   const [serverCapabilities, setServerCapabilities] = useState<ServerCapabilities | null>(null);
-  const [membership, setMembership] = useState<ProjectMember | null>(null);
-  const [members, setMembers] = useState<ProjectMember[]>([]);
   const browserCapabilities = useMemo(() => detectBrowserCapabilities(), []);
-  const t = MESSAGES[language];
-  const viewerBackground = useMemo<[number, number, number]>(
-    () => theme === "dark" ? [0.09, 0.11, 0.15] : [0.96, 0.97, 0.99],
-    [theme],
-  );
+  const display = useDisplayState();
+  const scope = useProjectScope();
+
+  // ---- error banners: multiple concurrent failures no longer clobber each other
+  const pushError = useCallback((message: string) => {
+    setErrors((previous) =>
+      previous.includes(message) ? previous : [...previous.slice(-2), message],
+    );
+  }, []);
+  const clearErrorsByPrefix = useCallback((prefix: string) => {
+    setErrors((previous) => {
+      const next = previous.filter((entry) => !entry.startsWith(`${prefix}:`));
+      return next.length === previous.length ? previous : next;
+    });
+  }, []);
+  const clearErrors = useCallback(() => setErrors([]), []);
+  const dismissError = useCallback((index: number) => {
+    setErrors((previous) => previous.filter((_, position) => position !== index));
+  }, []);
+
+  const guard = useCallback(async (fn: () => Promise<void>) => {
+    try {
+      clearErrors();
+      await fn();
+    } catch (e) {
+      pushError(String(e));
+    }
+  }, [clearErrors, pushError]);
+
+  const errorPrefixes = useMemo(() => ({
+    dataset: t.errors.datasetUpdate,
+    pipeline: t.errors.pipelineUpdate,
+    member: t.errors.memberUpdate,
+    artifact: t.errors.artifactUpdate,
+  }), [t]);
+
+  const resources = useProjectResources({
+    scope,
+    prefixes: errorPrefixes,
+    onError: pushError,
+    onErrorCleared: clearErrorsByPrefix,
+  });
+  const {
+    datasets, setDatasets, pipelines, setPipelines, membership, members,
+    artifacts, setArtifacts,
+    refreshDatasets, refreshPipelines, refreshMembership, refreshArtifacts,
+    clearProjectResources,
+  } = resources;
+
+  const { jobs, setJobs, cancelingJobIds, upsertJob, cancelJob } = useJobPolling({
+    currentProjectId,
+    scope,
+    jobErrorPrefix: t.errors.jobUpdate,
+    onError: pushError,
+    onErrorCleared: clearErrorsByPrefix,
+  });
+
+  const [backgroundChoice, setBackgroundChoice] =
+    useState<"theme" | "black" | "gray" | "white">("theme");
+  const viewerBackground = useMemo<[number, number, number]>(() => {
+    if (backgroundChoice === "black") return [0.02, 0.02, 0.04];
+    if (backgroundChoice === "gray") return [0.5, 0.5, 0.52];
+    if (backgroundChoice === "white") return [1, 1, 1];
+    return theme === "dark" ? [0.09, 0.11, 0.15] : [0.96, 0.97, 0.99];
+  }, [backgroundChoice, theme]);
   const deepLink = useMemo(() => {
     const query = new URLSearchParams(window.location.search);
     return {
@@ -96,23 +173,10 @@ export function App() {
       datasetId: query.get("dataset"),
       pipelineId: query.get("pipeline"),
     };
+    // The URL only carries a deep link on initial load; re-parse once auth settles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authState.ready]);
   const deepLinkAppliedRef = useRef(false);
-  const currentProjectRef = useRef<string | null>(null);
-  const projectEpochRef = useRef(0);
-  const selectionRequestRef = useRef(0);
-  const selectedDatasetRef = useRef<string | null>(null);
-  const isCurrentProject = (projectId: string, epoch: number) =>
-    currentProjectRef.current === projectId && projectEpochRef.current === epoch;
-
-  const guard = useCallback(async (fn: () => Promise<void>) => {
-    try {
-      setError(null);
-      await fn();
-    } catch (e) {
-      setError(String(e));
-    }
-  }, []);
 
   useEffect(() => {
     document.documentElement.lang = language;
@@ -130,208 +194,145 @@ export function App() {
       .catch((reason) => {
         if (!disposed) {
           setAuthState({ ready: true, configured: true, authenticated: false });
-          setError(`${t.auth.oidcErrorPrefix}: ${String(reason)}`);
+          pushError(`${t.auth.oidcErrorPrefix}: ${String(reason)}`);
         }
       });
     return () => { disposed = true; };
+    // Runs once; auth strings are stable for the app session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     void api.capabilities().then(setServerCapabilities).catch(() => setServerCapabilities(null));
   }, []);
 
-  const refreshDatasets = useCallback(async (projectId: string) => {
-    const epoch = projectEpochRef.current;
-    try {
-      const next = await api.listDatasets(projectId);
-      if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
-        setDatasets(next);
-        setError((value) => value?.startsWith(`${t.errors.datasetUpdate}:`) ? null : value);
-      }
-    } catch (e) {
-      if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
-        setError(`${t.errors.datasetUpdate}: ${String(e)}`);
-      }
-    }
-  }, [t.errors.datasetUpdate]);
-
-  const refreshPipelines = useCallback(async (projectId: string) => {
-    const epoch = projectEpochRef.current;
-    try {
-      const next = await api.listPipelines(projectId);
-      if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
-        setPipelines(next);
-      }
-    } catch (e) {
-      if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
-        setError(`${t.errors.pipelineUpdate}: ${String(e)}`);
-      }
-    }
-  }, [t.errors.pipelineUpdate]);
-
-  const refreshMembership = useCallback(async (projectId: string) => {
-    const epoch = projectEpochRef.current;
-    try {
-      const current = await api.getMembership(projectId);
-      const nextMembers = current.role === "admin" ? await api.listMembers(projectId) : [];
-      if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
-        setMembership(current);
-        setMembers(nextMembers);
-      }
-    } catch (e) {
-      if (currentProjectRef.current === projectId && projectEpochRef.current === epoch) {
-        setMembership(null);
-        setMembers([]);
-        setError(`${t.errors.memberUpdate}: ${String(e)}`);
-      }
-    }
-  }, [t.errors.memberUpdate]);
-
-  const refreshArtifacts = useCallback(
-    async (datasetId: string, projectId: string, epoch: number, selectionRequest: number) => {
-      try {
-        const next = await api.listArtifacts(datasetId);
-        if (
-          currentProjectRef.current === projectId &&
-          projectEpochRef.current === epoch &&
-          selectionRequestRef.current === selectionRequest &&
-          selectedDatasetRef.current === datasetId
-        ) setArtifacts(next);
-      } catch (e) {
-        if (
-          currentProjectRef.current === projectId &&
-          projectEpochRef.current === epoch &&
-          selectionRequestRef.current === selectionRequest
-        ) setError(`${t.errors.artifactUpdate}: ${String(e)}`);
-      }
-    },
-    [t.errors.artifactUpdate],
-  );
+  const stopRemoteSession = useCallback((session: RenderSessionCreated | null) => {
+    if (!session) return;
+    void api.deleteSession(session.id).catch(() => {
+      // best-effort: expiry cleans up server-side
+    });
+  }, []);
 
   const switchProject = useCallback((projectId: string) => {
-    projectEpochRef.current += 1;
-    selectionRequestRef.current += 1;
-    selectedDatasetRef.current = null;
-    currentProjectRef.current = projectId;
-    setDatasets([]);
+    scope.beginProjectSwitch(projectId);
+    clearProjectResources();
     setJobs([]);
-    setPipelines([]);
-    setMembership(null);
-    setMembers([]);
-    setCancelingJobIds(new Set());
     setSelectedDatasetId(null);
-    setColorByState(null);
-    setCustomColorRange(null);
-    setRuntimeColorRange(null);
-    setCameraState(null);
-    setArtifacts([]);
+    setRemoteSession((session) => {
+      stopRemoteSession(session);
+      return null;
+    });
+    display.reset();
     setExportPending(false);
+    setConvertPending(false);
+    setStatsPending(false);
     setFilterPending(false);
-    setTableCoordinates(null);
-    setImageMode("slice");
-    setSliceAxis("Z");
-    setSliceIndex(0);
-    setTimestepIndex(0);
-    setPlaying(false);
+    setClientExportPending(false);
+    setPromotePendingIds(new Set());
     setBusy(null);
-    setError(null);
+    clearErrors();
     setCurrentProjectId(projectId);
-  }, []);
+  }, [scope, clearProjectResources, setJobs, display, clearErrors, stopRemoteSession]);
 
   useEffect(() => {
     if (!authState.ready || (authState.configured && !authState.authenticated)) return;
-    guard(async () => {
+    void guard(async () => {
       const next = await api.listProjects();
       setProjects(next);
       if (
         deepLink.projectId &&
-        currentProjectRef.current !== deepLink.projectId &&
+        scope.currentProjectRef.current !== deepLink.projectId &&
         next.some((project) => project.id === deepLink.projectId)
       ) {
         switchProject(deepLink.projectId);
       }
     });
-  }, [guard, authState, deepLink, switchProject]);
+  }, [guard, authState, deepLink, switchProject, scope]);
 
   useEffect(() => {
-    currentProjectRef.current = currentProjectId;
+    scope.currentProjectRef.current = currentProjectId;
     if (!currentProjectId) {
-      setDatasets([]);
+      clearProjectResources();
       setJobs([]);
-      setPipelines([]);
-      setMembership(null);
-      setMembers([]);
       return;
     }
     void refreshDatasets(currentProjectId);
     void refreshPipelines(currentProjectId);
     void refreshMembership(currentProjectId);
-    const projectEpoch = projectEpochRef.current;
-    let disposed = false;
-    let timer: number | undefined;
-    const poll = async () => {
-      try {
-        const next = await api.listJobs(currentProjectId);
-        if (
-          !disposed &&
-          currentProjectRef.current === currentProjectId &&
-          projectEpochRef.current === projectEpoch
-        ) {
-          setJobs((previous) => mergeJobSnapshots(previous, next));
-          setError((value) => value?.startsWith(`${t.errors.jobUpdate}:`) ? null : value);
-        }
-      } catch (e) {
-        if (
-          !disposed &&
-          currentProjectRef.current === currentProjectId &&
-          projectEpochRef.current === projectEpoch
-        ) {
-          setError(`${t.errors.jobUpdate}: ${String(e)}`);
-        }
-      } finally {
-        if (
-          !disposed &&
-          currentProjectRef.current === currentProjectId &&
-          projectEpochRef.current === projectEpoch
-        ) {
-          timer = window.setTimeout(poll, 1200);
-        }
-      }
-    };
-    void poll();
-    return () => {
-      disposed = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [currentProjectId, refreshDatasets, refreshPipelines, refreshMembership]);
+  }, [
+    currentProjectId, scope, clearProjectResources, setJobs,
+    refreshDatasets, refreshPipelines, refreshMembership,
+  ]);
 
-  const createProject = (name: string) => {
-    const startProject = currentProjectRef.current;
-    const epoch = projectEpochRef.current;
+  const createProject = useCallback((name: string) => {
+    const ticket = scope.capture();
     return guard(async () => {
-      const p = await api.createProject(name);
-      setProjects((prev) => [p, ...prev]);
-      if (currentProjectRef.current === startProject && projectEpochRef.current === epoch) {
-        switchProject(p.id);
+      const project = await api.createProject(name);
+      setProjects((previous) => [project, ...previous]);
+      // Only auto-switch when the user did not change projects meanwhile.
+      if (ticket ? ticket.stillCurrent() : scope.currentProjectRef.current === null) {
+        switchProject(project.id);
       }
     });
-  };
+  }, [scope, guard, switchProject]);
 
-  const upload = async (files: File[]) => {
-    const projectId = currentProjectRef.current;
-    if (!projectId || files.length === 0) return;
+  /** Select a dataset and wipe per-dataset display state. */
+  const selectDataset = useCallback(async (id: string): Promise<Dataset | null> => {
+    const ticket = scope.capture();
+    if (!ticket) return null;
+    const request = scope.selectionRequestRef.current + 1;
+    scope.selectionRequestRef.current = request;
+    clearErrors();
+    try {
+      const ds = await api.getDataset(id);
+      if (
+        !ticket.stillCurrent() ||
+        scope.selectionRequestRef.current !== request ||
+        ds.project_id !== ticket.projectId
+      ) return null;
+      setSelectedDatasetId(id);
+      scope.selectedDatasetRef.current = id;
+      // A remote session streams the previous dataset; keeping it mounted
+      // would leave the viewer showing stale content for the new selection.
+      setRemoteSession((session) => {
+        if (session && session.dataset_id !== id) {
+          stopRemoteSession(session);
+          return null;
+        }
+        return session;
+      });
+      display.reset();
+      setArtifacts([]);
+      setDatasets((previous) => previous.map((d) => (d.id === id ? ds : d)));
+      void refreshArtifacts(id);
+      return ds;
+    } catch (e) {
+      if (ticket.stillCurrent() && scope.selectionRequestRef.current === request) {
+        pushError(String(e));
+      }
+      return null;
+    }
+  }, [
+    scope, clearErrors, display, setArtifacts, setDatasets, refreshArtifacts,
+    pushError, stopRemoteSession,
+  ]);
+
+  const upload = useCallback(async (files: File[]) => {
+    const ticket = scope.capture();
+    if (!ticket || files.length === 0) return;
+    // Auto-selecting the finished upload must not steal a selection the user
+    // made while the ingest was running.
+    const selectionAtStart = scope.selectionRequestRef.current;
     const pvd = files.find((file) => file.name.toLowerCase().endsWith(".pvd"));
     const externalDescriptor = files.find((file) => /\.(case|xdmf|xmf)$/i.test(file.name));
     const primary = pvd ?? externalDescriptor ?? files[0];
     if (files.length > 1 && !pvd && !externalDescriptor) {
-      setError(t.errors.multiFileDescriptor);
+      pushError(t.errors.multiFileDescriptor);
       return;
     }
     const pvdBundle = !!pvd && files.length > 1;
     const isBundle = pvdBundle || !!externalDescriptor;
-    const epoch = projectEpochRef.current;
-    const selectionRequest = selectionRequestRef.current;
-    setError(null);
+    clearErrors();
     try {
       setBusy(
         language === "ja"
@@ -339,124 +340,81 @@ export function App() {
           : `${primary.name}${isBundle ? ` ${t.errors.andMore} ${files.length - 1}` : ""} ${t.errors.uploadingSuffix}`,
       );
       const ds = pvdBundle
-        ? await api.uploadDatasetBundle(projectId, files)
+        ? await api.uploadDatasetBundle(ticket.projectId, files)
         : isBundle && externalDescriptor
-          ? await api.uploadExternalDatasetBundle(projectId, files)
-          : await api.uploadDataset(projectId, primary);
-      if (isCurrentProject(projectId, epoch)) setBusy(t.errors.metadataParsing);
+          ? await api.uploadExternalDatasetBundle(ticket.projectId, files)
+          : await api.uploadDataset(ticket.projectId, primary);
+      if (ticket.stillCurrent()) setBusy(t.errors.metadataParsing);
       const job = await api.ingest(ds.id);
       const final = await pollJob(job.id, (j) => {
-        if (isCurrentProject(projectId, epoch)) {
+        if (ticket.stillCurrent()) {
           setBusy(`${t.errors.parsingProgress} ${Math.round(j.progress * 100)}%`);
-          setJobs((previous) => mergeJobSnapshots(previous, [j, ...previous.filter((x) => x.id !== j.id)]));
+          upsertJob(j);
         }
       });
-      if (!isCurrentProject(projectId, epoch)) return;
-      await refreshDatasets(projectId);
-      if (!isCurrentProject(projectId, epoch)) return;
-      if (selectionRequestRef.current === selectionRequest) {
-        selectionRequestRef.current += 1;
-        selectedDatasetRef.current = ds.id;
+      if (!ticket.stillCurrent()) return;
+      await refreshDatasets(ticket.projectId);
+      if (!ticket.stillCurrent()) return;
+      if (scope.selectionRequestRef.current === selectionAtStart) {
+        scope.beginSelection(ds.id);
         setSelectedDatasetId(ds.id);
-        setColorByState(null);
-        setCustomColorRange(null);
-        setRuntimeColorRange(null);
-        setCameraState(null);
-        setTableCoordinates(null);
-        setImageMode("slice");
-        setSliceAxis("Z");
-        setSliceIndex(0);
-        setTimestepIndex(0);
-        setPlaying(false);
+        display.reset();
         setArtifacts([]);
-        void refreshArtifacts(
-          ds.id,
-          projectId,
-          epoch,
-          selectionRequestRef.current,
-        );
+        void refreshArtifacts(ds.id);
       }
-      if (final.status !== "succeeded" && isCurrentProject(projectId, epoch)) {
+      if (final.status !== "succeeded" && ticket.stillCurrent()) {
         const lastLog = (final.log ?? "").split("\n").filter(Boolean).pop() ?? "";
-        setError(`${t.errors.metadataFailed} (${final.status}): ${lastLog}`);
+        pushError(`${t.errors.metadataFailed} (${final.status}): ${lastLog}`);
       }
     } catch (e) {
-      if (isCurrentProject(projectId, epoch)) setError(String(e));
+      if (ticket.stillCurrent()) pushError(String(e));
     } finally {
-      if (isCurrentProject(projectId, epoch)) setBusy(null);
+      if (ticket.stillCurrent()) setBusy(null);
     }
-  };
+  }, [
+    scope, pushError, clearErrors, language, t, upsertJob, refreshDatasets,
+    display, setArtifacts, refreshArtifacts,
+  ]);
 
-  const selectDataset = async (id: string): Promise<Dataset | null> => {
-    const projectId = currentProjectRef.current;
-    if (!projectId) return null;
-    const epoch = projectEpochRef.current;
-    const request = ++selectionRequestRef.current;
-    setError(null);
-    try {
-      const ds = await api.getDataset(id);
-      if (
-        !isCurrentProject(projectId, epoch) ||
-        selectionRequestRef.current !== request ||
-        ds.project_id !== projectId
-      ) return null;
-      setSelectedDatasetId(id);
-      selectedDatasetRef.current = id;
-      setColorByState(null);
-      setCustomColorRange(null);
-      setRuntimeColorRange(null);
-      setCameraState(null);
-      setTableCoordinates(null);
-      setImageMode("slice");
-      setSliceAxis("Z");
-      setSliceIndex(0);
-      setTimestepIndex(0);
-      setPlaying(false);
-      setArtifacts([]);
-      setDatasets((prev) => prev.map((d) => (d.id === id ? ds : d)));
-      void refreshArtifacts(id, projectId, epoch, request);
-      return ds;
-    } catch (e) {
-      if (isCurrentProject(projectId, epoch) && selectionRequestRef.current === request) {
-        setError(String(e));
-      }
-      return null;
-    }
-  };
+  const selectedDataset = useMemo(
+    () => datasets.find((d) => d.id === selectedDatasetId) ?? null,
+    [datasets, selectedDatasetId],
+  );
 
-  const savePipeline = async (name: string) => {
-    const projectId = currentProjectRef.current;
-    if (!projectId || !selectedDataset) return;
-    const epoch = projectEpochRef.current;
+  const savePipeline = useCallback(async (name: string) => {
+    const ticket = scope.capture();
+    if (!ticket || !selectedDataset) return;
     const state: ViewState = {
       schema_version: 1,
-      representation,
-      color_by: colorBy,
-      color_range: customColorRange,
-      opacity,
-      color_map: colorMap,
-      legend_visible: legendVisible,
-      camera: cameraState,
-      table_coordinates: tableCoordinates,
-      image_mode: imageMode,
-      slice_axis: sliceAxis,
-      slice_index: clampedSliceIndex,
-      timestep_index: timestepIndex,
+      representation: display.representation,
+      color_by: display.colorBy,
+      color_range: display.customColorRange,
+      opacity: display.opacity,
+      color_map: display.colorMap,
+      legend_visible: display.legendVisible,
+      camera: display.cameraState,
+      table_coordinates: display.tableCoordinates,
+      image_mode: display.imageMode,
+      slice_axis: display.sliceAxis,
+      slice_index: display.sliceIndex,
+      timestep_index: display.timestepIndex,
+      volume_opacity_points: display.volumeOpacityPoints,
     };
     try {
-      const created = await api.createViewPipeline(projectId, selectedDataset.id, name, state);
-      if (isCurrentProject(projectId, epoch)) {
+      const created = await api.createViewPipeline(
+        ticket.projectId, selectedDataset.id, name, state,
+      );
+      if (ticket.stillCurrent()) {
         setPipelines((previous) => [created, ...previous]);
       }
     } catch (e) {
-      if (isCurrentProject(projectId, epoch)) setError(String(e));
+      if (ticket.stillCurrent()) pushError(String(e));
     }
-  };
+  }, [scope, selectedDataset, display, setPipelines, pushError]);
 
-  const restorePipeline = async (pipeline: Pipeline) => {
-    const projectId = currentProjectRef.current;
-    if (!projectId || pipeline.project_id !== projectId) return;
-    const epoch = projectEpochRef.current;
+  const restorePipeline = useCallback(async (pipeline: Pipeline) => {
+    const ticket = scope.capture();
+    if (!ticket || pipeline.project_id !== ticket.projectId) return;
     const nodes = pipeline.nodes ?? [];
     const representationNode = nodes.find((node) => node.node_type === "representation");
     const state = parseViewState(representationNode?.params.view_state);
@@ -469,27 +427,280 @@ export function App() {
       if (input?.node_type === "reader") break;
     }
     if (!input?.dataset_id || input.node_type !== "reader" || !state) {
-      setError(t.errors.savedPipelineUnreadable);
+      pushError(t.errors.savedPipelineUnreadable);
       return;
     }
     const dataset = await selectDataset(input.dataset_id);
-    if (!dataset || !isCurrentProject(projectId, epoch)) return;
-    setRepresentation(state.representation);
-    setColorByState(state.color_by);
-    setCustomColorRange(state.color_range);
-    setRuntimeColorRange(null);
-    setOpacity(state.opacity);
-    setColorMap(state.color_map);
-    setLegendVisible(state.legend_visible);
-    setCameraState(state.camera);
-    setTableCoordinates(state.table_coordinates ?? null);
-    setImageMode(state.image_mode ?? "slice");
-    setSliceAxis(state.slice_axis ?? "Z");
-    setSliceIndex(state.slice_index ?? 0);
-    setTimestepIndex(state.timestep_index ?? 0);
-    setPlaying(false);
-  };
+    if (!dataset || !ticket.stillCurrent()) return;
+    display.setRepresentation(state.representation);
+    display.setColorByState(state.color_by);
+    display.setCustomColorRange(state.color_range);
+    display.setRuntimeColorRange(null);
+    display.setOpacity(state.opacity);
+    display.setColorMap(state.color_map);
+    display.setLegendVisible(state.legend_visible);
+    display.setCameraState(state.camera);
+    display.setTableCoordinates(state.table_coordinates ?? null);
+    display.setImageMode(state.image_mode ?? "slice");
+    display.setSliceAxis(state.slice_axis ?? "Z");
+    display.setSliceIndex(state.slice_index ?? 0);
+    display.setTimestepIndex(state.timestep_index ?? 0);
+    display.setVolumeOpacityPoints(
+      state.volume_opacity_points ?? DEFAULT_VOLUME_OPACITY_POINTS,
+    );
+    display.setPlaying(false);
+  }, [scope, pushError, t, selectDataset, display]);
 
+  const deletePipeline = useCallback((pipeline: Pipeline) => {
+    const ticket = scope.capture();
+    if (!ticket || pipeline.project_id !== ticket.projectId) return;
+    void api.deletePipeline(pipeline.id)
+      .then(() => {
+        if (ticket.stillCurrent()) {
+          setPipelines((previous) => previous.filter((item) => item.id !== pipeline.id));
+        }
+      })
+      .catch((e) => {
+        if (ticket.stillCurrent()) pushError(String(e));
+      });
+  }, [scope, setPipelines, pushError]);
+
+  const renamePipeline = useCallback((pipeline: Pipeline, name: string) => {
+    const ticket = scope.capture();
+    if (!ticket || pipeline.project_id !== ticket.projectId) return;
+    void api.renamePipeline(pipeline.id, name)
+      .then((updated) => {
+        if (ticket.stillCurrent()) {
+          setPipelines((previous) =>
+            previous.map((item) => (item.id === updated.id ? updated : item)),
+          );
+        }
+      })
+      .catch((e) => {
+        if (ticket.stillCurrent()) pushError(String(e));
+      });
+  }, [scope, setPipelines, pushError]);
+
+  /** Track a job returned by a POST until completion, refreshing artifacts. */
+  const trackJob = useCallback(async (job: Job, ticket = scope.capture()) => {
+    if (ticket?.stillCurrent()) upsertJob(job);
+    const final = await pollJob(job.id, (next) => {
+      if (ticket?.stillCurrent()) upsertJob(next);
+    });
+    if (final.status !== "succeeded") {
+      const lastLog = final.log.split("\n").filter(Boolean).pop() ?? final.status;
+      throw new Error(`${final.kind} job ${final.status}: ${lastLog}`);
+    }
+    const datasetId = scope.selectedDatasetRef.current;
+    if (ticket?.stillCurrent() && datasetId) await refreshArtifacts(datasetId);
+    return final;
+  }, [scope, upsertJob, refreshArtifacts]);
+
+  const runDatasetJob = useCallback(async (
+    kind: "convert" | "filter" | "export" | "render" | "stats" | "movie",
+    params: Record<string, unknown>,
+    setPending: (pending: boolean) => void,
+  ) => {
+    const ticket = scope.capture();
+    const datasetId = scope.selectedDatasetRef.current;
+    if (!ticket || !datasetId) return;
+    setPending(true);
+    clearErrors();
+    try {
+      const job = await api.createJob(ticket.projectId, kind, datasetId, params);
+      await trackJob(job, ticket);
+    } catch (e) {
+      if (ticket.stillCurrent()) pushError(String(e));
+    } finally {
+      if (ticket.stillCurrent()) setPending(false);
+    }
+  }, [scope, clearErrors, trackJob, pushError]);
+
+  const exportDataset = useCallback(() => {
+    if (exportPending) return;
+    void runDatasetJob("export", { output_format: "source" }, setExportPending);
+  }, [exportPending, runDatasetJob]);
+
+  const convertDataset = useCallback(() => {
+    if (convertPending) return;
+    void runDatasetJob("convert", { output_format: "vtp" }, setConvertPending);
+  }, [convertPending, runDatasetJob]);
+
+  const runStats = useCallback(() => {
+    if (statsPending) return;
+    void runDatasetJob("stats", { bins: 32 }, setStatsPending);
+  }, [statsPending, runDatasetJob]);
+
+  const runServerFilter = useCallback((params: Record<string, unknown>) => {
+    if (filterPending) return;
+    void runDatasetJob("filter", params, setFilterPending);
+  }, [filterPending, runDatasetJob]);
+
+  const runPipeline = useCallback((pipeline: Pipeline) => {
+    const ticket = scope.capture();
+    if (!ticket || pipeline.project_id !== ticket.projectId) return;
+    void (async () => {
+      try {
+        const job = await api.runPipeline(pipeline.id);
+        await trackJob(job, ticket);
+      } catch (e) {
+        if (ticket.stillCurrent()) pushError(String(e));
+      }
+    })();
+  }, [scope, trackJob, pushError]);
+
+  const onAssistJobCreated = useCallback((job: Job) => {
+    const ticket = scope.capture();
+    void trackJob(job, ticket).catch((e) => {
+      if (ticket?.stillCurrent()) pushError(String(e));
+    });
+  }, [scope, trackJob, pushError]);
+
+  const promoteArtifact = useCallback((artifact: Artifact) => {
+    const ticket = scope.capture();
+    if (!ticket) return;
+    setPromotePendingIds((previous) => new Set(previous).add(artifact.id));
+    void (async () => {
+      try {
+        const dataset = await api.promoteArtifact(artifact.id);
+        const job = await api.ingest(dataset.id);
+        if (ticket.stillCurrent()) upsertJob(job);
+        const final = await pollJob(job.id, (next) => {
+          if (ticket.stillCurrent()) upsertJob(next);
+        });
+        if (ticket.stillCurrent()) await refreshDatasets(ticket.projectId);
+        if (final.status !== "succeeded" && ticket.stillCurrent()) {
+          const lastLog = final.log.split("\n").filter(Boolean).pop() ?? final.status;
+          pushError(`${t.errors.metadataFailed} (${final.status}): ${lastLog}`);
+        }
+      } catch (e) {
+        if (ticket.stillCurrent()) pushError(String(e));
+      } finally {
+        setPromotePendingIds((previous) => {
+          const next = new Set(previous);
+          next.delete(artifact.id);
+          return next;
+        });
+      }
+    })();
+  }, [scope, upsertJob, refreshDatasets, pushError, t]);
+
+  const downloadTimestep = useCallback((index: number) => {
+    const datasetId = scope.selectedDatasetRef.current;
+    if (!datasetId) return;
+    void authorizedFetch(api.timestepUrl(datasetId, index))
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        const blob = await response.blob();
+        triggerBlobDownload(blob, `timestep-${index}`);
+      })
+      .catch((e) => pushError(String(e)));
+  }, [scope, pushError]);
+
+  const onGeometryExported = useCallback((blob: Blob, datasetId: string | null) => {
+    if (!datasetId) {
+      setClientExportPending(false);
+      return;
+    }
+    const ticket = scope.capture();
+    void api.uploadArtifact(datasetId, "client_export", blob)
+      .then((artifact) => {
+        if (ticket?.stillSelected(datasetId)) {
+          setArtifacts((previous) => [artifact, ...previous]);
+        }
+      })
+      .catch((e) => {
+        if (ticket?.stillCurrent()) pushError(String(e));
+      })
+      .finally(() => setClientExportPending(false));
+  }, [scope, setArtifacts, pushError]);
+
+  const clientExport = useCallback(() => {
+    if (clientExportPending) return;
+    setClientExportPending(true);
+    setExportNonce((n) => n + 1);
+    // If the viewer cannot export (no geometry scene), release the pending flag.
+    window.setTimeout(() => setClientExportPending(false), 10000);
+  }, [clientExportPending]);
+
+  const startRemote = useCallback(() => {
+    const ticket = scope.capture();
+    const datasetId = scope.selectedDatasetRef.current;
+    if (!ticket || !datasetId || remotePending) return;
+    setRemotePending(true);
+    void api.createSession(ticket.projectId, datasetId)
+      .then((session) => {
+        if (ticket.stillCurrent()) setRemoteSession(session);
+        else stopRemoteSession(session);
+      })
+      .catch((e) => {
+        if (ticket.stillCurrent()) pushError(String(e));
+      })
+      .finally(() => setRemotePending(false));
+  }, [scope, remotePending, pushError, stopRemoteSession]);
+
+  const stopRemote = useCallback(() => {
+    if (!remoteSession || remotePending) return;
+    setRemotePending(true);
+    void api.deleteSession(remoteSession.id)
+      .catch((e) => pushError(String(e)))
+      .finally(() => {
+        setRemoteSession(null);
+        setRemotePending(false);
+      });
+  }, [remoteSession, remotePending, pushError]);
+
+  const putMember = useCallback((userId: string, role: ProjectRole) => {
+    const ticket = scope.capture();
+    if (!ticket) return;
+    void api.putMember(ticket.projectId, userId, role)
+      .then(() => {
+        if (ticket.stillCurrent()) void refreshMembership(ticket.projectId);
+      })
+      .catch((reason) => {
+        if (ticket.stillCurrent()) pushError(String(reason));
+      });
+  }, [scope, refreshMembership, pushError]);
+
+  const deleteMember = useCallback((userId: string) => {
+    const ticket = scope.capture();
+    if (!ticket) return;
+    void api.deleteMember(ticket.projectId, userId)
+      .then(() => {
+        if (ticket.stillCurrent()) void refreshMembership(ticket.projectId);
+      })
+      .catch((reason) => {
+        if (ticket.stillCurrent()) pushError(String(reason));
+      });
+  }, [scope, refreshMembership, pushError]);
+
+  const onScreenshotCaptured = useCallback((blob: Blob, datasetId: string | null) => {
+    if (!datasetId) return;
+    const ticket = scope.capture();
+    void api.uploadArtifact(datasetId, "screenshot", blob)
+      .then((artifact) => {
+        if (ticket?.stillSelected(datasetId)) {
+          setArtifacts((previous) => [artifact, ...previous]);
+        }
+      })
+      .catch((e) => {
+        if (ticket?.stillCurrent()) pushError(String(e));
+      });
+  }, [scope, setArtifacts, pushError]);
+
+  const copyShareLink = useCallback(() => {
+    const url = new URL(window.location.origin + window.location.pathname);
+    if (currentProjectId) url.searchParams.set("project", currentProjectId);
+    if (selectedDatasetId) url.searchParams.set("dataset", selectedDatasetId);
+    void navigator.clipboard.writeText(url.toString())
+      .then(() => {
+        setShareCopied(true);
+        window.setTimeout(() => setShareCopied(false), 2000);
+      })
+      .catch((e) => pushError(String(e)));
+  }, [currentProjectId, selectedDatasetId, pushError]);
+
+  // ---- deep link application after project data loads
   useEffect(() => {
     if (
       deepLinkAppliedRef.current ||
@@ -507,40 +718,30 @@ export function App() {
       deepLinkAppliedRef.current = true;
       void selectDataset(deepLink.datasetId);
     }
-  }, [currentProjectId, datasets, pipelines, deepLink]);
+  }, [currentProjectId, datasets, pipelines, deepLink, restorePipeline, selectDataset]);
 
-  const selectedDataset = useMemo(
-    () => datasets.find((d) => d.id === selectedDatasetId) ?? null,
-    [datasets, selectedDatasetId],
-  );
-
+  // ---- derived view values
   const colorRange = useMemo<[number, number] | null>(() => {
-    if (!selectedDataset || !colorBy) return null;
+    if (!selectedDataset || !display.colorBy) return null;
     const arr = (selectedDataset.arrays ?? []).find(
       (a) =>
-        a.name === colorBy.name &&
-        (a.association === colorBy.association ||
+        a.name === display.colorBy?.name &&
+        (a.association === display.colorBy?.association ||
           (selectedDataset.dataset_type === "Table" &&
-            colorBy.association === "point" &&
+            display.colorBy?.association === "point" &&
             a.association === "table")),
     );
     return arr?.value_range ?? null;
-  }, [selectedDataset, colorBy]);
-
-  const setColorBy = (selection: ScalarSelection | null) => {
-    setColorByState(selection);
-    setCustomColorRange(null);
-    setRuntimeColorRange(null);
-  };
+  }, [selectedDataset, display.colorBy]);
 
   // CSV rows with invalid coordinates are omitted by the viewer, so its
   // post-filter range is authoritative rather than the all-row metadata range.
   const availableColorRange = selectedDataset?.dataset_type === "Table"
-    ? runtimeColorRange
-    : colorRange ?? runtimeColorRange;
+    ? display.runtimeColorRange
+    : colorRange ?? display.runtimeColorRange;
   const activeColorRange =
-    customColorRange && customColorRange[0] < customColorRange[1]
-      ? customColorRange
+    display.customColorRange && display.customColorRange[0] < display.customColorRange[1]
+      ? display.customColorRange
       : availableColorRange;
 
   const collectionInnerType = selectedDataset?.dataset_type === "Collection"
@@ -551,7 +752,7 @@ export function App() {
     ? selectedDataset.dataset_type === "Collection"
       ? selectedDataset.extra?.bundle_complete === false
         ? null
-        : api.timestepUrl(selectedDataset.id, timestepIndex)
+        : api.timestepUrl(selectedDataset.id, display.timestepIndex)
       : api.downloadUrl(selectedDataset.id)
     : null;
   const viewerEmptyMessage = selectedDataset?.dataset_type === "Collection" &&
@@ -559,9 +760,10 @@ export function App() {
     ? t.appMessages.incompletePvd
     : undefined;
 
+  // ---- table/image defaults when a dataset arrives
   useEffect(() => {
     if (!selectedDataset) return;
-    if (selectedDataset.dataset_type === "Table" && !tableCoordinates) {
+    if (selectedDataset.dataset_type === "Table" && !display.tableCoordinates) {
       const numeric = (selectedDataset.arrays ?? [])
         .filter((array) => array.association === "table" && array.data_type === "numeric")
         .map((array) => array.name);
@@ -569,16 +771,19 @@ export function App() {
         numeric.find((name) => name.toLowerCase() === axis) ?? numeric[fallback] ?? "";
       const inferred = { x: pick("x", 0), y: pick("y", 1), z: pick("z", 2) };
       if (new Set(Object.values(inferred)).size === 3 && Object.values(inferred).every(Boolean)) {
-        setTableCoordinates(inferred);
-        setRepresentation("points");
+        display.setTableCoordinates(inferred);
+        display.setRepresentation("points");
       }
     }
-    if (viewerDatasetType === "ImageData" && !colorBy) {
+    if (viewerDatasetType === "ImageData" && !display.colorBy) {
       const scalar = defaultImageScalar(selectedDataset.arrays ?? []);
-      if (scalar) setColorByState(scalar);
+      if (scalar) display.setColorByState(scalar);
     }
-  }, [selectedDataset, tableCoordinates, colorBy, viewerDatasetType]);
+  }, [selectedDataset, display, viewerDatasetType]);
 
+  // ---- PVD playback loop. Depends on the specific values it reads, not the
+  // whole display object, so unrelated renders cannot keep resetting the timer.
+  const { playing, setPlaying, setTimestepIndex } = display;
   useEffect(() => {
     if (
       !playing ||
@@ -596,90 +801,56 @@ export function App() {
       800,
     );
     return () => window.clearTimeout(timer);
-  }, [playing, selectedDataset, viewerUrl, viewerLoadedUrl]);
+  }, [playing, setPlaying, setTimestepIndex, selectedDataset, viewerUrl, viewerLoadedUrl]);
 
   useEffect(() => {
     const maximum = Math.max(0, (selectedDataset?.timesteps?.length ?? 1) - 1);
-    setTimestepIndex((index) => Math.min(index, maximum));
+    display.setTimestepIndex((index) => Math.min(index, maximum));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDataset?.id, selectedDataset?.timesteps?.length]);
 
   const dimensions = (selectedDataset?.extra?.dimensions as number[] | undefined) ?? [1, 1, 1];
-  const wholeExtent = (selectedDataset?.extra?.whole_extent as number[] | undefined) ?? [
-    0, Math.max(0, dimensions[0] - 1),
-    0, Math.max(0, dimensions[1] - 1),
-    0, Math.max(0, dimensions[2] - 1),
-  ];
-  const extentOffset = { X: 0, Y: 2, Z: 4 }[sliceAxis];
-  const sliceMin = wholeExtent[extentOffset] ?? 0;
-  const sliceMax = Math.max(sliceMin, wholeExtent[extentOffset + 1] ?? sliceMin);
-  const clampedSliceIndex = clampSliceIndex(sliceIndex, sliceMin, sliceMax);
+  const wholeExtent = wholeExtentFor(
+    dimensions,
+    selectedDataset?.extra?.whole_extent as number[] | undefined,
+  );
+  const { min: sliceMin, max: sliceMax } = sliceRangeFor(wholeExtent, display.sliceAxis);
+  const clampedSliceIndex = clampSliceIndex(display.sliceIndex, sliceMin, sliceMax);
 
   useEffect(() => {
-    if (sliceIndex !== clampedSliceIndex) setSliceIndex(clampedSliceIndex);
-  }, [sliceIndex, clampedSliceIndex]);
+    if (display.sliceIndex !== clampedSliceIndex) display.setSliceIndex(clampedSliceIndex);
+  }, [display, clampedSliceIndex]);
 
-  const exportDataset = async () => {
-    const projectId = currentProjectRef.current;
-    const datasetId = selectedDatasetRef.current;
-    if (!projectId || !datasetId || exportPending) return;
-    const epoch = projectEpochRef.current;
-    const selectionRequest = selectionRequestRef.current;
-    setExportPending(true);
-    setError(null);
-    try {
-      const job = await api.createJob(projectId, "export", datasetId, {
-        output_format: "source",
-      });
-      if (isCurrentProject(projectId, epoch)) {
-        setJobs((previous) => mergeJobSnapshots(previous, [job, ...previous]));
-      }
-      const final = await pollJob(job.id, (next) => {
-        if (isCurrentProject(projectId, epoch)) {
-          setJobs((previous) =>
-            mergeJobSnapshots(previous, [next, ...previous.filter((item) => item.id !== next.id)]),
-          );
-        }
-      });
-      if (final.status !== "succeeded") {
-        throw new Error(`export job ${final.status}`);
-      }
-      await refreshArtifacts(datasetId, projectId, epoch, selectionRequest);
-    } catch (e) {
-      if (isCurrentProject(projectId, epoch)) setError(String(e));
-    } finally {
-      if (isCurrentProject(projectId, epoch)) setExportPending(false);
-    }
-  };
+  const onSliceAxis = useCallback((axis: typeof display.sliceAxis) => {
+    display.setSliceAxis(axis);
+    display.setSliceIndex(wholeExtent[SLICE_EXTENT_OFFSET[axis]] ?? 0);
+    // wholeExtent identity changes per render; the values are what matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [display, wholeExtent.join(",")]);
 
-  const runServerFilter = async (params: Record<string, unknown>) => {
-    const projectId = currentProjectRef.current;
-    const datasetId = selectedDatasetRef.current;
-    if (!projectId || !datasetId || filterPending) return;
-    const epoch = projectEpochRef.current;
-    const selectionRequest = selectionRequestRef.current;
-    setFilterPending(true);
-    setError(null);
-    try {
-      const job = await api.createJob(projectId, "filter", datasetId, params);
-      if (isCurrentProject(projectId, epoch)) {
-        setJobs((previous) => mergeJobSnapshots(previous, [job, ...previous]));
+  const onTimestepIndex = useCallback((index: number) => {
+    display.setPlaying(false);
+    display.setTimestepIndex(index);
+  }, [display]);
+
+  const onColorRangeResolved = useCallback(
+    (selection: ScalarSelection, range: [number, number]) => {
+      display.setRuntimeColorRange((previous) => previous);
+      if (
+        display.colorBy?.name === selection.name &&
+        display.colorBy.association === selection.association
+      ) {
+        display.setRuntimeColorRange(range);
       }
-      const final = await pollJob(job.id, (next) => {
-        if (isCurrentProject(projectId, epoch)) {
-          setJobs((previous) => mergeJobSnapshots(previous, [next, ...previous]));
-        }
-      });
-      if (final.status !== "succeeded") {
-        const lastLog = final.log.split("\n").filter(Boolean).pop() ?? final.status;
-        throw new Error(`filter job ${final.status}: ${lastLog}`);
-      }
-      await refreshArtifacts(datasetId, projectId, epoch, selectionRequest);
-    } catch (reason) {
-      if (isCurrentProject(projectId, epoch)) setError(String(reason));
-    } finally {
-      if (isCurrentProject(projectId, epoch)) setFilterPending(false);
-    }
-  };
+    },
+    [display],
+  );
+
+  const onLoadComplete = useCallback(() => setViewerLoadedUrl(viewerUrl), [viewerUrl]);
+  const onScreenshot = useCallback(() => setScreenshotNonce((n) => n + 1), []);
+  const onResetCamera = useCallback(() => setResetNonce((n) => n + 1), []);
+
+  const remoteAvailable = !!serverCapabilities?.trame_sessions;
 
   return (
     <div className="app">
@@ -700,23 +871,41 @@ export function App() {
             <button onClick={() => void logout()}>{t.auth.logout}</button>
           ) : null}
         </div>
-        <div className="mode-controls" aria-label="Display settings">
+        <div className="mode-controls" aria-label={t.common.displaySettings}>
           <div className="segmented">
-            <button aria-pressed={theme === "light"} onClick={() => setTheme("light")}>
+            <button aria-pressed={theme === "light"} onClick={() => onTheme("light")}>
               {t.common.light}
             </button>
-            <button aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>
+            <button aria-pressed={theme === "dark"} onClick={() => onTheme("dark")}>
               {t.common.dark}
             </button>
           </div>
           <div className="segmented">
-            <button aria-pressed={language === "ja"} onClick={() => setLanguage("ja")}>
+            <button aria-pressed={language === "ja"} onClick={() => onLanguage("ja")}>
               {t.common.japanese}
             </button>
-            <button aria-pressed={language === "en"} onClick={() => setLanguage("en")}>
+            <button aria-pressed={language === "en"} onClick={() => onLanguage("en")}>
               {t.common.english}
             </button>
           </div>
+          <select
+            aria-label={t.properties.background}
+            value={backgroundChoice}
+            onChange={(event) =>
+              setBackgroundChoice(event.target.value as typeof backgroundChoice)
+            }
+          >
+            {(Object.keys(t.properties.backgroundNames) as Array<
+              keyof typeof t.properties.backgroundNames
+            >).map((choice) => (
+              <option key={choice} value={choice}>
+                {t.properties.backgroundNames[choice]}
+              </option>
+            ))}
+          </select>
+          <button onClick={copyShareLink} disabled={!currentProjectId}>
+            {shareCopied ? t.common.copied : t.common.copyLink}
+          </button>
           <button onClick={() => setManualOpen(true)}>{t.common.manual}</button>
         </div>
         <div className="panel-toggles">
@@ -733,7 +922,18 @@ export function App() {
             {t.properties.title}
           </button>
         </div>
-        {error && <span className="error-banner">{error}</span>}
+        {errors.map((message, index) => (
+          <span key={`${index}-${message}`} className="error-banner">
+            {message}
+            <button
+              className="link-button"
+              aria-label={t.common.dismiss}
+              onClick={() => dismissError(index)}
+            >
+              ×
+            </button>
+          </span>
+        ))}
       </header>
 
       <div
@@ -763,177 +963,131 @@ export function App() {
           </div>
         )}
         <DatasetPanel
-          messages={t}
           projects={projects}
           currentProjectId={currentProjectId}
           onSelectProject={switchProject}
           onCreateProject={createProject}
           membership={membership}
           members={members}
-          onPutMember={(userId: string, role: ProjectRole) => {
-            const projectId = currentProjectRef.current;
-            if (!projectId) return;
-            const epoch = projectEpochRef.current;
-            void api.putMember(projectId, userId, role)
-              .then(() => {
-                if (isCurrentProject(projectId, epoch)) void refreshMembership(projectId);
-              })
-              .catch((reason) => {
-                if (isCurrentProject(projectId, epoch)) setError(String(reason));
-              });
-          }}
+          onPutMember={putMember}
+          onDeleteMember={deleteMember}
           datasets={datasets}
           selectedDatasetId={selectedDatasetId}
-          onSelectDataset={selectDataset}
+          onSelectDataset={(id) => void selectDataset(id)}
           onUploadFiles={(files) => void upload(files)}
           busy={busy}
           jobs={jobs}
           cancelingJobIds={cancelingJobIds}
+          onCancelJob={cancelJob}
           pipelines={pipelines}
           canSavePipeline={!!selectedDataset}
+          serverRunAvailable={!!serverCapabilities?.paraview_worker}
           onSavePipeline={(name) => void savePipeline(name)}
           onRestorePipeline={(pipeline) => void restorePipeline(pipeline)}
-          onDeletePipeline={(pipeline) => {
-            const projectId = currentProjectRef.current;
-            if (!projectId || pipeline.project_id !== projectId) return;
-            const epoch = projectEpochRef.current;
-            void api.deletePipeline(pipeline.id)
-              .then(() => {
-                if (isCurrentProject(projectId, epoch)) {
-                  setPipelines((previous) => previous.filter((item) => item.id !== pipeline.id));
-                }
-              })
-              .catch((e) => {
-                if (isCurrentProject(projectId, epoch)) setError(String(e));
-              });
-          }}
-          onCancelJob={(id) => {
-            const projectId = currentProjectRef.current;
-            const target = jobs.find((job) => job.id === id);
-            if (!projectId || target?.project_id !== projectId || cancelingJobIds.has(id)) return;
-            const epoch = projectEpochRef.current;
-            setCancelingJobIds((previous) => new Set(previous).add(id));
-            setError(null);
-            void (async () => {
-              try {
-                const canceled = await api.cancelJob(id);
-                if (isCurrentProject(projectId, epoch)) {
-                  setJobs((previous) =>
-                    mergeJobSnapshots(
-                      previous,
-                      previous.map((job) => job.id === id ? canceled : job),
-                    ),
-                  );
-                }
-              } catch (e) {
-                if (isCurrentProject(projectId, epoch)) setError(String(e));
-              } finally {
-                setCancelingJobIds((previous) => {
-                  const next = new Set(previous);
-                  next.delete(id);
-                  return next;
-                });
-              }
-            })();
-          }}
+          onDeletePipeline={deletePipeline}
+          onRenamePipeline={renamePipeline}
+          onRunPipeline={runPipeline}
+          onError={pushError}
         />
 
         <main className="center">
-          <VtkViewer
-            messages={t}
-            datasetId={selectedDataset?.id ?? null}
-            url={viewerUrl}
-            datasetType={viewerDatasetType}
-            emptyMessage={viewerEmptyMessage}
-            representation={representation}
-            colorBy={colorBy}
-            colorRange={activeColorRange}
-            opacity={opacity}
-            colorMap={colorMap}
-            legendVisible={legendVisible}
-            tableCoordinates={tableCoordinates}
-            imageMode={imageMode}
-            sliceAxis={sliceAxis}
-            sliceIndex={clampedSliceIndex}
-            cameraState={cameraState}
-            onCameraChange={setCameraState}
-            onScreenshotCaptured={(blob, datasetId) => {
-              const projectId = currentProjectRef.current;
-              if (!projectId || !datasetId) return;
-              const epoch = projectEpochRef.current;
-              const selectionRequest = selectionRequestRef.current;
-              void api.uploadArtifact(datasetId, "screenshot", blob)
-                .then((artifact) => {
-                  if (
-                    isCurrentProject(projectId, epoch) &&
-                    selectionRequestRef.current === selectionRequest &&
-                    selectedDatasetRef.current === datasetId
-                  ) setArtifacts((previous) => [artifact, ...previous]);
-                })
-                .catch((e) => {
-                  if (isCurrentProject(projectId, epoch)) setError(String(e));
-                });
-            }}
-            onColorRangeResolved={(selection, range) => {
-              if (
-                colorBy?.name === selection.name &&
-                colorBy.association === selection.association
-              ) {
-                setRuntimeColorRange(range);
-              }
-            }}
-            onLoadComplete={() => setViewerLoadedUrl(viewerUrl)}
-            screenshotNonce={screenshotNonce}
-            resetNonce={resetNonce}
-            viewerBackground={viewerBackground}
-          />
+          <ErrorBoundary
+            fallbackTitle={t.common.renderCrashTitle}
+            fallbackHint={t.common.renderCrashHint}
+            resetKey={remoteSession ? `remote:${remoteSession.id}` : selectedDatasetId ?? "none"}
+          >
+            {remoteSession ? (
+              <RemoteViewer session={remoteSession} onError={pushError} />
+            ) : (
+              <VtkViewer
+                datasetId={selectedDataset?.id ?? null}
+                url={viewerUrl}
+                datasetType={viewerDatasetType}
+                emptyMessage={viewerEmptyMessage}
+                representation={display.representation}
+                colorBy={display.colorBy}
+                colorRange={activeColorRange}
+                opacity={display.opacity}
+                colorMap={display.colorMap}
+                legendVisible={display.legendVisible}
+                axesVisible={display.axesVisible}
+                tableCoordinates={display.tableCoordinates}
+                imageMode={display.imageMode}
+                sliceAxis={display.sliceAxis}
+                sliceIndex={clampedSliceIndex}
+                volumeOpacityPoints={display.volumeOpacityPoints}
+                cameraState={display.cameraState}
+                onCameraChange={display.setCameraState}
+                onScreenshotCaptured={onScreenshotCaptured}
+                onGeometryExported={onGeometryExported}
+                onColorRangeResolved={onColorRangeResolved}
+                onLoadComplete={onLoadComplete}
+                screenshotNonce={screenshotNonce}
+                exportNonce={exportNonce}
+                resetNonce={resetNonce}
+                viewerBackground={viewerBackground}
+              />
+            )}
+          </ErrorBoundary>
         </main>
 
         <PropertiesPanel
-          messages={t}
           dataset={selectedDataset}
-          representation={representation}
-          onRepresentation={setRepresentation}
-          colorBy={colorBy}
-          onColorBy={setColorBy}
+          representation={display.representation}
+          onRepresentation={display.setRepresentation}
+          colorBy={display.colorBy}
+          onColorBy={display.setColorBy}
           dataColorRange={availableColorRange}
-          customColorRange={customColorRange}
-          onCustomColorRange={setCustomColorRange}
-          opacity={opacity}
-          onOpacity={setOpacity}
-          colorMap={colorMap}
-          onColorMap={setColorMap}
-          legendVisible={legendVisible}
-          onLegendVisible={setLegendVisible}
-          onScreenshot={() => setScreenshotNonce((n) => n + 1)}
-          onResetCamera={() => setResetNonce((n) => n + 1)}
+          customColorRange={display.customColorRange}
+          onCustomColorRange={display.setCustomColorRange}
+          opacity={display.opacity}
+          onOpacity={display.setOpacity}
+          colorMap={display.colorMap}
+          onColorMap={display.setColorMap}
+          legendVisible={display.legendVisible}
+          onLegendVisible={display.setLegendVisible}
+          onScreenshot={onScreenshot}
+          onResetCamera={onResetCamera}
+          axesVisible={display.axesVisible}
+          onAxesVisible={display.setAxesVisible}
           artifacts={artifacts}
-          onExport={() => void exportDataset()}
+          onExport={exportDataset}
           exportPending={exportPending}
+          onConvert={convertDataset}
+          convertPending={convertPending}
+          onRunStats={runStats}
+          statsPending={statsPending}
+          onPromoteArtifact={promoteArtifact}
+          promotePendingIds={promotePendingIds}
+          onClientExport={clientExport}
+          clientExportPending={clientExportPending}
           filterPending={filterPending}
           serverFilterAvailable={serverCapabilities?.paraview_worker ?? false}
-          onRunFilter={(params) => void runServerFilter(params)}
-          tableCoordinates={tableCoordinates}
-          onTableCoordinates={setTableCoordinates}
-          imageMode={imageMode}
-          onImageMode={setImageMode}
-          sliceAxis={sliceAxis}
-          onSliceAxis={(axis) => {
-            setSliceAxis(axis);
-            const offset = { X: 0, Y: 2, Z: 4 }[axis];
-            setSliceIndex(wholeExtent[offset] ?? 0);
-          }}
+          onRunFilter={runServerFilter}
+          onJobCreated={onAssistJobCreated}
+          tableCoordinates={display.tableCoordinates}
+          onTableCoordinates={display.setTableCoordinates}
+          imageMode={display.imageMode}
+          onImageMode={display.setImageMode}
+          sliceAxis={display.sliceAxis}
+          onSliceAxis={onSliceAxis}
           sliceIndex={clampedSliceIndex}
-          onSliceIndex={setSliceIndex}
+          onSliceIndex={display.setSliceIndex}
           sliceMin={sliceMin}
           sliceMax={sliceMax}
-          timestepIndex={timestepIndex}
-          onTimestepIndex={(index) => {
-            setPlaying(false);
-            setTimestepIndex(index);
-          }}
-          playing={playing}
-          onTogglePlayback={() => setPlaying((value) => !value)}
+          volumeOpacityPoints={display.volumeOpacityPoints}
+          onVolumeOpacityPoints={display.setVolumeOpacityPoints}
+          timestepIndex={display.timestepIndex}
+          onTimestepIndex={onTimestepIndex}
+          playing={display.playing}
+          onTogglePlayback={() => display.setPlaying((value) => !value)}
+          onDownloadTimestep={downloadTimestep}
+          remoteAvailable={remoteAvailable}
+          remoteSession={remoteSession}
+          remotePending={remotePending}
+          onStartRemote={startRemote}
+          onStopRemote={stopRemote}
+          onError={pushError}
         />
       </div>
     </div>

@@ -1,6 +1,8 @@
 import type {
   Artifact,
   AssistProposal,
+  AssistProposalRecord,
+  AuditEvent,
   CollectionStep,
   Dataset,
   Job,
@@ -8,6 +10,8 @@ import type {
   Project,
   ProjectMember,
   ProjectRole,
+  RenderSession,
+  RenderSessionCreated,
   ServerCapabilities,
   ViewState,
 } from "./types";
@@ -68,6 +72,20 @@ export const api = {
         body: JSON.stringify({ user_id: userId, role }),
       },
     ),
+  deleteMember: (projectId: string, userId: string) =>
+    req<ProjectMember>(
+      `/projects/${projectId}/members?user_id=${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    ),
+  listAuditEvents: (projectId: string, limit = 100, offset = 0) =>
+    req<AuditEvent[]>(
+      `/projects/${projectId}/audit?limit=${limit}&offset=${offset}`,
+    ),
+  downloadAuditCsv: async (projectId: string) => {
+    const response = await authorizedFetch(`${API_BASE}/projects/${projectId}/audit?format=csv`);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return response.blob();
+  },
 
   listDatasets: (projectId: string) =>
     req<Dataset[]>(`/projects/${projectId}/datasets`),
@@ -108,7 +126,7 @@ export const api = {
   cancelJob: (id: string) => req<Job>(`/jobs/${id}/cancel`, { method: "POST" }),
   createJob: (
     projectId: string,
-    kind: "convert" | "filter" | "export",
+    kind: "convert" | "filter" | "export" | "render" | "stats" | "movie",
     targetId: string,
     params: Record<string, unknown>,
   ) => req<Job>("/jobs", {
@@ -142,6 +160,13 @@ export const api = {
     }),
   }),
   deletePipeline: (id: string) => req<void>(`/pipelines/${id}`, { method: "DELETE" }),
+  renamePipeline: (id: string, name: string) =>
+    req<Pipeline>(`/pipelines/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  runPipeline: (id: string) => req<Job>(`/pipelines/${id}/run`, { method: "POST" }),
 
   listArtifacts: (datasetId: string) =>
     req<Artifact[]>(`/artifacts?dataset_id=${encodeURIComponent(datasetId)}`),
@@ -159,6 +184,8 @@ export const api = {
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.blob();
   },
+  promoteArtifact: (artifactId: string) =>
+    req<Dataset>(`/artifacts/${artifactId}/promote`, { method: "POST" }),
 
   downloadUrl: (datasetId: string) => `${API_BASE}/datasets/${datasetId}/download`,
   listTimesteps: (datasetId: string) =>
@@ -171,15 +198,36 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dataset_id: datasetId, prompt }),
     }),
+  listProposals: (datasetId: string) =>
+    req<AssistProposalRecord[]>(
+      `/assist/proposals?dataset_id=${encodeURIComponent(datasetId)}`,
+    ),
+  applyProposal: (proposalId: string) =>
+    req<Job>(`/assist/proposals/${proposalId}/apply`, { method: "POST" }),
+  dismissProposal: (proposalId: string) =>
+    req<AssistProposalRecord>(`/assist/proposals/${proposalId}/dismiss`, { method: "POST" }),
+
+  createSession: (projectId: string, datasetId: string) =>
+    req<RenderSessionCreated>("/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: projectId, dataset_id: datasetId, mode: "remote" }),
+    }),
+  getSession: (sessionId: string) => req<RenderSession>(`/sessions/${sessionId}`),
+  deleteSession: (sessionId: string) =>
+    req<void>(`/sessions/${sessionId}`, { method: "DELETE" }),
+  sessionWebSocketUrl: (websocketPath: string) =>
+    `${API_BASE.replace(/^http/, "ws")}${websocketPath}`,
 };
 
 const TERMINAL = new Set(["succeeded", "failed", "canceled"]);
 
-/** Poll a job until it reaches a terminal state. */
+/** Poll a job until it reaches a terminal state. Long default timeout: large
+ * ingests and worker jobs legitimately run for minutes while staying alive. */
 export async function pollJob(
   jobId: string,
   onTick?: (job: Job) => void,
-  { intervalMs = 400, timeoutMs = 60000 }: { intervalMs?: number; timeoutMs?: number } = {},
+  { intervalMs = 400, timeoutMs = 600000 }: { intervalMs?: number; timeoutMs?: number } = {},
 ): Promise<Job> {
   const deadline = Date.now() + timeoutMs;
   // eslint-disable-next-line no-constant-condition

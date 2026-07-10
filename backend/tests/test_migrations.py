@@ -14,7 +14,7 @@ def test_fresh_database_upgrades_to_head(tmp_path):
     try:
         assert "projects" in inspect(engine).get_table_names()
         with engine.connect() as connection:
-            assert connection.execute(text("select version_num from alembic_version")).scalar() == "0007"
+            assert connection.execute(text("select version_num from alembic_version")).scalar() == "0008"
             assert "dataset_files" in inspect(engine).get_table_names()
             assert "project_members" in inspect(engine).get_table_names()
             assert "audit_events" in inspect(engine).get_table_names()
@@ -53,7 +53,7 @@ def test_legacy_create_all_database_is_adopted(tmp_path):
     engine = create_engine(url)
     try:
         with engine.connect() as connection:
-            assert connection.execute(text("select version_num from alembic_version")).scalar() == "0007"
+            assert connection.execute(text("select version_num from alembic_version")).scalar() == "0008"
             assert connection.execute(text("select name from projects where id='legacy'")).scalar() == "kept"
             assert connection.execute(
                 text("select role from project_members where project_id='legacy' and user_id='anonymous'")
@@ -91,7 +91,9 @@ def test_pipeline_dataset_fk_roundtrip_preserves_indexes_and_other_fks(tmp_path)
         assert upgraded_fks[("dataset_id",)] == ("datasets", ("id",), "SET NULL")
         assert upgraded_fks[("pipeline_id",)] == ("pipelines", ("id",), None)
 
-        command.downgrade(config, "-1")
+        # Target 0006 explicitly: this test verifies the 0007 dataset-FK
+        # roundtrip regardless of which revision is the current head.
+        command.downgrade(config, "0006")
         downgraded_fks, downgraded_indexes = schema_state()
         assert downgraded_fks[("input_id",)] == ("pipeline_nodes", ("id",), "SET NULL")
         assert downgraded_fks[("dataset_id",)] == ("datasets", ("id",), None)

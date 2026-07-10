@@ -57,7 +57,7 @@ export interface Job {
 export type Representation = "surface" | "wireframe" | "points";
 
 export type ScalarAssociation = "point" | "cell";
-export type ColorMapName = "cool-to-warm" | "viridis" | "grayscale";
+export type ColorMapName = "cool-to-warm" | "viridis" | "grayscale" | "plasma" | "turbo";
 
 export interface ScalarSelection {
   name: string;
@@ -86,6 +86,7 @@ export interface ViewState {
   slice_axis?: SliceAxis;
   slice_index?: number;
   timestep_index?: number;
+  volume_opacity_points?: VolumeOpacityPoint[];
 }
 
 export interface PipelineNode {
@@ -133,11 +134,61 @@ export interface TableCoordinates {
 export type ImageMode = "slice" | "volume";
 export type SliceAxis = "X" | "Y" | "Z";
 
+/** One control point of the volume-rendering opacity transfer function.
+ * ``value`` is normalized 0..1 across the active color range. */
+export interface VolumeOpacityPoint {
+  value: number;
+  alpha: number;
+}
+
 export interface AssistProposal {
+  id?: string | null;
   action: "filter_job" | "view_change" | "none";
   params: Record<string, unknown>;
   reason: string;
   requires_confirmation: boolean;
+  status?: "proposed" | "applied" | "dismissed";
+}
+
+export interface AssistProposalRecord {
+  id: string;
+  project_id: string;
+  dataset_id: string;
+  actor_id?: string | null;
+  prompt: string;
+  action: "filter_job" | "view_change" | "none";
+  params: Record<string, unknown>;
+  reason: string;
+  status: "proposed" | "applied" | "dismissed";
+  applied_job_id?: string | null;
+  created_at: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  actor_id?: string | null;
+  project_id?: string | null;
+  action: string;
+  resource_type: string;
+  resource_id?: string | null;
+  status_code: number;
+  detail?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface RenderSession {
+  id: string;
+  project_id: string;
+  dataset_id: string;
+  mode: "remote" | "local";
+  status: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface RenderSessionCreated extends RenderSession {
+  websocket_path: string;
+  websocket_protocol: string;
 }
 
 export interface ServerCapabilities {

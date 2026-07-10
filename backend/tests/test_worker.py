@@ -1,14 +1,58 @@
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from app.config import settings
 from app.jobs import JobCancelled, JobContext
-from app.worker import _run
+from app.worker import _run, run_pipeline_transform
+
+
+def test_pipeline_transform_uses_one_worker_command_with_complete_chain(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.vtu"
+    source.write_text("source")
+    output = tmp_path / "result.vtp"
+    filters = [
+        {
+            "filter": "clip",
+            "origin": [0, 0, 0],
+            "normal": [1, 0, 0],
+        },
+        {
+            "filter": "threshold",
+            "array": "temperature",
+            "association": "POINTS",
+            "minimum": 10,
+            "maximum": 20,
+        },
+    ]
+    commands = []
+
+    monkeypatch.setattr(
+        "app.worker._command", lambda *args: ["pvpython", *args]
+    )
+
+    def fake_run(command, _ctx):
+        commands.append(command)
+        Path(command[-2]).write_text("vtp")
+
+    monkeypatch.setattr("app.worker._run", fake_run)
+    context = JobContext("test", threading.Event())
+
+    run_pipeline_transform(source, output, filters, context)
+
+    params_path = output.with_suffix(".json")
+    assert commands == [
+        ["pvpython", "pipeline", str(source), str(output), str(params_path)]
+    ]
+    assert json.loads(params_path.read_text()) == {"filters": filters}
 
 
 def test_worker_drains_large_stdout_without_pipe_deadlock(monkeypatch):

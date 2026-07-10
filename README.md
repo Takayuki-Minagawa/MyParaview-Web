@@ -16,16 +16,16 @@ trame session、PostgreSQL/S3連携はサーバーモードで提供する機能
 
 ## 主な機能
 
-- VTP: surface / wireframe / points、point/cell scalar、3種のcolormap、手動range、opacity、凡例
-- VTI: X/Y/Z slice とvolume rendering
-- CSV: X/Y/Z列選択による点群化（ブラウザ上限250,000点）
-- PVD: 参照ファイル込みbundle upload、時系列slider/playback、完全bundle ZIP export
-- 表示状態: Pipeline browser、camera/representation/color/VTI/PVD状態の保存・復元
-- UX: job center、cancel、進捗/ログ、panel折りたたみ、resize、orientation axes、標準view
-- Artifact: source/bundle export、client screenshot、worker生成VTPの一覧と認証付きdownload
-- 本番基盤: Alembic、PostgreSQL、S3/MinIO、OIDC Code+PKCE、Project RBAC、監査ログ
-- Server capability: pvpython reader/convert/filter、trame broker session、期限付きWebSocket proxy
-- R&D: WebGPU/WASM検出（描画は安定版vtk.js WebGL）、Python/Jupyter deep link、安全な操作提案
+- VTP: surface / wireframe / points、point/cell scalar、5種のcolormap（cool-to-warm / viridis / grayscale / plasma / turbo）、手動range、opacity、凡例
+- VTI: X/Y/Z slice とvolume rendering（2〜4点の不透明度transfer function編集）
+- CSV: X/Y/Z列選択による点群化（ブラウザ上限250,000点、無効行スキップ数を表示）
+- PVD: 参照ファイル込みbundle upload、時系列slider/playback、step単位download、完全bundle ZIP export
+- 表示状態: Pipeline browser（保存・復元・リネーム・サーバ実行）、camera/representation/color/VTI/PVD状態の保存・復元、共有リンクコピー
+- UX: job center（フィルタ/ページングAPI、SSEストリーム）、cancel、進捗/ログ、panel折りたたみ、resize、orientation axesトグル、6方向標準view、背景色選択
+- Artifact: source/bundle export、VTP変換、統計JSON（ヒストグラム含む）、client screenshot/geometry export、Artifact→Dataset昇格、認証付きdownload
+- 本番基盤: Alembic、PostgreSQL、S3/MinIO（presigned URL redirect対応）、OIDC Code+PKCE、Project RBAC（メンバー削除対応）、監査ログ（Web UIビューア + CSV export）
+- Server capability: pvpython reader/convert/filter/render/movie、Pipelineフィルタ連鎖のサーバ実行、trame broker session、期限付きWebSocket proxy とフロントのリモートビューア
+- R&D: WebGPU/WASM検出（描画は安定版vtk.js WebGL）、Python/Jupyter deep link、安全な操作提案（永続化・確認後適用・却下）
 
 ## アーキテクチャ
 
@@ -81,6 +81,11 @@ PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 ./.venv/bin/uvicorn app.main
 MinIO bucketは`minio-init`が作成します。S3 objectはimmutable key + local read-through
 cacheでVTK reader/FileResponseへ渡されます。cacheは
 `PVWEB_S3_CACHE_MAX_BYTES`（既定5 GiB）と`PVWEB_S3_CACHE_TTL_SECONDS`（既定24時間）で制限されます。
+`PVWEB_S3_PRESIGNED_DOWNLOADS=1`を設定すると、dataset/artifactのダウンロードは
+API経由のストリーミングではなく期限付きpresigned URLへの307リダイレクトになります。
+
+その他の調整可能な上限: `PVWEB_MAX_ARTIFACT_BYTES`（client artifact上限、既定32 MiB）、
+`PVWEB_AUDIT_LIST_LIMIT`（監査ログ一覧の最大件数、既定500）。
 
 ## OIDC / RBAC
 
@@ -126,6 +131,13 @@ PVWEB_WORKER_TIMEOUT=900
 - external/composite dataset → MergeBlocks → ExtractSurface → VTP
 - Slice / Clip / Contour / Threshold → surface VTP Artifact
 - Contourのcell scalarはCell Data to Point Dataを挿入
+- render: サーバサイドscreenshot（PNG Artifact、サイズ/着色/timestep指定可）
+- movie: 全timestepのframe PNGをZIP Artifact化
+- Pipeline実行: `POST /pipelines/{id}/run`が保存済みフィルタ連鎖を順に適用しVTP Artifactを生成
+
+worker未設定時、これらのジョブは成功を偽らず`PVWEB_PVPYTHON`必要の明示エラーでfailedになります。
+配列統計（`kind=stats`）はworker不要で、CSVとascii VTK XMLの範囲でmin/max/mean/stddevと
+ヒストグラムをJSON Artifactに出力します（binary/appended配列は明示的に失敗します）。
 
 EnSight/XDMFはdescriptorとsidecarをfolder uploadします。相対参照closureを検証し、
 absolute path、外部URI、未upload参照を拒否します。
@@ -158,6 +170,11 @@ client.open_view(project_id="...", dataset_id="...")
 `POST /assist/proposals`はdataset metadataからSlice/Clip/Contour/Threshold/着色の
 変更案を返すだけで、JobやArtifactを生成しません。UIはJSON差分を表示し、現在dataset・prompt・
 request世代の一致を再確認してから、利用者の明示操作で適用します。
+
+提案は`assist_proposals`テーブルに永続化されます。`GET /assist/proposals?dataset_id=`で履歴を
+参照でき、`POST /assist/proposals/{id}/apply`はfilter提案を検証のうえjobとして実行して
+`applied`へ、`POST /assist/proposals/{id}/dismiss`は`dismissed`へ遷移させます。
+表示変更（view_change）提案はクライアント側で適用されます。
 
 ## テスト
 

@@ -197,6 +197,24 @@ class Artifact(Base):
     job: Mapped[Optional[Job]] = relationship(back_populates="artifacts")
 
 
+class AssistProposal(Base):
+    """A persisted assistant proposal awaiting explicit user confirmation."""
+
+    __tablename__ = "assist_proposals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id"), index=True)
+    actor_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)  # filter_job|view_change|none
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String, default="proposed")  # proposed|applied|dismissed
+    applied_job_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_now, index=True)
+
+
 class RenderSession(Base):
     __tablename__ = "render_sessions"
 

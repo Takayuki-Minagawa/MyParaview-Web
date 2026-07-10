@@ -113,6 +113,45 @@ def test_convert_and_threshold_are_surface_extracted_before_vtp_save(tmp_path, m
         assert simple.saved[1].source.source.kind == "multiblock"
 
 
+def test_pipeline_surface_extracts_only_after_all_native_filters(tmp_path, monkeypatch):
+    simple = FakeSimple()
+    monkeypatch.setattr(pv_worker, "_paraview", lambda: simple)
+    params_file = tmp_path / "pipeline.json"
+    params_file.write_text(
+        json.dumps(
+            {
+                "filters": [
+                    {
+                        "filter": "threshold",
+                        "array": "temperature",
+                        "association": "POINTS",
+                        "minimum": 0,
+                        "maximum": 100,
+                    },
+                    {
+                        "filter": "threshold",
+                        "array": "temperature",
+                        "association": "POINTS",
+                        "minimum": 20,
+                        "maximum": 30,
+                    },
+                ]
+            }
+        )
+    )
+    output = str(tmp_path / "pipeline.vtp")
+
+    pv_worker.transform("pipeline", "source.vtu", output, str(params_file))
+
+    assert simple.saved is not None
+    surface = simple.saved[1]
+    final_filter = surface.source.source.source
+    assert surface.kind == "surface"
+    assert final_filter.kind == "threshold"
+    assert final_filter.source.kind == "threshold"
+    assert final_filter.source.source.kind == "reader"
+
+
 def test_metadata_omits_non_finite_bounds(monkeypatch, capsys):
     monkeypatch.setattr(pv_worker, "_paraview", MetadataSimple)
     pv_worker.metadata("source.cgns")

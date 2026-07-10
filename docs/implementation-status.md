@@ -24,3 +24,43 @@
 
 「接続契約完了」は、外部native/runtimeをrepositoryに同梱したという意味ではありません。
 capabilityを設定した環境で実処理へ接続し、未設定時は誤成功させないAPI/UI境界が完成した状態です。
+
+## 2026-07-10 レビュー是正での追加
+
+コードレビュー全指摘への対応として、上記17件に加えて次を実装しました。
+
+- リファクタリング: 監査ミドルウェアのthreadpool化、アップロード系ブロッキングI/O解消、
+  ingest重複ガード、アップロード3endpoint共通化、`run_dataset_operation`分割、
+  App.tsx/PropertiesPanelのフック・セクション分割、VtkViewerのScene型付けと依存配列修正、
+  MessagesContext、i18nカタログ完全化、エラーバナー多重化+ErrorBoundary
+- 追加機能: メンバー削除、監査ログUI+CSV export、一覧フィルタ/ページング、S3 presigned
+  download、Artifact→Dataset昇格、統計JSONジョブ、サーバrender/movieジョブ、
+  Pipelineフィルタ連鎖のサーバ実行、assist提案の永続化+apply/dismiss、ジョブSSE、
+  共有リンク、Pipelineリネーム、VTP変換UI、colormap 2種追加、6方向カメラプリセット、
+  axes/背景トグル、timestep単体download、CSVスキップ行表示、Volume TFエディタ、
+  クライアントジオメトリexport、trameリモートビューアUI
+- テスト: バックエンド129件（+40件追加）、フロントエンドunit+コンポーネントテスト
+  （jsdom/testing-library基盤を導入）
+
+### 第2ラウンド（レビュー再指摘の是正）
+
+PRレビューで指摘された「現行テストで検出されない回帰・境界条件」への対応です。
+
+- フロントエンドP1: `useProjectScope`/`useDisplayState`が毎レンダーで新オブジェクトを
+  返し、リソース取得・ジョブポーリングの各effectが自走リフェッチループ化する問題を
+  useMemoで是正（`mergeJobSnapshots`も内容不変時に同一参照を返すよう変更）。
+  アップロード完了時の自動選択がユーザーの選択を奪う回帰、再生タイマーが無関係な
+  再レンダーでリセットされる回帰、ErrorBoundaryが一度のクラッシュ後に復帰不能となる
+  問題（`resetKey`導入）、監査ログがプロジェクト切替後も前プロジェクトの内容を
+  表示し続ける問題を修正。
+- フロントエンドP2: Volume不透明度制御点をViewStateとして保存/復元、データセット
+  切替時のリモートセッション停止、昇格後ingest失敗の通知、等値の制御点で伝達関数の
+  端点が消える問題、リモートフレームURLのrevokeレース+セッション終了表示、
+  アシスタント適用ボタンの二重送信ガード、レンジ入力のaria/検証不整合を修正。
+- バックエンドP2: `/jobs/stream` のカーソルが同一`updated_at`の更新を取りこぼす
+  問題（`>=`+送信済み(タイムスタンプ,ID)フィルタへ変更）と、接続中ずっと
+  リクエストスコープのDBセッションを占有する問題、Artifact昇格がアップロード時の
+  マジックチェックを迂回できる問題、presignedリダイレクトがオブジェクト存在確認
+  なしにS3の生404へ誘導しうる問題を修正。
+- テスト: バックエンド132件、フロントエンド84件に増加（SSEカーソル、promote sniff、
+  presignedガード、フック安定性、ErrorBoundary復帰、ViewState往復などを追加）。

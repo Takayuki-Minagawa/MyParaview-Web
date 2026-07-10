@@ -2,32 +2,29 @@ from __future__ import annotations
 
 import math
 import re
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import Principal, get_principal, require_project_role
 from ..db import get_db
-from ..models import Dataset
-from ..schemas import AssistProposalCreate, AssistProposalOut
+from ..jobs import manager
+from ..models import AssistProposal, Dataset, Job
+from ..project_locks import locked_project
+from ..schemas import (
+    AssistProposalCreate,
+    AssistProposalOut,
+    AssistProposalRecordOut,
+    JobOut,
+    validate_filter_params,
+)
+from ..services import run_dataset_operation
 
 router = APIRouter(prefix="/assist", tags=["assistant"])
 
 
-@router.post("/proposals", response_model=AssistProposalOut)
-def propose_operation(
-    payload: AssistProposalCreate,
-    request: Request,
-    db: Session = Depends(get_db),
-    principal: Principal = Depends(get_principal),
-):
-    dataset = db.get(Dataset, payload.dataset_id)
-    if dataset is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, dataset.project_id, principal)
-    request.state.audit_project_id = dataset.project_id
-    request.state.audit_resource_type = "assistant_proposal"
-    request.state.audit_resource_id = dataset.id
-    prompt = payload.prompt.casefold()
+def _build_proposal(dataset: Dataset, raw_prompt: str) -> AssistProposalOut:
+    prompt = raw_prompt.casefold()
     scalars = [
         array
         for array in (dataset.arrays or [])
@@ -171,3 +168,129 @@ def propose_operation(
         params={},
         reason="実行可能な安全な提案を特定できません。Slice、Clip、Contour、Threshold、着色を指定してください。",
     )
+
+
+@router.post("/proposals", response_model=AssistProposalOut)
+def propose_operation(
+    payload: AssistProposalCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    dataset = db.get(Dataset, payload.dataset_id)
+    if dataset is None:
+        raise HTTPException(404, "dataset not found")
+    require_project_role(db, dataset.project_id, principal)
+    request.state.audit_project_id = dataset.project_id
+    request.state.audit_resource_type = "assistant_proposal"
+    request.state.audit_resource_id = dataset.id
+    proposal = _build_proposal(dataset, payload.prompt)
+    record = AssistProposal(
+        project_id=dataset.project_id,
+        dataset_id=dataset.id,
+        actor_id=principal.id,
+        prompt=payload.prompt,
+        action=proposal.action,
+        params=proposal.params,
+        reason=proposal.reason,
+        status="proposed",
+    )
+    db.add(record)
+    db.commit()
+    proposal.id = record.id
+    return proposal
+
+
+@router.get("/proposals", response_model=list[AssistProposalRecordOut])
+def list_proposals(
+    dataset_id: str = Query(min_length=1),
+    limit: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    dataset = db.get(Dataset, dataset_id)
+    if dataset is None:
+        raise HTTPException(404, "dataset not found")
+    require_project_role(db, dataset.project_id, principal)
+    stmt = (
+        select(AssistProposal)
+        .where(AssistProposal.dataset_id == dataset_id)
+        .order_by(AssistProposal.created_at.desc())
+        .limit(limit)
+    )
+    return list(db.scalars(stmt))
+
+
+def _load_actionable_proposal(
+    db: Session, proposal_id: str, principal: Principal
+) -> AssistProposal:
+    record = db.get(AssistProposal, proposal_id)
+    if record is None:
+        raise HTTPException(404, "proposal not found")
+    require_project_role(db, record.project_id, principal, "editor")
+    if record.status != "proposed":
+        raise HTTPException(409, f"proposal already {record.status}")
+    return record
+
+
+@router.post("/proposals/{proposal_id}/apply", response_model=JobOut)
+def apply_proposal(
+    proposal_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """Confirm a persisted filter proposal by launching the matching job.
+
+    ``view_change`` proposals have no server-side effect (the client applies
+    them to its own view state), so only ``filter_job`` proposals are accepted.
+    """
+    record = _load_actionable_proposal(db, proposal_id, principal)
+    if record.action != "filter_job":
+        raise HTTPException(422, "only filter_job proposals can be applied server-side")
+    dataset = db.get(Dataset, record.dataset_id)
+    if dataset is None:
+        raise HTTPException(410, "proposal dataset no longer exists")
+    try:
+        params = validate_filter_params(dict(record.params))
+    except ValueError as exc:
+        raise HTTPException(422, f"stored proposal params invalid: {exc}") from exc
+    project_id = record.project_id
+    with locked_project(db, project_id, principal, "editor"):
+        current = db.get(AssistProposal, proposal_id)
+        if current is None or current.status != "proposed":
+            raise HTTPException(409, "proposal is no longer applicable")
+        job = Job(
+            project_id=project_id,
+            kind="filter",
+            status="queued",
+            target_id=record.dataset_id,
+            params=params,
+        )
+        db.add(job)
+        db.flush()
+        current.status = "applied"
+        current.applied_job_id = job.id
+        db.add(current)
+    request.state.audit_project_id = project_id
+    request.state.audit_resource_type = "job"
+    request.state.audit_resource_id = job.id
+    manager.submit(job.id, run_dataset_operation(record.dataset_id, "filter", params))
+    return job
+
+
+@router.post("/proposals/{proposal_id}/dismiss", response_model=AssistProposalRecordOut)
+def dismiss_proposal(
+    proposal_id: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    record = _load_actionable_proposal(db, proposal_id, principal)
+    with locked_project(db, record.project_id, principal, "editor"):
+        current = db.get(AssistProposal, proposal_id)
+        if current is None or current.status != "proposed":
+            raise HTTPException(409, "proposal is no longer applicable")
+        current.status = "dismissed"
+        db.add(current)
+        db.flush()
+        return AssistProposalRecordOut.model_validate(current)

@@ -7,20 +7,29 @@ import os
 import shutil
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select
+
+import json
 
 from .bundles import bundle_reference_path, materialized_bundle_path
 from .config import settings
 from .db import SessionLocal
 from .jobs import JobCancelled, JobContext
 from .metadata import extract_metadata
-from .models import Artifact, Dataset, DatasetFile, Job
+from .models import Artifact, Dataset, DatasetFile, Job, Pipeline
 from .project_locks import locked_project
+from .stats import compute_dataset_statistics
 from .storage import store
-from .worker import extract_external_metadata, run_transform
+from .worker import (
+    extract_external_metadata,
+    run_movie_frames,
+    run_pipeline_transform,
+    run_transform,
+)
 
 
 def _set_dataset_status(dataset_id: str, status: str, *, error: Optional[str]) -> None:
@@ -163,6 +172,397 @@ def run_ingest(dataset_id: str):
     return body
 
 
+@dataclass(frozen=True)
+class _DatasetSource:
+    """Snapshot of the dataset row a job body operates on."""
+
+    object_key: str
+    project_id: str
+    filename: str
+    ext: str
+    bundle_files: list
+
+
+@dataclass(frozen=True)
+class _OutputPlan:
+    """Derived naming/routing decisions for a dataset operation."""
+
+    filename: str
+    output_ext: str
+    artifact_kind: str
+    is_bundle_export: bool
+    needs_worker: bool
+
+
+def _load_dataset_source(dataset_id: str) -> _DatasetSource:
+    with SessionLocal() as db:
+        dataset = db.get(Dataset, dataset_id)
+        if dataset is None:
+            raise ValueError(f"dataset {dataset_id} not found")
+        bundle_files = list(
+            db.execute(
+                select(
+                    DatasetFile.relative_path,
+                    DatasetFile.object_key,
+                    DatasetFile.is_primary,
+                ).where(DatasetFile.dataset_id == dataset_id)
+            ).all()
+        )
+        return _DatasetSource(
+            object_key=dataset.object_key,
+            project_id=dataset.project_id,
+            filename=dataset.filename,
+            ext=dataset.ext,
+            bundle_files=bundle_files,
+        )
+
+
+_PLAN_SUFFIX = {"filter": "filtered", "convert": "converted", "render": "render"}
+
+
+def _plan_output(kind: str, params: dict, source: _DatasetSource) -> _OutputPlan:
+    output_format = str(params.get("output_format", "source")).lower()
+    if kind == "export" and output_format != "source":
+        raise ValueError("export jobs only support output_format='source'")
+    if kind == "convert" and output_format != "vtp":
+        raise ValueError("convert jobs require output_format='vtp'")
+
+    is_bundle_export = kind == "export" and bool(source.bundle_files)
+    needs_worker = kind in {"filter", "render"} or (kind == "convert" and source.ext != ".vtp")
+    if is_bundle_export:
+        output_ext = ".zip"
+    elif kind in {"filter", "convert"}:
+        output_ext = ".vtp"
+    elif kind == "render":
+        output_ext = ".png"
+    else:
+        output_ext = source.ext
+    stem = os.path.splitext(os.path.basename(source.filename))[0]
+    suffix = _PLAN_SUFFIX.get(kind, "export")
+    artifact_kind = (
+        "filtered_vtp" if kind == "filter" else
+        "render_png" if kind == "render" else
+        ("converted_vtp" if output_ext == ".vtp" and kind == "convert" else kind)
+    )
+    return _OutputPlan(
+        filename=f"{stem}-{suffix}{output_ext}",
+        output_ext=output_ext,
+        artifact_kind=artifact_kind,
+        is_bundle_export=is_bundle_export,
+        needs_worker=needs_worker,
+    )
+
+
+def materialize_bundle(bundle_files: list, root: Path) -> Path:
+    """Copy bundle members under ``root`` and return the primary file path."""
+    primary: Path | None = None
+    for relative_path, bundle_object_key, is_primary in bundle_files:
+        target = materialized_bundle_path(root, relative_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with store.local_path(bundle_object_key) as local_object:
+            shutil.copyfile(local_object, target)
+        if is_primary:
+            primary = target
+    if primary is None:
+        raise ValueError("dataset bundle has no primary file")
+    return primary
+
+
+def _produce_object(
+    ctx: JobContext,
+    kind: str,
+    params: dict,
+    source: _DatasetSource,
+    plan: _OutputPlan,
+    object_key: str,
+    source_path: Path,
+) -> int:
+    """Write the derived object to ``object_key`` and return its size."""
+    if plan.is_bundle_export:
+        ctx.update(progress=0.35, log_line="packaging dataset bundle")
+        with tempfile.TemporaryDirectory(prefix="pvweb-export-") as export_dir:
+            archive_path = Path(export_dir) / plan.filename
+            with zipfile.ZipFile(
+                archive_path, "w", compression=zipfile.ZIP_DEFLATED
+            ) as archive:
+                for relative_path, bundle_object_key, _ in source.bundle_files:
+                    ctx.check_cancelled()
+                    with store.local_path(bundle_object_key) as local_object:
+                        archive.write(local_object, arcname=relative_path)
+            return store.copy_in(object_key, archive_path)
+    if plan.needs_worker:
+        ctx.update(progress=0.25, log_line=f"running ParaView {kind} worker")
+        with tempfile.TemporaryDirectory(prefix="pvweb-worker-") as worker_dir:
+            root = Path(worker_dir).resolve()
+            worker_source = (
+                materialize_bundle(source.bundle_files, root)
+                if source.bundle_files
+                else source_path
+            )
+            worker_output = root / plan.filename
+            run_transform(Path(worker_source), worker_output, kind, params, ctx)
+            return store.copy_in(object_key, worker_output)
+    ctx.update(progress=0.35, log_line="copying source object")
+    return store.copy_in(object_key, source_path)
+
+
+def persist_job_artifact(
+    ctx: JobContext,
+    *,
+    project_id: str,
+    dataset_id: Optional[str],
+    kind: str,
+    filename: str,
+    size: int,
+    object_key: str,
+    content_type: str,
+) -> str:
+    """Create the Artifact row inside a project lock, revalidating ownership."""
+    with SessionLocal() as db:
+        with locked_project(db, project_id):
+            current_job = db.get(Job, ctx.job_id)
+            current_dataset = db.get(Dataset, dataset_id) if dataset_id else None
+            if (
+                (dataset_id is not None and (
+                    current_dataset is None or current_dataset.project_id != project_id
+                ))
+                or current_job is None
+                or current_job.project_id != project_id
+            ):
+                raise ValueError("project was deleted while creating artifact")
+            artifact = Artifact(
+                dataset_id=dataset_id,
+                job_id=ctx.job_id,
+                kind=kind,
+                filename=filename,
+                size_bytes=size,
+                object_key=object_key,
+                content_type=content_type,
+            )
+            db.add(artifact)
+            db.flush()
+            return artifact.id
+
+
+def rollback_job_artifact(artifact_id: Optional[str], object_key: str) -> None:
+    """Delete a partially published artifact row and its stored object."""
+    if artifact_id is not None:
+        with SessionLocal() as db:
+            artifact = db.get(Artifact, artifact_id)
+            if artifact is not None:
+                db.delete(artifact)
+                db.commit()
+    store.delete(object_key)
+
+
+def run_stats_operation(dataset_id: str, params: dict):
+    """Compute per-array statistics and publish them as a JSON artifact."""
+
+    def body(ctx: JobContext) -> dict:
+        ctx.update(progress=0.05, log_line=f"stats start dataset={dataset_id}")
+        source = _load_dataset_source(dataset_id)
+        ctx.check_cancelled()
+        bins = int(params.get("bins", 32))
+        stem = os.path.splitext(os.path.basename(source.filename))[0]
+        filename = f"{stem}-stats.json"
+        object_key = store.new_key(".json")
+        artifact_id: Optional[str] = None
+        try:
+            ctx.update(progress=0.3, log_line="computing array statistics")
+            with store.local_path(source.object_key) as local_object:
+                arrays = compute_dataset_statistics(str(local_object), source.ext, bins)
+            ctx.check_cancelled()
+            payload = {"dataset_id": dataset_id, "bins": bins, "arrays": arrays}
+            size = store.save_bytes(object_key, json.dumps(payload, allow_nan=False).encode())
+            artifact_id = persist_job_artifact(
+                ctx,
+                project_id=source.project_id,
+                dataset_id=dataset_id,
+                kind="stats_json",
+                filename=filename,
+                size=size,
+                object_key=object_key,
+                content_type="application/json",
+            )
+            ctx.check_cancelled()
+            ctx.update(progress=1.0, log_line=f"statistics artifact created id={artifact_id}")
+            return {
+                "project_id": source.project_id,
+                "dataset_id": dataset_id,
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "size_bytes": size,
+            }
+        except Exception:
+            rollback_job_artifact(artifact_id, object_key)
+            raise
+
+    return body
+
+
+def run_movie_export(dataset_id: str, params: dict):
+    """Render per-timestep frames through the ParaView worker into a ZIP artifact."""
+
+    def body(ctx: JobContext) -> dict:
+        ctx.update(progress=0.05, log_line=f"movie start dataset={dataset_id}")
+        source = _load_dataset_source(dataset_id)
+        ctx.check_cancelled()
+        stem = os.path.splitext(os.path.basename(source.filename))[0]
+        filename = f"{stem}-movie.zip"
+        object_key = store.new_key(".zip")
+        artifact_id: Optional[str] = None
+        source_path = store.acquire_path(source.object_key)
+        try:
+            with tempfile.TemporaryDirectory(prefix="pvweb-movie-") as movie_dir:
+                root = Path(movie_dir).resolve()
+                worker_source = (
+                    materialize_bundle(source.bundle_files, root / "bundle")
+                    if source.bundle_files
+                    else source_path
+                )
+                ctx.update(progress=0.2, log_line="rendering timestep frames")
+                frames = run_movie_frames(Path(worker_source), root / "frames", params, ctx)
+                ctx.check_cancelled()
+                ctx.update(progress=0.8, log_line=f"packaging {len(frames)} frames")
+                archive_path = root / filename
+                with zipfile.ZipFile(
+                    archive_path, "w", compression=zipfile.ZIP_DEFLATED
+                ) as archive:
+                    for frame in frames:
+                        archive.write(frame, arcname=frame.name)
+                size = store.copy_in(object_key, archive_path)
+            ctx.check_cancelled()
+            artifact_id = persist_job_artifact(
+                ctx,
+                project_id=source.project_id,
+                dataset_id=dataset_id,
+                kind="movie_frames",
+                filename=filename,
+                size=size,
+                object_key=object_key,
+                content_type="application/zip",
+            )
+            ctx.check_cancelled()
+            ctx.update(progress=1.0, log_line=f"movie artifact created id={artifact_id}")
+            return {
+                "project_id": source.project_id,
+                "dataset_id": dataset_id,
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "size_bytes": size,
+                "frame_count": len(frames),
+            }
+        except Exception:
+            rollback_job_artifact(artifact_id, object_key)
+            raise
+        finally:
+            store.release_path(source.object_key)
+
+    return body
+
+
+def load_pipeline_chain(db, pipeline_id: str) -> tuple[str, list]:
+    """Resolve a pipeline into (reader dataset id, ordered filter nodes).
+
+    Execution supports a linear reader -> filter* chain; representation nodes
+    are display-only and skipped. Raises ValueError for shapes that cannot run.
+    """
+    pipeline = db.get(Pipeline, pipeline_id)
+    if pipeline is None:
+        raise ValueError("pipeline not found")
+    nodes = list(pipeline.nodes)
+    readers = [node for node in nodes if node.node_type == "reader"]
+    if len(readers) != 1:
+        raise ValueError("pipeline execution requires exactly one reader node")
+    reader = readers[0]
+    if not reader.dataset_id:
+        raise ValueError("pipeline reader has no dataset")
+    consumers: dict[str, list] = {}
+    for node in nodes:
+        if node.input_id:
+            consumers.setdefault(node.input_id, []).append(node)
+    chain = []
+    current = reader
+    visited = {reader.id}
+    while True:
+        next_filters = [
+            node for node in consumers.get(current.id, []) if node.node_type == "filter"
+        ]
+        if not next_filters:
+            break
+        if len(next_filters) > 1:
+            raise ValueError("pipeline execution supports a single linear filter chain")
+        current = next_filters[0]
+        if current.id in visited:
+            raise ValueError("pipeline filter chain contains a cycle")
+        visited.add(current.id)
+        chain.append(current)
+    if not chain:
+        raise ValueError("pipeline has no filter nodes to execute")
+    return reader.dataset_id, chain
+
+
+def run_pipeline_execution(pipeline_id: str, dataset_id: str, filters: list[dict]):
+    """Execute a stored pipeline's filter chain and publish the final VTP."""
+
+    def body(ctx: JobContext) -> dict:
+        ctx.update(progress=0.05, log_line=f"pipeline start pipeline={pipeline_id}")
+        source = _load_dataset_source(dataset_id)
+        ctx.check_cancelled()
+        stem = os.path.splitext(os.path.basename(source.filename))[0]
+        filename = f"{stem}-pipeline.vtp"
+        object_key = store.new_key(".vtp")
+        artifact_id: Optional[str] = None
+        source_path = store.acquire_path(source.object_key)
+        try:
+            with tempfile.TemporaryDirectory(prefix="pvweb-pipeline-") as work_dir:
+                root = Path(work_dir).resolve()
+                current = (
+                    materialize_bundle(source.bundle_files, root / "bundle")
+                    if source.bundle_files
+                    else source_path
+                )
+                filter_names = ", ".join(str(item.get("filter")) for item in filters)
+                ctx.update(
+                    progress=0.1,
+                    log_line=f"applying {len(filters)} pipeline filters: {filter_names}",
+                )
+                worker_output = root / filename
+                run_pipeline_transform(
+                    Path(current), worker_output, filters, ctx
+                )
+                ctx.update(progress=0.8, log_line="pipeline filters complete")
+                size = store.copy_in(object_key, worker_output)
+            ctx.check_cancelled()
+            artifact_id = persist_job_artifact(
+                ctx,
+                project_id=source.project_id,
+                dataset_id=dataset_id,
+                kind="pipeline_vtp",
+                filename=filename,
+                size=size,
+                object_key=object_key,
+                content_type="application/octet-stream",
+            )
+            ctx.check_cancelled()
+            ctx.update(progress=1.0, log_line=f"pipeline artifact created id={artifact_id}")
+            return {
+                "project_id": source.project_id,
+                "dataset_id": dataset_id,
+                "pipeline_id": pipeline_id,
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "size_bytes": size,
+            }
+        except Exception:
+            rollback_job_artifact(artifact_id, object_key)
+            raise
+        finally:
+            store.release_path(source.object_key)
+
+    return body
+
+
 def run_dataset_operation(dataset_id: str, kind: str, params: dict):
     """Create a derived artifact through the generic job contract.
 
@@ -173,144 +573,43 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
 
     def body(ctx: JobContext) -> dict:
         ctx.update(progress=0.05, log_line=f"{kind} start dataset={dataset_id}")
-        with SessionLocal() as db:
-            dataset = db.get(Dataset, dataset_id)
-            if dataset is None:
-                raise ValueError(f"dataset {dataset_id} not found")
-            source_object_key = dataset.object_key
-            project_id = dataset.project_id
-            source_name = dataset.filename
-            source_ext = dataset.ext
-            bundle_files = list(
-                db.execute(
-                    select(
-                        DatasetFile.relative_path,
-                        DatasetFile.object_key,
-                        DatasetFile.is_primary,
-                    ).where(
-                        DatasetFile.dataset_id == dataset_id
-                    )
-                ).all()
-            )
-
+        source = _load_dataset_source(dataset_id)
         ctx.check_cancelled()
-        output_format = str(params.get("output_format", "source")).lower()
-        if kind == "export" and output_format != "source":
-            raise ValueError("export jobs only support output_format='source'")
-        if kind == "convert" and output_format != "vtp":
-            raise ValueError("convert jobs require output_format='vtp'")
-
-        is_bundle_export = kind == "export" and bool(bundle_files)
-        needs_worker = kind == "filter" or (kind == "convert" and source_ext != ".vtp")
-        output_ext = (
-            ".zip"
-            if is_bundle_export
-            else (".vtp" if kind in {"filter", "convert"} else source_ext)
-        )
-        stem = os.path.splitext(os.path.basename(source_name))[0]
-        suffix = "filtered" if kind == "filter" else ("converted" if kind == "convert" else "export")
-        filename = f"{stem}-{suffix}{output_ext}"
-        artifact_kind = (
-            "filtered_vtp" if kind == "filter" else
-            ("converted_vtp" if output_ext == ".vtp" and kind == "convert" else kind)
-        )
-        object_key = store.new_key(output_ext)
-        persisted = False
+        plan = _plan_output(kind, params, source)
+        object_key = store.new_key(plan.output_ext)
         artifact_id: Optional[str] = None
-        source_path = store.acquire_path(source_object_key)
+        source_path = store.acquire_path(source.object_key)
         try:
-            if is_bundle_export:
-                ctx.update(progress=0.35, log_line="packaging dataset bundle")
-                with tempfile.TemporaryDirectory(prefix="pvweb-export-") as export_dir:
-                    archive_path = Path(export_dir) / filename
-                    with zipfile.ZipFile(
-                        archive_path, "w", compression=zipfile.ZIP_DEFLATED
-                    ) as archive:
-                        for relative_path, bundle_object_key, _ in bundle_files:
-                            ctx.check_cancelled()
-                            with store.local_path(bundle_object_key) as local_object:
-                                archive.write(local_object, arcname=relative_path)
-                    size = store.copy_in(object_key, archive_path)
-            elif needs_worker:
-                ctx.update(progress=0.25, log_line=f"running ParaView {kind} worker")
-                with tempfile.TemporaryDirectory(prefix="pvweb-worker-") as worker_dir:
-                    root = Path(worker_dir).resolve()
-                    worker_source = source_path
-                    if bundle_files:
-                        worker_source = None
-                        for relative_path, bundle_object_key, is_primary in bundle_files:
-                            target = materialized_bundle_path(root, relative_path)
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            with store.local_path(bundle_object_key) as local_object:
-                                shutil.copyfile(local_object, target)
-                            if is_primary:
-                                worker_source = target
-                        if worker_source is None:
-                            raise ValueError("dataset bundle has no primary file")
-                    worker_output = root / filename
-                    run_transform(Path(worker_source), worker_output, kind, params, ctx)
-                    size = store.copy_in(object_key, worker_output)
-            else:
-                ctx.update(progress=0.35, log_line="copying source object")
-                size = store.copy_in(object_key, source_path)
+            size = _produce_object(ctx, kind, params, source, plan, object_key, source_path)
             ctx.check_cancelled()
             content_type = (
                 "application/zip"
-                if is_bundle_export
-                else mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                if plan.is_bundle_export
+                else mimetypes.guess_type(plan.filename)[0] or "application/octet-stream"
             )
-            with SessionLocal() as db:
-                with locked_project(db, project_id):
-                    current_dataset = db.get(Dataset, dataset_id)
-                    current_job = db.get(Job, ctx.job_id)
-                    if (
-                        current_dataset is None
-                        or current_dataset.project_id != project_id
-                        or current_job is None
-                        or current_job.project_id != project_id
-                    ):
-                        raise ValueError("project was deleted while creating artifact")
-                    artifact = Artifact(
-                        dataset_id=dataset_id,
-                        job_id=ctx.job_id,
-                        kind=artifact_kind,
-                        filename=filename,
-                        size_bytes=size,
-                        object_key=object_key,
-                        content_type=content_type,
-                    )
-                    db.add(artifact)
-                    db.flush()
-                    artifact_id = artifact.id
-            persisted = True
+            artifact_id = persist_job_artifact(
+                ctx,
+                project_id=source.project_id,
+                dataset_id=dataset_id,
+                kind=plan.artifact_kind,
+                filename=plan.filename,
+                size=size,
+                object_key=object_key,
+                content_type=content_type,
+            )
             ctx.check_cancelled()
             ctx.update(progress=1.0, log_line=f"artifact created id={artifact_id}")
             return {
-                "project_id": project_id,
+                "project_id": source.project_id,
                 "dataset_id": dataset_id,
                 "artifact_id": artifact_id,
-                "filename": filename,
+                "filename": plan.filename,
                 "size_bytes": size,
             }
-        except JobCancelled:
-            if artifact_id is not None:
-                with SessionLocal() as db:
-                    artifact = db.get(Artifact, artifact_id)
-                    if artifact is not None:
-                        db.delete(artifact)
-                        db.commit()
-            store.delete(object_key)
-            raise
         except Exception:
-            if persisted and artifact_id is not None:
-                with SessionLocal() as db:
-                    artifact = db.get(Artifact, artifact_id)
-                    if artifact is not None:
-                        db.delete(artifact)
-                        db.commit()
-            store.delete(object_key)
+            rollback_job_artifact(artifact_id, object_key)
             raise
         finally:
-            store.release_path(source_object_key)
+            store.release_path(source.object_key)
 
     return body

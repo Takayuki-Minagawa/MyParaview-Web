@@ -7,12 +7,13 @@ Wires the M1 API surface (work_plan 7.2):
 
 from __future__ import annotations
 
-import os
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from .config import settings
 from .db import init_db
@@ -40,14 +41,75 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-_origins = os.environ.get("PVWEB_CORS_ORIGINS", "http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _origins if o.strip()],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+_AUDIT_RESOURCE_TYPES = ("dataset", "pipeline", "job", "artifact", "project")
+
+
+def _resolve_audit_project_id(
+    db: Session, path_params: dict, dataset_id: str | None
+) -> str | None:
+    """Walk the resource referenced by the path back to its owning project."""
+    if dataset_id:
+        dataset = db.get(Dataset, dataset_id)
+        if dataset:
+            return dataset.project_id
+    if path_params.get("pipeline_id"):
+        pipeline = db.get(Pipeline, path_params["pipeline_id"])
+        if pipeline:
+            return pipeline.project_id
+    if path_params.get("job_id"):
+        job = db.get(Job, path_params["job_id"])
+        if job:
+            return job.project_id
+    if path_params.get("artifact_id"):
+        artifact = db.get(Artifact, path_params["artifact_id"])
+        dataset = db.get(Dataset, artifact.dataset_id) if artifact and artifact.dataset_id else None
+        if dataset:
+            return dataset.project_id
+        job = db.get(Job, artifact.job_id) if artifact and artifact.job_id else None
+        if job:
+            return job.project_id
+    if path_params.get("session_id"):
+        render_session = db.get(RenderSession, path_params["session_id"])
+        if render_session:
+            return render_session.project_id
+    return None
+
+
+def _persist_audit_event(
+    *,
+    actor_id: str | None,
+    known_project_id: str | None,
+    path_params: dict,
+    dataset_id: str | None,
+    method: str,
+    resource_type: str,
+    resource_id: str | None,
+    status_code: int,
+    path: str,
+) -> None:
+    with SessionLocal() as db:
+        project_id = known_project_id or _resolve_audit_project_id(db, path_params, dataset_id)
+        db.add(
+            AuditEvent(
+                actor_id=actor_id,
+                project_id=project_id,
+                action=method.lower(),
+                resource_type=resource_type,
+                resource_id=resource_id,
+                status_code=status_code,
+                detail={"path": path},
+            )
+        )
+        db.commit()
 
 
 @app.middleware("http")
@@ -64,48 +126,32 @@ async def record_audit_event(request: Request, call_next):
         path_params = request.scope.get("path_params", {})
         principal = getattr(request.state, "principal", None)
         resource_type = getattr(request.state, "audit_resource_type", None) or next(
-            (name for name in ("dataset", "pipeline", "job", "artifact", "project") if f"{name}_id" in path_params),
+            (name for name in _AUDIT_RESOURCE_TYPES if f"{name}_id" in path_params),
             request.url.path.strip("/").split("/", 1)[0] or "api",
         )
         resource_id = getattr(request.state, "audit_resource_id", None) or path_params.get(
             f"{resource_type}_id"
         )
         try:
-            with SessionLocal() as db:
-                project_id = (
+            # The synchronous DB write must not run on the event loop: it would
+            # serialize every mutating request behind audit storage.
+            await run_in_threadpool(
+                _persist_audit_event,
+                actor_id=getattr(principal, "id", None),
+                known_project_id=(
                     getattr(request.state, "audit_project_id", None)
                     or path_params.get("project_id")
-                )
-                dataset_id = path_params.get("dataset_id") or request.query_params.get("dataset_id")
-                if not project_id and dataset_id:
-                    dataset = db.get(Dataset, dataset_id)
-                    project_id = dataset.project_id if dataset else None
-                if not project_id and path_params.get("pipeline_id"):
-                    pipeline = db.get(Pipeline, path_params["pipeline_id"])
-                    project_id = pipeline.project_id if pipeline else None
-                if not project_id and path_params.get("job_id"):
-                    job = db.get(Job, path_params["job_id"])
-                    project_id = job.project_id if job else None
-                if not project_id and path_params.get("artifact_id"):
-                    artifact = db.get(Artifact, path_params["artifact_id"])
-                    dataset = db.get(Dataset, artifact.dataset_id) if artifact and artifact.dataset_id else None
-                    job = db.get(Job, artifact.job_id) if artifact and artifact.job_id else None
-                    project_id = dataset.project_id if dataset else (job.project_id if job else None)
-                if not project_id and path_params.get("session_id"):
-                    render_session = db.get(RenderSession, path_params["session_id"])
-                    project_id = render_session.project_id if render_session else None
-                db.add(
-                    AuditEvent(
-                        actor_id=getattr(principal, "id", None),
-                        project_id=project_id,
-                        action=request.method.lower(),
-                        resource_type=resource_type,
-                        resource_id=resource_id,
-                        status_code=response.status_code,
-                        detail={"path": path},
-                    )
-                )
-                db.commit()
+                ),
+                path_params=path_params,
+                dataset_id=(
+                    path_params.get("dataset_id") or request.query_params.get("dataset_id")
+                ),
+                method=request.method,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                status_code=response.status_code,
+                path=path,
+            )
         except Exception:
             # Audit storage must not replace the original API response. Operators
             # can detect and alert on database failures from this log.

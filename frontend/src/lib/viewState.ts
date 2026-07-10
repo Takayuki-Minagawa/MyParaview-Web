@@ -7,10 +7,17 @@ import type {
   SliceAxis,
   TableCoordinates,
   ViewState,
+  VolumeOpacityPoint,
 } from "../types";
 
 const REPRESENTATIONS = new Set<Representation>(["surface", "wireframe", "points"]);
-const COLOR_MAPS = new Set<ColorMapName>(["cool-to-warm", "viridis", "grayscale"]);
+const COLOR_MAPS = new Set<ColorMapName>([
+  "cool-to-warm",
+  "viridis",
+  "grayscale",
+  "plasma",
+  "turbo",
+]);
 
 function finiteTuple(value: unknown, length: number): value is number[] {
   return Array.isArray(value) && value.length === length && value.every(Number.isFinite);
@@ -91,6 +98,31 @@ export function parseViewState(value: unknown): ViewState | null {
     (!Number.isInteger(state.timestep_index) || (state.timestep_index as number) < 0)
   ) return null;
 
+  let volumeOpacityPoints: VolumeOpacityPoint[] | undefined;
+  if (state.volume_opacity_points !== undefined) {
+    const points = state.volume_opacity_points;
+    if (
+      !Array.isArray(points) ||
+      points.length < 2 ||
+      points.length > 4 ||
+      !points.every(
+        (point) =>
+          point &&
+          typeof point === "object" &&
+          typeof (point as VolumeOpacityPoint).value === "number" &&
+          typeof (point as VolumeOpacityPoint).alpha === "number" &&
+          (point as VolumeOpacityPoint).value >= 0 &&
+          (point as VolumeOpacityPoint).value <= 1 &&
+          (point as VolumeOpacityPoint).alpha >= 0 &&
+          (point as VolumeOpacityPoint).alpha <= 1,
+      )
+    ) return null;
+    volumeOpacityPoints = points.map((point) => ({
+      value: (point as VolumeOpacityPoint).value,
+      alpha: (point as VolumeOpacityPoint).alpha,
+    }));
+  }
+
   return {
     schema_version: 1,
     representation: state.representation as Representation,
@@ -106,6 +138,9 @@ export function parseViewState(value: unknown): ViewState | null {
     ...(state.slice_index !== undefined ? { slice_index: state.slice_index as number } : {}),
     ...(state.timestep_index !== undefined
       ? { timestep_index: state.timestep_index as number }
+      : {}),
+    ...(volumeOpacityPoints !== undefined
+      ? { volume_opacity_points: volumeOpacityPoints }
       : {}),
   };
 }

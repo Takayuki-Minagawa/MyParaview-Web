@@ -22,6 +22,11 @@ class Settings:
             os.environ.get("PVWEB_S3_CACHE_MAX_BYTES", str(5 * 1024 * 1024 * 1024))
         )
         self.s3_cache_ttl_seconds = int(os.environ.get("PVWEB_S3_CACHE_TTL_SECONDS", "86400"))
+        # Optional: redirect dataset/artifact downloads straight to presigned
+        # S3 URLs instead of streaming through the API process.
+        self.s3_presigned_downloads = os.environ.get(
+            "PVWEB_S3_PRESIGNED_DOWNLOADS", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         # Authentication is fail-closed by default. Local development must opt
         # into the header-based identity provider explicitly.
         self.auth_mode = os.environ.get("PVWEB_AUTH_MODE", "oidc").lower()
@@ -47,6 +52,20 @@ class Settings:
         self.session_ttl_seconds = int(os.environ.get("PVWEB_SESSION_TTL", "3600"))
         # Upload guardrails (work_plan 8.3 security).
         self.max_upload_bytes = int(os.environ.get("PVWEB_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
+        self.max_artifact_bytes = int(
+            os.environ.get("PVWEB_MAX_ARTIFACT_BYTES", str(32 * 1024 * 1024))
+        )
+        self.audit_list_limit = int(os.environ.get("PVWEB_AUDIT_LIST_LIMIT", "500"))
+        # How long one /jobs/stream SSE connection lives before the client must
+        # reconnect. Tests shrink this so stream teardown does not stall runs.
+        self.job_stream_max_seconds = int(
+            os.environ.get("PVWEB_JOB_STREAM_MAX_SECONDS", "300")
+        )
+        self.cors_origins = [
+            origin.strip()
+            for origin in os.environ.get("PVWEB_CORS_ORIGINS", "http://localhost:5173").split(",")
+            if origin.strip()
+        ]
         # Extension allow-list; magic/header checks live in datasets router.
         self.allowed_extensions = {
             ".vtp", ".vti", ".vtu", ".vts", ".vtr", ".pvd", ".csv",

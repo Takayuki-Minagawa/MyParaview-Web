@@ -18,8 +18,26 @@ export default defineConfig({
     port: 5173,
   },
   test: {
-    globals: true,
-    environment: "node",
-    include: ["src/**/*.test.ts"],
+    // Component tests (.test.tsx) need a DOM; lib tests stay on the fast node env.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          globals: true,
+          environment: "node",
+          include: ["src/**/*.test.ts"],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "dom",
+          globals: true,
+          environment: "jsdom",
+          include: ["src/**/*.test.tsx"],
+        },
+      },
+    ],
   },
 });

@@ -211,3 +211,36 @@ def test_jobs_stream_emits_existing_job_snapshot(client, data_dir):
         assert seen is not None
         assert seen["project_id"] == project_id
         assert seen["id"] == ingest["id"]
+
+
+def test_stream_cursor_delivers_jobs_sharing_the_boundary_timestamp():
+    """A job committed with the same updated_at as the cursor must still stream."""
+    from app.routers.jobs import filter_new_job_events
+
+    t2 = "2026-07-10T00:00:02"
+    job_a = ({"id": "a"}, t2, "a")
+    job_b = ({"id": "b"}, t2, "b")
+
+    # Tick 1: only A exists at the boundary timestamp.
+    events, cursor, emitted = filter_new_job_events([job_a], None, set())
+    assert [event["id"] for event in events] == ["a"]
+    assert cursor == t2 and emitted == {"a"}
+
+    # Tick 2: B was committed later with an identical updated_at. The >= query
+    # returns both rows; only the already-sent pair (t2, a) is filtered.
+    events, cursor, emitted = filter_new_job_events([job_a, job_b], cursor, emitted)
+    assert [event["id"] for event in events] == ["b"]
+    assert cursor == t2 and emitted == {"a", "b"}
+
+    # Tick 3: nothing new — no re-emission of either job.
+    events, cursor, emitted = filter_new_job_events([job_a, job_b], cursor, emitted)
+    assert events == []
+
+    # A later update resets the emitted set at the new boundary.
+    job_a_updated = ({"id": "a", "status": "succeeded"}, "2026-07-10T00:00:03", "a")
+    events, cursor, emitted = filter_new_job_events(
+        [job_a, job_b, job_a_updated], cursor, emitted
+    )
+    assert [event.get("status") for event in events] == ["succeeded"]
+    assert emitted == {"a"}
+    assert cursor == "2026-07-10T00:00:03"

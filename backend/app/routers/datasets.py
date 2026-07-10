@@ -585,7 +585,9 @@ def download_dataset(
         raise HTTPException(404, "dataset not found")
     require_project_role(db, ds.project_id, principal)
     presigned = store.presigned_url(ds.object_key, filename=ds.filename)
-    if presigned:
+    # Presigning does not verify the object exists; a redirect to a missing
+    # object would surface S3's raw 404 instead of the API's clean 410 below.
+    if presigned and store.exists(ds.object_key):
         return RedirectResponse(presigned, status_code=307)
     path = store.acquire_path(ds.object_key)
     if not path.is_file():

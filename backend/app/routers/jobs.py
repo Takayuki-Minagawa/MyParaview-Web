@@ -30,6 +30,30 @@ def _job_body_for(kind: str, dataset_id: str, params: dict):
     return run_dataset_operation(dataset_id, kind, params)
 
 
+def filter_new_job_events(
+    rows: list[tuple[dict, object, str]],
+    cursor,
+    emitted_at_cursor: set[str],
+) -> tuple[list[dict], object, set[str]]:
+    """Advance the SSE cursor over ``rows`` sorted by (updated_at, id).
+
+    The snapshot query uses ``updated_at >= cursor`` so that a job committed
+    with the same timestamp as an already-emitted one is still delivered; this
+    filter drops only the exact (timestamp, id) pairs already sent.
+    """
+    events: list[dict] = []
+    for payload, updated_at, job_id in rows:
+        if updated_at == cursor and job_id in emitted_at_cursor:
+            continue
+        if cursor is None or updated_at > cursor:  # type: ignore[operator]
+            cursor = updated_at
+            emitted_at_cursor = {job_id}
+        else:
+            emitted_at_cursor.add(job_id)
+        events.append(payload)
+    return events, cursor, emitted_at_cursor
+
+
 @router.post("", response_model=JobOut, status_code=202)
 def create_job(
     payload: JobCreate,
@@ -93,29 +117,38 @@ async def stream_jobs(
     if db.get(Project, project_id) is None:
         raise HTTPException(404, "project not found")
     require_project_role(db, project_id, principal)
+    # The request-scoped session was only needed for the checks above; keeping
+    # it open would pin one pooled connection for the stream's whole lifetime
+    # (get_db's finally-close only runs after streaming ends).
+    db.close()
 
-    def snapshot(after) -> list[tuple[dict, object]]:
+    def snapshot(after) -> list[tuple[dict, object, str]]:
         with SessionLocal() as session:
             stmt = (
                 select(Job)
                 .where(Job.project_id == project_id)
-                .order_by(Job.updated_at.asc())
+                .order_by(Job.updated_at.asc(), Job.id.asc())
             )
             if after is not None:
-                stmt = stmt.where(Job.updated_at > after)
+                # >= so updates sharing the boundary timestamp are not lost;
+                # already-emitted (timestamp, id) pairs are filtered below.
+                stmt = stmt.where(Job.updated_at >= after)
             return [
-                (JobOut.model_validate(job).model_dump(mode="json"), job.updated_at)
+                (JobOut.model_validate(job).model_dump(mode="json"), job.updated_at, job.id)
                 for job in session.scalars(stmt)
             ]
 
     async def event_stream():
         cursor = None
+        emitted_at_cursor: set[str] = set()
         for _ in range(max(1, settings.job_stream_max_seconds)):
-            jobs = await run_in_threadpool(snapshot, cursor)
-            for payload, updated_at in jobs:
-                cursor = updated_at if cursor is None else max(cursor, updated_at)
+            rows = await run_in_threadpool(snapshot, cursor)
+            events, cursor, emitted_at_cursor = filter_new_job_events(
+                rows, cursor, emitted_at_cursor
+            )
+            for payload in events:
                 yield f"data: {json.dumps(payload)}\n\n"
-            if not jobs:
+            if not events:
                 yield ": heartbeat\n\n"
             await asyncio.sleep(1.0)
 

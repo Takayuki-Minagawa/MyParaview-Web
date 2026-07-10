@@ -44,6 +44,28 @@ describe("parseViewState", () => {
       .toBeNull();
   });
 
+  it("round-trips volume opacity control points and rejects malformed ones", () => {
+    const points = [
+      { value: 0, alpha: 0 },
+      { value: 0.4, alpha: 0.6 },
+      { value: 1, alpha: 0.85 },
+    ];
+    const withPoints = { ...VALID, volume_opacity_points: points };
+    expect(parseViewState(withPoints)).toEqual(withPoints);
+    // Saved states from before the field existed still parse.
+    expect(parseViewState(VALID)?.volume_opacity_points).toBeUndefined();
+    // Out-of-range, too few, and non-numeric points are rejected.
+    expect(
+      parseViewState({ ...VALID, volume_opacity_points: [{ value: -0.1, alpha: 0 }, { value: 1, alpha: 1 }] }),
+    ).toBeNull();
+    expect(
+      parseViewState({ ...VALID, volume_opacity_points: [{ value: 0, alpha: 0 }] }),
+    ).toBeNull();
+    expect(
+      parseViewState({ ...VALID, volume_opacity_points: [{ value: 0, alpha: "x" }, { value: 1, alpha: 1 }] }),
+    ).toBeNull();
+  });
+
   it("clamps restored slices to the active extent while allowing negative extents", () => {
     expect(clampSliceIndex(-1, 0, 10)).toBe(0);
     expect(clampSliceIndex(11, 0, 10)).toBe(10);

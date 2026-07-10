@@ -191,6 +191,7 @@ export const MESSAGES = {
       remoteSessionStop: "セッション終了",
       remoteSessionUnavailable: "trame broker未設定のため利用できません。",
       remoteSessionActive: "リモートセッション接続中",
+      remoteSessionEnded: "リモートセッションが終了しました",
       stepWord: "ステップ",
       sliceLabel: "スライス",
       representationNames: {
@@ -441,6 +442,7 @@ export const MESSAGES = {
       remoteSessionStop: "End session",
       remoteSessionUnavailable: "Unavailable: no trame broker is configured.",
       remoteSessionActive: "Remote session connected",
+      remoteSessionEnded: "Remote session ended",
       stepWord: "step",
       sliceLabel: "Slice",
       representationNames: {

@@ -14,7 +14,7 @@ import type {
 } from "./types";
 import { DatasetPanel } from "./components/DatasetPanel";
 import { PropertiesPanel } from "./components/PropertiesPanel";
-import { VtkViewer } from "./components/VtkViewer";
+import { DEFAULT_VOLUME_OPACITY_POINTS, VtkViewer } from "./components/VtkViewer";
 import { RemoteViewer } from "./components/RemoteViewer";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { clampSliceIndex, parseViewState } from "./lib/viewState";
@@ -292,6 +292,15 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
       ) return null;
       setSelectedDatasetId(id);
       scope.selectedDatasetRef.current = id;
+      // A remote session streams the previous dataset; keeping it mounted
+      // would leave the viewer showing stale content for the new selection.
+      setRemoteSession((session) => {
+        if (session && session.dataset_id !== id) {
+          stopRemoteSession(session);
+          return null;
+        }
+        return session;
+      });
       display.reset();
       setArtifacts([]);
       setDatasets((previous) => previous.map((d) => (d.id === id ? ds : d)));
@@ -303,11 +312,17 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
       }
       return null;
     }
-  }, [scope, clearErrors, display, setArtifacts, setDatasets, refreshArtifacts, pushError]);
+  }, [
+    scope, clearErrors, display, setArtifacts, setDatasets, refreshArtifacts,
+    pushError, stopRemoteSession,
+  ]);
 
   const upload = useCallback(async (files: File[]) => {
     const ticket = scope.capture();
     if (!ticket || files.length === 0) return;
+    // Auto-selecting the finished upload must not steal a selection the user
+    // made while the ingest was running.
+    const selectionAtStart = scope.selectionRequestRef.current;
     const pvd = files.find((file) => file.name.toLowerCase().endsWith(".pvd"));
     const externalDescriptor = files.find((file) => /\.(case|xdmf|xmf)$/i.test(file.name));
     const primary = pvd ?? externalDescriptor ?? files[0];
@@ -340,11 +355,13 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
       if (!ticket.stillCurrent()) return;
       await refreshDatasets(ticket.projectId);
       if (!ticket.stillCurrent()) return;
-      scope.beginSelection(ds.id);
-      setSelectedDatasetId(ds.id);
-      display.reset();
-      setArtifacts([]);
-      void refreshArtifacts(ds.id);
+      if (scope.selectionRequestRef.current === selectionAtStart) {
+        scope.beginSelection(ds.id);
+        setSelectedDatasetId(ds.id);
+        display.reset();
+        setArtifacts([]);
+        void refreshArtifacts(ds.id);
+      }
       if (final.status !== "succeeded" && ticket.stillCurrent()) {
         const lastLog = (final.log ?? "").split("\n").filter(Boolean).pop() ?? "";
         pushError(`${t.errors.metadataFailed} (${final.status}): ${lastLog}`);
@@ -381,6 +398,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
       slice_axis: display.sliceAxis,
       slice_index: display.sliceIndex,
       timestep_index: display.timestepIndex,
+      volume_opacity_points: display.volumeOpacityPoints,
     };
     try {
       const created = await api.createViewPipeline(
@@ -427,6 +445,9 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     display.setSliceAxis(state.slice_axis ?? "Z");
     display.setSliceIndex(state.slice_index ?? 0);
     display.setTimestepIndex(state.timestep_index ?? 0);
+    display.setVolumeOpacityPoints(
+      state.volume_opacity_points ?? DEFAULT_VOLUME_OPACITY_POINTS,
+    );
     display.setPlaying(false);
   }, [scope, pushError, t, selectDataset, display]);
 
@@ -544,10 +565,14 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
         const dataset = await api.promoteArtifact(artifact.id);
         const job = await api.ingest(dataset.id);
         if (ticket.stillCurrent()) upsertJob(job);
-        await pollJob(job.id, (next) => {
+        const final = await pollJob(job.id, (next) => {
           if (ticket.stillCurrent()) upsertJob(next);
         });
         if (ticket.stillCurrent()) await refreshDatasets(ticket.projectId);
+        if (final.status !== "succeeded" && ticket.stillCurrent()) {
+          const lastLog = final.log.split("\n").filter(Boolean).pop() ?? final.status;
+          pushError(`${t.errors.metadataFailed} (${final.status}): ${lastLog}`);
+        }
       } catch (e) {
         if (ticket.stillCurrent()) pushError(String(e));
       } finally {
@@ -558,7 +583,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
         });
       }
     })();
-  }, [scope, upsertJob, refreshDatasets, pushError]);
+  }, [scope, upsertJob, refreshDatasets, pushError, t]);
 
   const downloadTimestep = useCallback((index: number) => {
     const datasetId = scope.selectedDatasetRef.current;
@@ -756,25 +781,27 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     }
   }, [selectedDataset, display, viewerDatasetType]);
 
-  // ---- PVD playback loop
+  // ---- PVD playback loop. Depends on the specific values it reads, not the
+  // whole display object, so unrelated renders cannot keep resetting the timer.
+  const { playing, setPlaying, setTimestepIndex } = display;
   useEffect(() => {
     if (
-      !display.playing ||
+      !playing ||
       selectedDataset?.dataset_type !== "Collection" ||
       !viewerUrl ||
       viewerLoadedUrl !== viewerUrl
     ) return;
     const count = selectedDataset.timesteps?.length ?? 0;
     if (count < 2) {
-      display.setPlaying(false);
+      setPlaying(false);
       return;
     }
     const timer = window.setTimeout(
-      () => display.setTimestepIndex((index) => (index + 1) % count),
+      () => setTimestepIndex((index) => (index + 1) % count),
       800,
     );
     return () => window.clearTimeout(timer);
-  }, [display, selectedDataset, viewerUrl, viewerLoadedUrl]);
+  }, [playing, setPlaying, setTimestepIndex, selectedDataset, viewerUrl, viewerLoadedUrl]);
 
   useEffect(() => {
     const maximum = Math.max(0, (selectedDataset?.timesteps?.length ?? 1) - 1);
@@ -967,6 +994,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
           <ErrorBoundary
             fallbackTitle={t.common.renderCrashTitle}
             fallbackHint={t.common.renderCrashHint}
+            resetKey={remoteSession ? `remote:${remoteSession.id}` : selectedDatasetId ?? "none"}
           >
             {remoteSession ? (
               <RemoteViewer session={remoteSession} onError={pushError} />

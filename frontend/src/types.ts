@@ -86,6 +86,7 @@ export interface ViewState {
   slice_axis?: SliceAxis;
   slice_index?: number;
   timestep_index?: number;
+  volume_opacity_points?: VolumeOpacityPoint[];
 }
 
 export interface PipelineNode {

@@ -3,6 +3,9 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 interface Props {
   fallbackTitle: string;
   fallbackHint: string;
+  /** Changing this value clears a caught error, letting the user recover by
+   * e.g. selecting another dataset instead of reloading the page. */
+  resetKey?: string | number | null;
   children: ReactNode;
 }
 
@@ -20,6 +23,12 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("unhandled render error", error, info.componentStack);
+  }
+
+  componentDidUpdate(previousProps: Props) {
+    if (this.state.error && previousProps.resetKey !== this.props.resetKey) {
+      this.setState({ error: null });
+    }
   }
 
   render() {

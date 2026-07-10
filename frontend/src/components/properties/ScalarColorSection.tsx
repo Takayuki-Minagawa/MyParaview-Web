@@ -20,10 +20,14 @@ interface Props {
 function RangeEditor({
   range,
   disabled,
+  invalid,
   onChange,
 }: {
   range: [number, number] | null;
   disabled: boolean;
+  /** True only when the user's manual range is inverted — the read-only data
+   * range of a constant array must not be flagged as a user error. */
+  invalid: boolean;
   onChange: (range: [number, number]) => void;
 }) {
   const messages = useMessages();
@@ -40,7 +44,6 @@ function RangeEditor({
       setDraft(range ? [String(range[0]), String(range[1])] : ["", ""]);
     }
   };
-  const invalid = !!range && range[0] >= range[1];
 
   return (
     <div className="range-inputs">
@@ -157,6 +160,7 @@ export const ScalarColorSection = memo(function ScalarColorSection({
           <RangeEditor
             range={displayedRange}
             disabled={customColorRange === null}
+            invalid={customColorRange !== null && customColorRange[0] >= customColorRange[1]}
             onChange={onCustomColorRange}
           />
 

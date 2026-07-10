@@ -1,4 +1,4 @@
-import { memo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { AuditEvent, Dataset, Job, Project, ProjectMember, ProjectRole } from "../types";
 import { api } from "../api";
 import { humanFileSize } from "../lib/format";
@@ -46,14 +46,25 @@ function AuditSection({
   const [events, setEvents] = useState<AuditEvent[] | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // A project switch must not keep showing the previous project's events,
+  // and a late response for the old project must not surface either.
+  const activeProjectRef = useRef(projectId);
+  useEffect(() => {
+    activeProjectRef.current = projectId;
+    setEvents(null);
+  }, [projectId]);
+
   const toggle = () => {
     if (events !== null) {
       setEvents(null);
       return;
     }
+    const requested = projectId;
     setLoading(true);
-    api.listAuditEvents(projectId, 50)
-      .then(setEvents)
+    api.listAuditEvents(requested, 50)
+      .then((next) => {
+        if (activeProjectRef.current === requested) setEvents(next);
+      })
       .catch((reason) => onError(String(reason)))
       .finally(() => setLoading(false));
   };

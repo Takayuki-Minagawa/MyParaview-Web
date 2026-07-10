@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 
 /** A capture of "which project/selection was active when this async work
  * started", with predicates the completion handler checks before touching
@@ -50,15 +50,21 @@ export function useProjectScope() {
     return selectionRequestRef.current;
   }, []);
 
-  return {
-    currentProjectRef,
-    projectEpochRef,
-    selectionRequestRef,
-    selectedDatasetRef,
-    capture,
-    beginProjectSwitch,
-    beginSelection,
-  };
+  // A stable identity is load-bearing: consumers put this object in effect
+  // dependency arrays, and a per-render identity would re-run those effects
+  // (and their fetches) after every render.
+  return useMemo(
+    () => ({
+      currentProjectRef,
+      projectEpochRef,
+      selectionRequestRef,
+      selectedDatasetRef,
+      capture,
+      beginProjectSwitch,
+      beginSelection,
+    }),
+    [capture, beginProjectSwitch, beginSelection],
+  );
 }
 
 export type ProjectScope = ReturnType<typeof useProjectScope>;

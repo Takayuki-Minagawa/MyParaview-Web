@@ -20,6 +20,7 @@ from ..project_locks import locked_project
 from ..responses import LeasedFileResponse
 from ..schemas import ArtifactOut, DatasetOut
 from ..storage import store
+from .datasets import _sniff_ok
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
@@ -185,6 +186,10 @@ def promote_artifact(
     ext = os.path.splitext(artifact.filename)[1].lower()
     if ext not in settings.allowed_extensions:
         raise HTTPException(422, f"artifact type {ext!r} cannot be promoted to a dataset")
+    if ext in {".case", ".xdmf", ".xmf"}:
+        raise HTTPException(
+            422, "descriptor artifacts cannot be promoted without their referenced files"
+        )
     require_project_role(db, project_id, principal, "editor")
 
     new_key = store.new_key(ext)
@@ -192,6 +197,12 @@ def promote_artifact(
         with store.local_path(artifact.object_key) as source_path:
             if not source_path.is_file():
                 raise HTTPException(410, "artifact object no longer available")
+            # Promotion creates a first-class dataset, so the artifact bytes
+            # must pass the same magic/header guard as a direct upload.
+            with open(source_path, "rb") as source_head:
+                head = source_head.read(4096)
+            if not _sniff_ok(ext, head):
+                raise HTTPException(400, f"artifact content does not match a {ext} file")
             size = store.copy_in(new_key, source_path)
         with locked_project(db, project_id, principal, "editor"):
             current = db.get(Artifact, artifact_id)
@@ -240,7 +251,9 @@ def get_artifact(
         raise HTTPException(410, "artifact has no accessible project scope")
     require_project_role(db, project_id, principal)
     presigned = store.presigned_url(art.object_key, filename=art.filename)
-    if presigned:
+    # Presigning does not verify the object exists; fall through to the
+    # streaming path (and its 410) when the object is gone.
+    if presigned and store.exists(art.object_key):
         return RedirectResponse(presigned, status_code=307)
     path = store.acquire_path(art.object_key)
     if not path.is_file():

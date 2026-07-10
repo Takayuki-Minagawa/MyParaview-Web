@@ -8,6 +8,13 @@ describe("useProjectScope", () => {
     expect(result.current.capture()).toBeNull();
   });
 
+  it("returns the same object across re-renders (effects depending on it must not loop)", () => {
+    const { result, rerender } = renderHook(() => useProjectScope());
+    const first = result.current;
+    rerender();
+    expect(result.current).toBe(first);
+  });
+
   it("tickets stay current until a project switch invalidates them", () => {
     const { result } = renderHook(() => useProjectScope());
     result.current.currentProjectRef.current = "p1";

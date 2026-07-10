@@ -28,4 +28,41 @@ describe("ErrorBoundary", () => {
     expect(screen.getByText(/boom/)).toBeDefined();
     consoleError.mockRestore();
   });
+
+  it("recovers when resetKey changes, as the fallback hint promises", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { rerender } = render(
+      <ErrorBoundary fallbackTitle="crashed" fallbackHint="reload" resetKey="ds1">
+        <Bomb />
+      </ErrorBoundary>,
+    );
+    expect(screen.getByRole("alert")).toBeDefined();
+
+    // Selecting another dataset (new resetKey) must clear the caught error.
+    rerender(
+      <ErrorBoundary fallbackTitle="crashed" fallbackHint="reload" resetKey="ds2">
+        <p>recovered</p>
+      </ErrorBoundary>,
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("recovered")).toBeDefined();
+    consoleError.mockRestore();
+  });
+
+  it("keeps the fallback while resetKey is unchanged", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { rerender } = render(
+      <ErrorBoundary fallbackTitle="crashed" fallbackHint="reload" resetKey="ds1">
+        <Bomb />
+      </ErrorBoundary>,
+    );
+    rerender(
+      <ErrorBoundary fallbackTitle="crashed" fallbackHint="reload" resetKey="ds1">
+        <p>unreached</p>
+      </ErrorBoundary>,
+    );
+    expect(screen.getByRole("alert")).toBeDefined();
+    expect(screen.queryByText("unreached")).toBeNull();
+    consoleError.mockRestore();
+  });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type {
   CameraState,
   ColorMapName,
@@ -58,7 +58,9 @@ export function useDisplayState() {
     setVolumeOpacityPoints(DEFAULT_VOLUME_OPACITY_POINTS);
   }, []);
 
-  return {
+  // Memoized so the object's identity only changes when a display value
+  // changes — consumers use it in effect dependency arrays.
+  return useMemo(() => ({
     representation, setRepresentation,
     colorBy, setColorBy, setColorByState,
     customColorRange, setCustomColorRange,
@@ -76,7 +78,12 @@ export function useDisplayState() {
     playing, setPlaying,
     volumeOpacityPoints, setVolumeOpacityPoints,
     reset,
-  };
+  }), [
+    representation, colorBy, customColorRange, runtimeColorRange, opacity,
+    colorMap, legendVisible, axesVisible, cameraState, tableCoordinates,
+    imageMode, sliceAxis, sliceIndex, timestepIndex, playing,
+    volumeOpacityPoints, setColorBy, reset,
+  ]);
 }
 
 export type DisplayState = ReturnType<typeof useDisplayState>;

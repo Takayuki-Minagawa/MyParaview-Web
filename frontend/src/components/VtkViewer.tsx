@@ -199,9 +199,16 @@ function applyImageColor(
       ? volumeOpacityPoints
       : DEFAULT_VOLUME_OPACITY_POINTS;
     const span = opacityRange[1] - opacityRange[0];
+    // vtkPiecewiseFunction replaces (not stacks) nodes with an equal x, so two
+    // control points clamped to the same value would silently drop one —
+    // typically the alpha=0 endpoint. Nudge duplicates apart instead.
+    let previousX = Number.NEGATIVE_INFINITY;
     for (const point of [...points].sort((a, b) => a.value - b.value)) {
+      const x = opacityRange[0] + Math.max(0, Math.min(1, point.value)) * span;
+      const distinctX = x <= previousX ? previousX + Math.max(span * 1e-6, 1e-9) : x;
+      previousX = distinctX;
       opacityFunction.addPoint(
-        opacityRange[0] + Math.max(0, Math.min(1, point.value)) * span,
+        distinctX,
         Math.max(0, Math.min(1, point.alpha)) * Math.max(0, opacity),
       );
     }

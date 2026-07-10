@@ -41,6 +41,7 @@ export const AssistantSection = memo(function AssistantSection({
   const [assistantPrompt, setAssistantPrompt] = useState("");
   const [assistantProposal, setAssistantProposal] = useState<ProposalState | null>(null);
   const [assistantPending, setAssistantPending] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [assistantError, setAssistantError] = useState<string | null>(null);
   const assistantRequestRef = useRef(0);
   const datasetIdRef = useRef(dataset.id);
@@ -53,6 +54,7 @@ export const AssistantSection = memo(function AssistantSection({
     setAssistantPrompt("");
     setAssistantProposal(null);
     setAssistantPending(false);
+    setApplying(false);
     setAssistantError(null);
   }, [dataset.id]);
 
@@ -64,13 +66,15 @@ export const AssistantSection = memo(function AssistantSection({
     ) return;
     if (proposal.value.action === "filter_job") {
       const proposalId = proposal.value.id;
-      if (!proposalId) return;
+      if (!proposalId || applying) return;
+      setApplying(true);
       void api.applyProposal(proposalId)
         .then((job) => {
           onJobCreated(job);
           setAssistantProposal((current) => (current === proposal ? null : current));
         })
-        .catch((e) => onError(String(e)));
+        .catch((e) => onError(String(e)))
+        .finally(() => setApplying(false));
       return;
     }
     const color = proposal.value.params.color_by as Partial<ScalarSelection> | undefined;
@@ -146,7 +150,10 @@ export const AssistantSection = memo(function AssistantSection({
                 <button
                   disabled={
                     assistantProposal.value.action === "filter_job" &&
-                    (!serverFilterAvailable || filterPending)
+                    (!serverFilterAvailable ||
+                      filterPending ||
+                      applying ||
+                      !assistantProposal.value.id)
                   }
                   onClick={() => applyProposal(assistantProposal)}
                 >

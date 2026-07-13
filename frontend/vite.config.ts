@@ -3,7 +3,10 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
 
-export default defineConfig({
+// GitHub Pages serves project sites from /<repo>/, so the production build
+// needs that as its asset base path. Local dev and `vite preview` stay at "/".
+export default defineConfig(({ command }) => ({
+  base: command === "build" ? (process.env.VITE_BASE_PATH ?? "/MyParaview-Web/") : "/",
   plugins: [react()],
   // vtk.js' XML writer stack reaches xmlbuilder2, which imports these Node
   // core APIs. Vite 8 otherwise externalizes them as empty browser modules and
@@ -40,4 +43,4 @@ export default defineConfig({
       },
     ],
   },
-});
+}));

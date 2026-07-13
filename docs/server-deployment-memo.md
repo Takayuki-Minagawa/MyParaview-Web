@@ -1,10 +1,29 @@
 # サーバー配置メモ
 
-最終更新: 2026-07-10
+最終更新: 2026-07-13
 
 この文書は、初期公開をGitHub Pagesで行い、将来MyParaView-Webを本格的なサーバーへ
 移行するための方針と作業手順を記録するメモです。記載している本番用ファイル名とコマンドは
 目標形を示すものであり、未実装のものは「整備予定」と明記します。
+
+## GitHub Pagesへのフロントエンドデプロイ（実装済み）
+
+`.github/workflows/deploy-pages.yml` が `main` push時に `frontend/` を
+`npm run build` し、`actions/deploy-pages` で公開します。`vite.config.ts` の
+`base` はproduction buildでのみ `/MyParaview-Web/` を使用します
+（`VITE_BASE_PATH` で上書き可能）。
+
+初回のみ、リポジトリのSettings > Pages で Source を「GitHub Actions」に切り替える
+必要があります。
+
+これは**フロントエンドの静的配信のみ**です。プロジェクト一覧・データセットupload・
+pipeline実行などは引き続きFastAPIバックエンドへのHTTP呼び出しが必要なため、
+バックエンドを別途どこかへデプロイしない限り、公開されたUIはロードはできても
+データ操作はエラーになります。バックエンドを用意したら、リポジトリのSettings >
+Secrets and variables > Actions > Variables に `VITE_API_BASE`（例:
+`https://api.example.com`）を設定し、backend側で該当Pages originからのCORSを
+許可してください。ブラウザ内で完結し外部APIを一切呼ばない「真の`static`モード」
+（下記）は未実装です。
 
 ## 公開モードの方針
 

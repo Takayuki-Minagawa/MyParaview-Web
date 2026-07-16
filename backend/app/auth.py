@@ -157,7 +157,9 @@ def get_principal(
                 # Reload and retry the set difference rather than returning 500.
                 db.rollback()
                 if attempt == 2:
-                    raise HTTPException(503, "bootstrap membership provisioning is busy")
+                    raise HTTPException(
+                        503, "bootstrap membership provisioning is busy"
+                    ) from None
     request.state.principal = principal
     return principal
 

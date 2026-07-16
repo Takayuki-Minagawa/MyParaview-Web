@@ -6,7 +6,6 @@ import math
 import tracemalloc
 
 import pytest
-
 from app.stats import compute_dataset_statistics
 
 

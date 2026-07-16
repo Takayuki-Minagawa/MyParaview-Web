@@ -6,7 +6,6 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -67,11 +66,13 @@ def _run(command: list[str], ctx: JobContext) -> subprocess.CompletedProcess[str
                 except subprocess.TimeoutExpired:
                     terminate_tree(force=True)
                     process.communicate()
-                raise JobCancelled()
+                raise JobCancelled() from None
             if time.monotonic() > deadline:
                 terminate_tree(force=True)
                 process.communicate()
-                raise RuntimeError(f"ParaView worker timed out after {settings.worker_timeout_seconds}s")
+                raise RuntimeError(
+                    f"ParaView worker timed out after {settings.worker_timeout_seconds}s"
+                ) from None
     if process.returncode != 0:
         detail = (stderr or stdout or "unknown worker error").strip()
         raise RuntimeError(f"ParaView worker failed ({process.returncode}): {detail[-4000:]}")

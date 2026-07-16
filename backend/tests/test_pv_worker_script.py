@@ -101,7 +101,7 @@ def test_convert_and_threshold_are_surface_extracted_before_vtp_save(tmp_path, m
         ),
     ):
         simple = FakeSimple()
-        monkeypatch.setattr(pv_worker, "_paraview", lambda: simple)
+        monkeypatch.setattr(pv_worker, "_paraview", lambda simple=simple: simple)
         params_file = tmp_path / f"{kind}.json"
         params_file.write_text(json.dumps(params))
         output = str(tmp_path / f"{kind}.vtp")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import shutil
@@ -12,8 +13,6 @@ from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select
-
-import json
 
 from .bundles import bundle_reference_path, materialized_bundle_path
 from .config import settings

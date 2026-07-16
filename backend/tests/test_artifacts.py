@@ -4,12 +4,11 @@ import base64
 import threading
 import time
 
-from conftest import wait_for_job
-
 from app.db import SessionLocal
 from app.jobs import JobManager
 from app.models import Artifact, Job
 from app.storage import store
+from conftest import wait_for_job
 
 
 def _project(client, name: str) -> str:

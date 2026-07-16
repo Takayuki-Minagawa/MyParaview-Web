@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from app.config import settings
 from app.jobs import JobCancelled, JobContext
 from app.worker import _run, run_pipeline_transform

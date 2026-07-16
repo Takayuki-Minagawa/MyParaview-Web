@@ -16,8 +16,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from .config import settings
-from .db import init_db
-from .db import SessionLocal
+from .db import SessionLocal, init_db
 from .jobs import recover_interrupted_jobs
 from .models import Artifact, AuditEvent, Dataset, Job, Pipeline, RenderSession
 from .routers import artifacts, assist, datasets, jobs, pipelines, projects, sessions

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from alembic import command
-from sqlalchemy import create_engine, inspect, text
-
 from app.db import _alembic_config, migrate_database
+from sqlalchemy import create_engine, inspect, text
 
 
 def test_fresh_database_upgrades_to_head(tmp_path):

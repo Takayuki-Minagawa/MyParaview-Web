@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from conftest import wait_for_job
 from app.db import SessionLocal
 from app.models import Dataset
+from conftest import wait_for_job
 
 
 def test_assistant_proposes_but_never_executes(client, data_dir):

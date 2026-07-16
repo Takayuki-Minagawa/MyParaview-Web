@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import csv
 import io
-import httpx
 import logging
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, or_, select
@@ -13,9 +14,8 @@ from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
 from ..db import get_db
 from ..models import Artifact, AuditEvent, Dataset, DatasetFile, Job, Project, ProjectMember, User
-from ..project_locks import locked_project
 from ..pipeline_lifecycle import detach_pipeline_inputs
-from .sessions import _delete_remote_id
+from ..project_locks import locked_project
 from ..schemas import (
     AuditEventOut,
     ProjectCreate,
@@ -24,6 +24,7 @@ from ..schemas import (
     ProjectOut,
 )
 from ..storage import store
+from .sessions import _delete_remote_id
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 logger = logging.getLogger(__name__)

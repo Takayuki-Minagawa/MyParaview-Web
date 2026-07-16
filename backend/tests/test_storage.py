@@ -6,10 +6,9 @@ import threading
 import time
 
 import boto3
-from botocore.exceptions import ClientError
-
 from app.responses import LeasedFileResponse
 from app.storage import ObjectStore, S3ObjectStore
+from botocore.exceptions import ClientError
 
 
 class FakeS3Client:

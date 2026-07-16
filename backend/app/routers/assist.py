@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session

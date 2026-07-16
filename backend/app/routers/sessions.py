@@ -11,10 +11,11 @@ import websockets
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
+from ..access import require_project
 from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
 from ..db import SessionLocal, get_db
-from ..models import Dataset, Project, RenderSession
+from ..models import Dataset, RenderSession
 from ..project_locks import locked_project
 from ..schemas import RenderSessionCreate, RenderSessionCreated, RenderSessionOut
 
@@ -102,9 +103,7 @@ def create_session(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, payload.project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, payload.project_id, principal, "editor")
+    require_project(db, payload.project_id, principal, "editor")
     dataset = db.get(Dataset, payload.dataset_id)
     if dataset is None:
         raise HTTPException(404, "dataset not found")

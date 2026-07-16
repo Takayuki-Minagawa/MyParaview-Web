@@ -15,13 +15,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ..auth import Principal, get_principal, require_project_role
+from ..access import authorized_dataset, require_project
+from ..auth import Principal, get_principal
 from ..bundles import bundle_reference_path as _bundle_reference_path
 from ..bundles import safe_relative_path as _safe_relative_path
 from ..config import settings
 from ..db import get_db
 from ..jobs import manager
-from ..models import Dataset, DatasetFile, Job, Project
+from ..models import Dataset, DatasetFile, Job
 from ..project_locks import locked_project
 from ..responses import LeasedFileResponse
 from ..schemas import CollectionStepOut, DatasetOut, JobOut
@@ -211,9 +212,7 @@ async def upload_dataset(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal, "editor")
+    require_project(db, project_id, principal, "editor")
 
     filename = os.path.basename(file.filename or "upload")
     ext = os.path.splitext(filename)[1].lower()
@@ -262,9 +261,7 @@ async def upload_dataset_bundle(
     principal: Principal = Depends(get_principal),
 ):
     """Register a PVD and every relative file it references as one dataset."""
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal, "editor")
+    require_project(db, project_id, principal, "editor")
     if not files:
         raise HTTPException(400, "at least one file is required")
 
@@ -340,9 +337,7 @@ async def upload_external_dataset_bundle(
     principal: Principal = Depends(get_principal),
 ):
     """Upload an EnSight or XDMF descriptor together with its sidecar files."""
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal, "editor")
+    require_project(db, project_id, principal, "editor")
     if not files:
         raise HTTPException(400, "at least one file is required")
 
@@ -415,9 +410,7 @@ def list_datasets(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal)
+    require_project(db, project_id, principal)
     stmt = (
         select(Dataset)
         .where(Dataset.project_id == project_id)
@@ -436,11 +429,7 @@ def get_dataset(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    ds = db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, ds.project_id, principal)
-    return ds
+    return authorized_dataset(db, dataset_id, principal)
 
 
 @router.get("/datasets/{dataset_id}/metadata", response_model=DatasetOut)
@@ -470,10 +459,7 @@ def list_collection_timesteps(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    dataset = db.get(Dataset, dataset_id)
-    if dataset is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, dataset.project_id, principal)
+    dataset = authorized_dataset(db, dataset_id, principal)
     entries = _collection_entries(dataset)
     times = _collection_times(dataset, entries)
     return [
@@ -495,10 +481,7 @@ def download_collection_timestep(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    dataset = db.get(Dataset, dataset_id)
-    if dataset is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, dataset.project_id, principal)
+    dataset = authorized_dataset(db, dataset_id, principal)
     entries = _collection_entries(dataset)
     times = _collection_times(dataset, entries)
     if step_index < 0 or step_index >= len(times):
@@ -548,9 +531,7 @@ def ingest_dataset(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    ds = db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(404, "dataset not found")
+    ds = authorized_dataset(db, dataset_id, principal, "editor")
     project_id = ds.project_id
     with locked_project(db, project_id, principal, "editor"):
         ds = db.get(Dataset, dataset_id)
@@ -580,10 +561,7 @@ def download_dataset(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    ds = db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, ds.project_id, principal)
+    ds = authorized_dataset(db, dataset_id, principal)
     presigned = store.presigned_url(ds.object_key, filename=ds.filename)
     # Presigning does not verify the object exists; a redirect to a missing
     # object would surface S3's raw 404 instead of the API's clean 410 below.

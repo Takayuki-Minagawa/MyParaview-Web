@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
+from ..access import authorized_dataset, authorized_job
 from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
 from ..db import get_db
@@ -82,18 +83,10 @@ def list_artifacts(
         raise HTTPException(422, "dataset_id or job_id is required")
     stmt = select(Artifact).order_by(Artifact.created_at.desc())
     if dataset_id:
-        dataset = db.get(Dataset, dataset_id)
-        if dataset is None:
-            raise HTTPException(404, "dataset not found")
-        require_project_role(db, dataset.project_id, principal)
+        authorized_dataset(db, dataset_id, principal)
         stmt = stmt.where(Artifact.dataset_id == dataset_id)
     if job_id:
-        job = db.get(Job, job_id)
-        if job is None:
-            raise HTTPException(404, "job not found")
-        if not job.project_id:
-            raise HTTPException(403, "unscoped job access is forbidden")
-        require_project_role(db, job.project_id, principal)
+        authorized_job(db, job_id, principal)
         stmt = stmt.where(Artifact.job_id == job_id)
     return list(db.scalars(stmt))
 
@@ -109,10 +102,7 @@ async def upload_artifact(
 ):
     if kind not in {"screenshot", "client_export"}:
         raise HTTPException(422, "client artifact kind must be screenshot or client_export")
-    dataset = db.get(Dataset, dataset_id)
-    if dataset is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, dataset.project_id, principal, "editor")
+    dataset = authorized_dataset(db, dataset_id, principal, "editor")
     filename = os.path.basename(file.filename or f"{kind}.bin")
     suffix = os.path.splitext(filename)[1].lower()
     head = await file.read(8)

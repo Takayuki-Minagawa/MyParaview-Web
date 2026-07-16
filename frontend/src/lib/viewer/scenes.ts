@@ -22,6 +22,7 @@ import type { ImageMode, SliceAxis, TableCoordinates } from "../../types";
 import type { Messages } from "../../i18n";
 import { authorizedFetch } from "../../api";
 import { csvToPointData } from "../csvToPoints";
+import { parseVtuSurface } from "../vtu";
 import type { Scene, VtkDataSet, VtkMapper, VtkProp } from "./vtkTypes";
 import { SLICE_MODE } from "./vtkTypes";
 
@@ -98,6 +99,59 @@ export async function buildPolyDataScene(
   if (isDisposed()) return;
   scene.output = reader.getOutputData() as unknown as VtkDataSet;
   mapper.setInputConnection(reader.getOutputPort());
+}
+
+/** Fetch a VTU, extract its external surface, and build a polydata scene.
+ * vtk.js has no UnstructuredGrid reader; lib/vtu.ts does the parsing. */
+export async function buildUnstructuredScene(
+  scene: Scene,
+  url: string,
+  messages: Messages,
+  signal: AbortSignal,
+  isDisposed: () => boolean,
+): Promise<void> {
+  const response = await fetchOk(url, signal);
+  const surface = await parseVtuSurface(await response.arrayBuffer());
+  if (isDisposed()) return;
+  const polyData = vtkPolyData.newInstance();
+  const points = vtkPoints.newInstance();
+  points.setData(surface.points, 3);
+  polyData.setPoints(points);
+  if (surface.polys.length) {
+    polyData.setPolys(vtkCellArray.newInstance({ values: surface.polys }));
+  }
+  if (surface.lines.length) {
+    polyData.setLines(vtkCellArray.newInstance({ values: surface.lines }));
+  }
+  if (surface.verts.length) {
+    polyData.setVerts(vtkCellArray.newInstance({ values: surface.verts }));
+  }
+  for (const array of surface.pointArrays) {
+    polyData.getPointData().addArray(vtkDataArray.newInstance({
+      name: array.name,
+      numberOfComponents: array.numberOfComponents,
+      values: array.values,
+    }));
+  }
+  for (const array of surface.cellArrays) {
+    polyData.getCellData().addArray(vtkDataArray.newInstance({
+      name: array.name,
+      numberOfComponents: array.numberOfComponents,
+      values: array.values,
+    }));
+  }
+  scene.dataDiagnostic =
+    `${messages.viewer.vtuSurfacePrefix}${surface.polyCount}` +
+    `${messages.viewer.vtuSurfaceInfix}${surface.sourceCellCount}` +
+    messages.viewer.vtuSurfaceSuffix;
+  const mapper = vtkMapper.newInstance();
+  const actor = vtkActor.newInstance();
+  actor.setMapper(mapper);
+  mapper.setInputData(polyData);
+  scene.mapper = mapper as unknown as VtkMapper;
+  scene.prop = actor as unknown as VtkProp;
+  scene.output = polyData as unknown as VtkDataSet;
+  scene.createdOutput = true;
 }
 
 /** Fetch a CSV and build a point cloud (spheres for small clouds, verts otherwise). */

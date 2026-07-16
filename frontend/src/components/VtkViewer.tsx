@@ -31,6 +31,7 @@ import {
   buildImageScene,
   buildPolyDataScene,
   buildTableScene,
+  buildUnstructuredScene,
 } from "../lib/viewer/scenes";
 import { createScreenshotBlob } from "../lib/viewer/screenshot";
 
@@ -119,7 +120,8 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     sliceAxis, sliceIndex, volumeOpacityPoints,
   };
 
-  const supported = datasetType === "PolyData" || datasetType === "ImageData" || datasetType === "Table";
+  const supported = datasetType === "PolyData" || datasetType === "ImageData"
+    || datasetType === "Table" || datasetType === "UnstructuredGrid";
   const tableReady = datasetType !== "Table" || (
     !!tableCoordinates && new Set(Object.values(tableCoordinates)).size === 3
   );
@@ -274,6 +276,8 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     const load = async () => {
       if (datasetType === "PolyData") {
         await buildPolyDataScene(scene, url, abortController.signal, isDisposed);
+      } else if (datasetType === "UnstructuredGrid") {
+        await buildUnstructuredScene(scene, url, strings, abortController.signal, isDisposed);
       } else if (datasetType === "Table" && tableCoordinates) {
         await buildTableScene(
           scene, url, tableCoordinates, strings, abortController.signal, isDisposed,

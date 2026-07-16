@@ -237,6 +237,9 @@ export const MESSAGES = {
     },
     viewer: {
       loading: "読み込み中…",
+      vtuSurfacePrefix: "VTU外表面を表示中: ",
+      vtuSurfaceInfix: "面（元セル数 ",
+      vtuSurfaceSuffix: "）",
       standardViews: "標準ビュー方向",
       front: "正面",
       side: "側面",
@@ -499,6 +502,9 @@ export const MESSAGES = {
     },
     viewer: {
       loading: "Loading…",
+      vtuSurfacePrefix: "Showing VTU external surface: ",
+      vtuSurfaceInfix: " faces (from ",
+      vtuSurfaceSuffix: " cells)",
       standardViews: "Standard view directions",
       front: "Front",
       side: "Side",

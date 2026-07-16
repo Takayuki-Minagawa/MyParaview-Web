@@ -27,10 +27,11 @@ def test_project_crud(client):
 
 
 def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data_dir):
+    from sqlalchemy import or_, select
+
     from app.db import SessionLocal
     from app.models import Artifact, Dataset, DatasetFile, Job
     from app.storage import store
-    from sqlalchemy import or_, select
 
     project_id = _new_project(client, "object-cleanup")
     uploaded = client.post(

@@ -5,11 +5,12 @@ from types import SimpleNamespace
 
 import jwt
 import pytest
-from app import auth
-from app.config import Settings, settings
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from jwt.exceptions import PyJWKClientError
+
+from app import auth
+from app.config import Settings, settings
 
 
 def test_settings_default_auth_mode_is_fail_closed(monkeypatch):

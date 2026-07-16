@@ -16,9 +16,10 @@ os.environ["PVWEB_ALLOW_INSECURE_DEV_AUTH"] = "1"
 os.environ["PVWEB_JOB_STREAM_MAX_SECONDS"] = "2"
 
 import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
 from app.db import init_db  # noqa: E402
 from app.main import app  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
 
 DATA_DIR = Path(__file__).parent / "data"
 

@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from app.metadata import UnsupportedFormatError, extract_metadata
 from defusedxml.common import DefusedXmlException
+
+from app.metadata import UnsupportedFormatError, extract_metadata
 
 DATA = Path(__file__).parent / "data"
 

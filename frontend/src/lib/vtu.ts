@@ -26,7 +26,8 @@ export interface VtuSurface {
   lines: Uint32Array;
   verts: Uint32Array;
   pointArrays: VtuArray[];
-  /** One value tuple per emitted poly, mapped from the originating cell. */
+  /** One value tuple per emitted cell in vtk.js render order (verts, lines,
+   * polys), each mapped from its originating VTU cell. */
   cellArrays: VtuArray[];
   /** Diagnostic counters for the caller's status line. */
   sourceCellCount: number;
@@ -265,6 +266,8 @@ export async function parseVtuSurface(buffer: ArrayBuffer): Promise<VtuSurface> 
   const lineIds: number[] = [];
   const vertIds: number[] = [];
   const polySourceCells: number[] = [];
+  const lineSourceCells: number[] = [];
+  const vertSourceCells: number[] = [];
   const pointArrayChunks = new Map<string, { numberOfComponents: number; chunks: Float64Array[] }>();
   const cellDataPerPiece: { arrays: Map<string, Float64Array>; components: Map<string, number> }[] = [];
   const pieceCellCounts: number[] = [];
@@ -339,8 +342,10 @@ export async function parseVtuSurface(buffer: ArrayBuffer): Promise<VtuSurface> 
         polySourceCells.push(globalCell);
       } else if (CELL_LINE.has(type)) {
         lineIds.push(cellPointIds.length, ...cellPointIds);
+        lineSourceCells.push(globalCell);
       } else if (CELL_VERTEX.has(type)) {
         vertIds.push(cellPointIds.length, ...cellPointIds);
+        vertSourceCells.push(globalCell);
       } else {
         throw new Error(
           `VTU cell type ${type} is not supported in the browser; use the server VTP conversion`,
@@ -399,20 +404,23 @@ export async function parseVtuSurface(buffer: ArrayBuffer): Promise<VtuSurface> 
     }
     return 0;
   };
+  // vtk.js indexes cell attributes over all cells in render order
+  // verts -> lines -> polys, so the emitted tuples must follow that order.
+  const emittedSourceCells = [...vertSourceCells, ...lineSourceCells, ...polySourceCells];
   const surfaceCellArrays: VtuArray[] = [];
   for (const name of cellArrayNames) {
     const components = cellDataPerPiece.find((piece) => piece.components.has(name))
       ?.components.get(name) ?? 1;
-    const values = new Float64Array(polySourceCells.length * components);
+    const values = new Float64Array(emittedSourceCells.length * components);
     let ok = true;
-    for (let poly = 0; poly < polySourceCells.length; poly += 1) {
-      const globalCell = polySourceCells[poly];
+    for (let emitted = 0; emitted < emittedSourceCells.length; emitted += 1) {
+      const globalCell = emittedSourceCells[emitted];
       const pieceIndex = pieceForCell(globalCell);
       const local = globalCell - pieceCellStarts[pieceIndex];
       const source = cellDataPerPiece[pieceIndex]?.arrays.get(name);
       if (!source) { ok = false; break; }
       for (let component = 0; component < components; component += 1) {
-        values[poly * components + component] = source[local * components + component];
+        values[emitted * components + component] = source[local * components + component];
       }
     }
     if (ok) surfaceCellArrays.push({ name, numberOfComponents: components, values });

@@ -48,7 +48,8 @@ export class ApiError extends Error {
 
   constructor(status: number, statusText: string, body: string) {
     super(`${status} ${statusText}: ${body}`);
-    this.name = "ApiError";
+    // Keep the default "Error" name: banners render String(error), and the
+    // visible text must stay identical to the pre-refactor format.
     this.status = status;
     this.body = body;
   }

@@ -151,6 +151,31 @@ describe("parseVtuSurface", () => {
     expect(surface.points[3]).toBe(1);
   });
 
+  it("orders mixed-topology cell data as verts, lines, polys", async () => {
+    // One vertex (id 0), one line (0-1), one triangle (0-1-2) with distinct
+    // per-cell values in VTU order: triangle first, then line, then vertex —
+    // the output must be re-ordered to vtk.js render order.
+    const piece = `    <Piece NumberOfPoints="3" NumberOfCells="3">
+      <Points>
+        <DataArray type="Float32" NumberOfComponents="3" format="ascii">0 0 0 1 0 0 0 1 0</DataArray>
+      </Points>
+      <CellData>
+        <DataArray type="Float32" Name="tag" NumberOfComponents="1" format="ascii">10 20 30</DataArray>
+      </CellData>
+      <Cells>
+        <DataArray type="Int32" Name="connectivity" format="ascii">0 1 2 0 1 0</DataArray>
+        <DataArray type="Int32" Name="offsets" format="ascii">3 5 6</DataArray>
+        <DataArray type="UInt8" Name="types" format="ascii">5 3 1</DataArray>
+      </Cells>
+    </Piece>`;
+    const surface = await parseVtuSurface(asciiVtu(piece));
+    expect(surface.polyCount).toBe(1);
+    expect(Array.from(surface.lines)).toEqual([2, 0, 1]);
+    expect(Array.from(surface.verts)).toEqual([1, 0]);
+    // vtk.js cell order: vertex (30), line (20), triangle (10).
+    expect(Array.from(surface.cellArrays[0].values)).toEqual([30, 20, 10]);
+  });
+
   it("rejects unsupported cell types with a conversion hint", async () => {
     const piece = `    <Piece NumberOfPoints="3" NumberOfCells="1">
       <Points>

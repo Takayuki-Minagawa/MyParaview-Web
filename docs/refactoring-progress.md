@@ -18,16 +18,16 @@
 
 ## Phase R1: 安全網
 
-- [ ] R1-1: ESLint導入（typescript-eslint + react-hooks）+ npm run lint
-- [ ] R1-2: ruff導入（backend lint/format設定）
-- [ ] R1-3: CIにlintジョブ追加
-- [ ] R1-4: backend依存分離（requirements-dev.txt）
-- [ ] R1-5: bundles.py の単体テスト（path containment）
-- [ ] R1-6: responses.py LeasedFileResponse の単体テスト
-- [ ] R1-7: project_locks.py の並行性/rollbackテスト
-- [ ] R1-8: pipeline_lifecycle.py / config.py のテスト
-- [ ] R1-9: useJobPolling / useProjectResources のテスト
-- [ ] R1-10: useDisplayState のテスト
+- [x] R1-1: ESLint導入（typescript-eslint + react-hooks）+ npm run lint
+- [x] R1-2: ruff導入（backend lint/format設定）
+- [x] R1-3: CIにlintジョブ追加
+- [x] R1-4: backend依存分離（requirements-dev.txt）
+- [x] R1-5: bundles.py の単体テスト（path containment）
+- [x] R1-6: responses.py LeasedFileResponse の単体テスト
+- [x] R1-7: project_locks.py の並行性/rollbackテスト
+- [x] R1-8: pipeline_lifecycle.py / config.py のテスト
+- [x] R1-9: useJobPolling / useProjectResources のテスト
+- [x] R1-10: useDisplayState のテスト
 
 ## Phase R2: 高優先リファクタ
 

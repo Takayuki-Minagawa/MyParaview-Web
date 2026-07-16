@@ -37,7 +37,7 @@
 - [x] R2-4 (RB-4): run_ingest 分割
 - [x] R2-5 (RF-3): lib/download.ts blob download統一（timestep拡張子修正込み）
 - [x] R2-6 (RF-1): App.tsx フック分割（usePipelineActions / useDatasetJobs / useRemoteSession / useDeepLink / useDatasetUpload）
-- [x] R2-7 (RF-2): DisplayStateContext 導入、PropertiesPanel props削減 + memo化
+- [x] R2-7 (RF-2): PropertiesPanel props削減（displayを単一propで渡すグループ化方式）+ memo化
 
 ## Phase R3: 中優先リファクタ
 

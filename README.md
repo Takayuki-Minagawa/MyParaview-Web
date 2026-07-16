@@ -180,8 +180,9 @@ request世代の一致を再確認してから、利用者の明示操作で適�
 ## テスト
 
 ```bash
-cd backend && .venv/bin/pytest -q
-cd frontend && npm run typecheck && npm test -- --run && npm run build
+cd backend && .venv/bin/pytest -q && .venv/bin/ruff check --config ruff.toml .
+cd frontend && npm run typecheck && npm run lint && npm test -- --run && npm run build
+cd frontend && npm run e2e   # Playwright（初回は npx playwright install chromium）
 python3 -m pytest -q python
 git diff --check
 ```

@@ -9,7 +9,7 @@ import type {
   TableCoordinates,
   VolumeOpacityPoint,
 } from "../types";
-import { DEFAULT_VOLUME_OPACITY_POINTS } from "../components/VtkViewer";
+import { DEFAULT_VOLUME_OPACITY_POINTS } from "../lib/imageData";
 
 /** Everything the viewer/properties panel shows for the selected dataset.
  * ``reset()`` returns every field to its initial value — the single source of

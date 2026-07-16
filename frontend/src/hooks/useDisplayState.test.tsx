@@ -1,17 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { CameraState } from "../types";
-
-// useDisplayState only needs the default opacity ramp; mocking keeps the
-// heavyweight vtk.js module graph out of the test environment.
-vi.mock("../components/VtkViewer", () => ({
-  DEFAULT_VOLUME_OPACITY_POINTS: [
-    { value: 0, alpha: 0 },
-    { value: 1, alpha: 0.85 },
-  ],
-}));
-
-import { DEFAULT_VOLUME_OPACITY_POINTS } from "../components/VtkViewer";
+import { DEFAULT_VOLUME_OPACITY_POINTS } from "../lib/imageData";
 import { useDisplayState } from "./useDisplayState";
 
 const CAMERA: CameraState = {

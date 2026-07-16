@@ -13,7 +13,7 @@ import { colorMapCssGradient, colorMapStops } from "../lib/colormap";
 import { triggerBlobDownload } from "../lib/download";
 import { csvToPointData } from "../lib/csvToPoints";
 import { authorizedFetch } from "../api";
-import { isRuntimeImageScalar } from "../lib/imageData";
+import { DEFAULT_VOLUME_OPACITY_POINTS, isRuntimeImageScalar } from "../lib/imageData";
 import { useMessages } from "../i18n-context";
 import type { Messages } from "../i18n";
 
@@ -161,12 +161,6 @@ function applyGeometryColor(scene: Scene, selection: ScalarSelection | null, ran
   scene.mapper.setScalarVisibility(true);
   scene.mapper.setUseLookupTableScalarRange(true);
 }
-
-/** Default two-point ramp matching the historical fixed volume transfer function. */
-export const DEFAULT_VOLUME_OPACITY_POINTS: VolumeOpacityPoint[] = [
-  { value: 0, alpha: 0 },
-  { value: 1, alpha: 0.85 },
-];
 
 function applyImageColor(
   scene: Scene,

@@ -60,6 +60,6 @@
 
 ## 最終フェーズ
 
-- [ ] FIN-1: 全テスト・lint・typecheck・build 緑を確認
+- [x] FIN-1: 全テスト・lint・typecheck・build 緑を確認
 - [ ] FIN-2: PR作成（gh pr create）
 - [ ] FIN-3: サブエージェントによるレビュー→修正を、指摘ゼロになるまで反復

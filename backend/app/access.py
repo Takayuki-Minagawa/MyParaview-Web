@@ -8,11 +8,13 @@ cannot drift between endpoints.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from .auth import Principal, require_project_role
-from .models import Dataset, Job, Pipeline, Project
+from .models import Artifact, Dataset, Job, Pipeline, Project
 
 
 def tag_audit(request: Request, resource_type: str, resource_id: str, project_id: str) -> None:
@@ -52,6 +54,24 @@ def authorized_job(
         raise HTTPException(403, "unscoped job access is forbidden")
     require_project_role(db, job.project_id, principal, minimum)
     return job
+
+
+def artifact_project_id(db: Session, artifact: Artifact) -> Optional[str]:
+    """Resolve the project owning an artifact via its dataset or job.
+
+    Returns None when neither link resolves — the single implementation used
+    by both the audit middleware fallback and the artifact download guard, so
+    the two cannot drift.
+    """
+    if artifact.dataset_id:
+        dataset = db.get(Dataset, artifact.dataset_id)
+        if dataset:
+            return dataset.project_id
+    if artifact.job_id:
+        job = db.get(Job, artifact.job_id)
+        if job and job.project_id:
+            return job.project_id
+    return None
 
 
 def authorized_pipeline(

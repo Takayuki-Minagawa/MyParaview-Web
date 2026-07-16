@@ -158,6 +158,18 @@ def get_current_membership(
     return membership
 
 
+def _assert_not_last_admin(db: Session, project_id: str, *, action: str) -> None:
+    """Reject demoting/removing the only admin; a project must stay manageable."""
+    admin_count = db.scalar(
+        select(func.count()).select_from(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.role == "admin",
+        )
+    )
+    if (admin_count or 0) <= 1:
+        raise HTTPException(409, f"cannot {action} the project's last admin")
+
+
 def _put_member(
     project_id: str,
     user_id: str,
@@ -180,14 +192,7 @@ def _put_member(
             )
         )
         if membership is not None and membership.role == "admin" and payload.role != "admin":
-            admin_count = db.scalar(
-                select(func.count()).select_from(ProjectMember).where(
-                    ProjectMember.project_id == project_id,
-                    ProjectMember.role == "admin",
-                )
-            )
-            if (admin_count or 0) <= 1:
-                raise HTTPException(409, "cannot demote the project's last admin")
+            _assert_not_last_admin(db, project_id, action="demote")
         if membership is None:
             membership = ProjectMember(project_id=project_id, user_id=user_id, role=payload.role)
         else:
@@ -238,14 +243,7 @@ def delete_member(
         if membership is None:
             raise HTTPException(404, "project member not found")
         if membership.role == "admin":
-            admin_count = db.scalar(
-                select(func.count()).select_from(ProjectMember).where(
-                    ProjectMember.project_id == project_id,
-                    ProjectMember.role == "admin",
-                )
-            )
-            if (admin_count or 0) <= 1:
-                raise HTTPException(409, "cannot remove the project's last admin")
+            _assert_not_last_admin(db, project_id, action="remove")
         removed = ProjectMemberOut.model_validate(membership)
         db.delete(membership)
         db.flush()
@@ -272,7 +270,19 @@ def _audit_csv(events: list[AuditEvent]) -> str:
     return buffer.getvalue()
 
 
-@router.get("/{project_id}/audit", response_model=list[AuditEventOut])
+# response_model is None because the csv format intentionally returns
+# text/csv; the JSON branch validates through AuditEventOut itself. Both
+# content types are declared for OpenAPI accuracy.
+@router.get(
+    "/{project_id}/audit",
+    response_model=None,
+    responses={
+        200: {
+            "model": list[AuditEventOut],
+            "content": {"text/csv": {}},
+        }
+    },
+)
 def list_audit_events(
     project_id: str,
     format: str = Query(default="json", pattern="^(json|csv)$"),
@@ -299,4 +309,5 @@ def list_audit_events(
             media_type="text/csv",
             headers={"Content-Disposition": 'attachment; filename="audit.csv"'},
         )
-    return events
+    # response_model=None skips FastAPI's ORM conversion; validate explicitly.
+    return [AuditEventOut.model_validate(event) for event in events]

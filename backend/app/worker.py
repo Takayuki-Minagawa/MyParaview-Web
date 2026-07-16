@@ -98,6 +98,17 @@ def extract_external_metadata(path: Path, ctx: JobContext) -> DatasetMetadata:
         raise RuntimeError("ParaView worker returned invalid metadata JSON") from exc
 
 
+def _write_params(params_path: Path, payload: dict) -> Path:
+    """Serialize worker parameters next to the output (NaN-free JSON)."""
+    params_path.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
+    return params_path
+
+
+def _require_output(output: Path) -> None:
+    if not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError("ParaView worker produced no output artifact")
+
+
 def run_transform(
     source: Path,
     output: Path,
@@ -105,11 +116,9 @@ def run_transform(
     params: dict,
     ctx: JobContext,
 ) -> None:
-    params_path = output.with_suffix(".json")
-    params_path.write_text(json.dumps(params, allow_nan=False), encoding="utf-8")
+    params_path = _write_params(output.with_suffix(".json"), params)
     _run(_command(kind, str(source), str(output), str(params_path)), ctx)
-    if not output.is_file() or output.stat().st_size == 0:
-        raise RuntimeError("ParaView worker produced no output artifact")
+    _require_output(output)
 
 
 def run_pipeline_transform(
@@ -123,14 +132,9 @@ def run_pipeline_transform(
     Intermediate ParaView proxies stay in their native dataset types.  The
     worker converts only the final proxy to the VTP artifact contract.
     """
-    params_path = output.with_suffix(".json")
-    params_path.write_text(
-        json.dumps({"filters": filters}, allow_nan=False),
-        encoding="utf-8",
-    )
+    params_path = _write_params(output.with_suffix(".json"), {"filters": filters})
     _run(_command("pipeline", str(source), str(output), str(params_path)), ctx)
-    if not output.is_file() or output.stat().st_size == 0:
-        raise RuntimeError("ParaView worker produced no output artifact")
+    _require_output(output)
 
 
 def run_movie_frames(
@@ -140,8 +144,7 @@ def run_movie_frames(
     ctx: JobContext,
 ) -> list[Path]:
     """Render one frame per timestep and return the frame paths in order."""
-    params_path = frames_dir.parent / f"{frames_dir.name}-params.json"
-    params_path.write_text(json.dumps(params, allow_nan=False), encoding="utf-8")
+    params_path = _write_params(frames_dir.parent / f"{frames_dir.name}-params.json", params)
     _run(_command("movie", str(source), str(frames_dir), str(params_path)), ctx)
     frames = sorted(frames_dir.glob("frame-*.png"))
     if not frames:

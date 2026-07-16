@@ -80,7 +80,7 @@ def _enrich_pvd_first_sibling(
 
 
 def _ingest_bundle_metadata(
-    ctx: JobContext, dataset_id: str, source_ext: str, bundle_files: list
+    ctx: JobContext, dataset_id: str, source_ext: str, bundle_files: list[tuple[str, str, bool]]
 ):
     """Materialize a bundle into a temp dir and extract its metadata."""
     with tempfile.TemporaryDirectory(prefix="pvweb-bundle-") as temp_dir:
@@ -201,7 +201,8 @@ class _DatasetSource:
     project_id: str
     filename: str
     ext: str
-    bundle_files: list
+    # (relative_path, object_key, is_primary) rows from DatasetFile
+    bundle_files: list[tuple[str, str, bool]]
 
 
 @dataclass(frozen=True)
@@ -264,11 +265,14 @@ def _plan_output(kind: str, params: dict, source: _DatasetSource) -> _OutputPlan
         output_ext = source.ext
     stem = _stem(source.filename)
     suffix = _PLAN_SUFFIX.get(kind, "export")
-    artifact_kind = (
-        "filtered_vtp" if kind == "filter" else
-        "render_png" if kind == "render" else
-        ("converted_vtp" if output_ext == ".vtp" and kind == "convert" else kind)
-    )
+    if kind == "filter":
+        artifact_kind = "filtered_vtp"
+    elif kind == "render":
+        artifact_kind = "render_png"
+    elif kind == "convert" and output_ext == ".vtp":
+        artifact_kind = "converted_vtp"
+    else:
+        artifact_kind = kind
     return _OutputPlan(
         filename=f"{stem}-{suffix}{output_ext}",
         output_ext=output_ext,
@@ -278,7 +282,7 @@ def _plan_output(kind: str, params: dict, source: _DatasetSource) -> _OutputPlan
     )
 
 
-def materialize_bundle(bundle_files: list, root: Path) -> Path:
+def materialize_bundle(bundle_files: list[tuple[str, str, bool]], root: Path) -> Path:
     """Copy bundle members under ``root`` and return the primary file path."""
     primary: Path | None = None
     for relative_path, bundle_object_key, is_primary in bundle_files:

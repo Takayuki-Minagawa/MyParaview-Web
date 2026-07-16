@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -32,10 +33,10 @@ def _job_body_for(kind: str, dataset_id: str, params: dict):
 
 
 def filter_new_job_events(
-    rows: list[tuple[dict, object, str]],
-    cursor,
+    rows: list[tuple[dict, datetime, str]],
+    cursor: Optional[datetime],
     emitted_at_cursor: set[str],
-) -> tuple[list[dict], object, set[str]]:
+) -> tuple[list[dict], Optional[datetime], set[str]]:
     """Advance the SSE cursor over ``rows`` sorted by (updated_at, id).
 
     The snapshot query uses ``updated_at >= cursor`` so that a job committed
@@ -46,7 +47,7 @@ def filter_new_job_events(
     for payload, updated_at, job_id in rows:
         if updated_at == cursor and job_id in emitted_at_cursor:
             continue
-        if cursor is None or updated_at > cursor:  # type: ignore[operator]
+        if cursor is None or updated_at > cursor:
             cursor = updated_at
             emitted_at_cursor = {job_id}
         else:
@@ -119,7 +120,7 @@ async def stream_jobs(
     # (get_db's finally-close only runs after streaming ends).
     db.close()
 
-    def snapshot(after) -> list[tuple[dict, object, str]]:
+    def snapshot(after: Optional[datetime]) -> list[tuple[dict, datetime, str]]:
         with SessionLocal() as session:
             stmt = (
                 select(Job)

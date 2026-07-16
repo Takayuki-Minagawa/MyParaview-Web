@@ -8,11 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ..access import authorized_dataset, authorized_job, tag_audit
+from ..access import artifact_project_id, authorized_dataset, authorized_job, tag_audit
 from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
 from ..db import get_db
-from ..models import Artifact, Dataset, Job
+from ..models import Artifact, Dataset
 from ..project_locks import locked_project
 from ..responses import serve_object
 from ..schemas import ArtifactOut, DatasetOut
@@ -172,17 +172,7 @@ def get_artifact(
     art = db.get(Artifact, artifact_id)
     if art is None:
         raise HTTPException(404, "artifact not found")
-    project_id: Optional[str] = None
-    if art.dataset_id:
-        dataset = db.get(Dataset, art.dataset_id)
-        if dataset is None:
-            raise HTTPException(410, "artifact dataset no longer exists")
-        project_id = dataset.project_id
-    elif art.job_id:
-        job = db.get(Job, art.job_id)
-        if job is None or not job.project_id:
-            raise HTTPException(410, "artifact has no accessible project scope")
-        project_id = job.project_id
+    project_id = artifact_project_id(db, art)
     if not project_id:
         raise HTTPException(410, "artifact has no accessible project scope")
     require_project_role(db, project_id, principal)

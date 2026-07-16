@@ -622,6 +622,12 @@ export function VtkViewer(props: Props) {
       }
       if (ctx.current === scene) ctx.current = null;
     };
+    // Intentionally keyed on rebuild-worthy primitives only. sliceAxis /
+    // sliceIndex are read for the initial slice placement; later changes are
+    // applied in place by the dedicated slice effect below without a scene
+    // rebuild. tableCoordinates is keyed by its x/y/z values (not identity)
+    // so parent re-renders don't tear down the scene.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     url, datasetType, renderable, imageMode,
     tableCoordinates?.x, tableCoordinates?.y, tableCoordinates?.z,

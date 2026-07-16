@@ -230,7 +230,6 @@ export async function pollJob(
   { intervalMs = 400, timeoutMs = 600000 }: { intervalMs?: number; timeoutMs?: number } = {},
 ): Promise<Job> {
   const deadline = Date.now() + timeoutMs;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const job = await api.getJob(jobId);
     onTick?.(job);

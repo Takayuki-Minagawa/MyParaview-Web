@@ -24,6 +24,7 @@ import { detectBrowserCapabilities } from "./lib/capabilities";
 import { defaultImageScalar } from "./lib/imageData";
 import type { Language, ThemeMode } from "./i18n";
 import { MessagesProvider, useMessages } from "./i18n-context";
+import { responseFilename, triggerBlobDownload } from "./lib/download";
 import { useProjectScope } from "./hooks/useProjectScope";
 import { useDisplayState } from "./hooks/useDisplayState";
 import { useJobPolling } from "./hooks/useJobPolling";
@@ -38,15 +39,6 @@ const readStoredTheme = (): ThemeMode => {
   const value = window.localStorage.getItem("pvweb-theme");
   if (value === "light" || value === "dark") return value;
   return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
-};
-
-const triggerBlobDownload = (blob: Blob, filename: string) => {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 };
 
 export function App() {
@@ -592,7 +584,9 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
       .then(async (response) => {
         if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
         const blob = await response.blob();
-        triggerBlobDownload(blob, `timestep-${index}`);
+        // Prefer the piece's real name (e.g. flow_0001.vtp); the fallback at
+        // least carries an extension so the file opens in a viewer.
+        triggerBlobDownload(blob, responseFilename(response, `timestep-${index}.bin`));
       })
       .catch((e) => pushError(String(e)));
   }, [scope, pushError]);

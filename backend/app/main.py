@@ -46,6 +46,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Lets the browser client read download filenames from blob responses.
+    expose_headers=["Content-Disposition"],
 )
 
 

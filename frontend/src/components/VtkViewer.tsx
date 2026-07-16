@@ -10,6 +10,7 @@ import type {
   VolumeOpacityPoint,
 } from "../types";
 import { colorMapCssGradient, colorMapStops } from "../lib/colormap";
+import { triggerBlobDownload } from "../lib/download";
 import { csvToPointData } from "../lib/csvToPoints";
 import { authorizedFetch } from "../api";
 import { isRuntimeImageScalar } from "../lib/imageData";
@@ -693,12 +694,7 @@ export function VtkViewer(props: Props) {
       promise
         .then((dataUrl) => createScreenshotBlob(dataUrl, settings))
         .then((blob) => {
-          const link = document.createElement("a");
-          const objectUrl = URL.createObjectURL(blob);
-          link.href = objectUrl;
-          link.download = "screenshot.png";
-          link.click();
-          window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+          triggerBlobDownload(blob, "screenshot.png");
           screenshotCallbackRef.current?.(blob, capturedDatasetId);
         })
         .catch((error: unknown) =>
@@ -716,12 +712,7 @@ export function VtkViewer(props: Props) {
       const xml: string = writer.write(scene.output);
       writer.delete?.();
       const blob = new Blob([xml], { type: "application/xml" });
-      const link = document.createElement("a");
-      const objectUrl = URL.createObjectURL(blob);
-      link.href = objectUrl;
-      link.download = "geometry.vtp";
-      link.click();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      triggerBlobDownload(blob, "geometry.vtp");
       exportCallbackRef.current?.(blob, capturedDatasetId);
     } catch (error) {
       setStatus(`${messagesRef.current.viewer.exportError}: ${String(error)}`);

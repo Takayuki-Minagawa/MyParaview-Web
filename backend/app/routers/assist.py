@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..access import authorized_dataset
+from ..access import authorized_dataset, tag_audit
 from ..auth import Principal, get_principal, require_project_role
 from ..db import get_db
 from ..jobs import manager
@@ -180,9 +180,7 @@ def propose_operation(
     principal: Principal = Depends(get_principal),
 ):
     dataset = authorized_dataset(db, payload.dataset_id, principal)
-    request.state.audit_project_id = dataset.project_id
-    request.state.audit_resource_type = "assistant_proposal"
-    request.state.audit_resource_id = dataset.id
+    tag_audit(request, "assistant_proposal", dataset.id, dataset.project_id)
     proposal = _build_proposal(dataset, payload.prompt)
     record = AssistProposal(
         project_id=dataset.project_id,
@@ -268,9 +266,7 @@ def apply_proposal(
         current.status = "applied"
         current.applied_job_id = job.id
         db.add(current)
-    request.state.audit_project_id = project_id
-    request.state.audit_resource_type = "job"
-    request.state.audit_resource_id = job.id
+    tag_audit(request, "job", job.id, project_id)
     manager.submit(job.id, run_dataset_operation(record.dataset_id, "filter", params))
     return job
 

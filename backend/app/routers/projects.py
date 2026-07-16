@@ -10,6 +10,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from ..access import tag_audit
 from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
 from ..db import get_db
@@ -40,9 +41,7 @@ def create_project(
     project = Project(name=payload.name)
     db.add(project)
     db.flush()
-    request.state.audit_project_id = project.id
-    request.state.audit_resource_type = "project"
-    request.state.audit_resource_id = project.id
+    tag_audit(request, "project", project.id, project.id)
     db.add(ProjectMember(project_id=project.id, user_id=principal.id, role="admin"))
     db.commit()
     db.refresh(project)
@@ -94,9 +93,7 @@ def delete_project(
         )
         if active_job:
             raise HTTPException(409, "cancel or wait for active project jobs before deletion")
-        request.state.audit_project_id = project.id
-        request.state.audit_resource_type = "project"
-        request.state.audit_resource_id = project.id
+        tag_audit(request, "project", project.id, project.id)
         remote_session_ids = [
             render_session.remote_session_id for render_session in project.render_sessions
         ]

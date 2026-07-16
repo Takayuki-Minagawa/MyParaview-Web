@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ..access import authorized_job, require_project
+from ..access import authorized_job, require_project, tag_audit
 from ..auth import Principal, get_principal
 from ..config import settings
 from ..db import SessionLocal, get_db
@@ -96,9 +96,7 @@ def create_job(
         )
         db.add(job)
         db.flush()
-    request.state.audit_project_id = payload.project_id
-    request.state.audit_resource_type = "job"
-    request.state.audit_resource_id = job.id
+    tag_audit(request, "job", job.id, payload.project_id)
     manager.submit(job.id, _job_body_for(payload.kind, dataset.id, payload.params))
     return job
 

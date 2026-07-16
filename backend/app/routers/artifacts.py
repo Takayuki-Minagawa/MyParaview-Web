@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ..access import authorized_dataset, authorized_job
+from ..access import authorized_dataset, authorized_job, tag_audit
 from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
 from ..db import get_db
@@ -140,9 +140,7 @@ async def upload_artifact(
             )
             db.add(artifact)
             db.flush()
-        request.state.audit_project_id = dataset.project_id
-        request.state.audit_resource_type = "artifact"
-        request.state.audit_resource_id = artifact.id
+        tag_audit(request, "artifact", artifact.id, dataset.project_id)
         return artifact
     except ValueError as exc:
         store.delete(object_key)
@@ -211,9 +209,7 @@ def promote_artifact(
     except Exception:
         store.delete(new_key)
         raise
-    request.state.audit_project_id = project_id
-    request.state.audit_resource_type = "dataset"
-    request.state.audit_resource_id = dataset.id
+    tag_audit(request, "dataset", dataset.id, project_id)
     return dataset
 
 

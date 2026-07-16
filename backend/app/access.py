@@ -8,11 +8,18 @@ cannot drift between endpoints.
 
 from __future__ import annotations
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from .auth import Principal, require_project_role
 from .models import Dataset, Job, Pipeline, Project
+
+
+def tag_audit(request: Request, resource_type: str, resource_id: str, project_id: str) -> None:
+    """Attach the audit middleware's resource attribution to this request."""
+    request.state.audit_project_id = project_id
+    request.state.audit_resource_type = resource_type
+    request.state.audit_resource_id = resource_id
 
 
 def require_project(

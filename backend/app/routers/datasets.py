@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -15,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ..access import authorized_dataset, require_project
+from ..access import authorized_dataset, require_project, tag_audit
 from ..auth import Principal, get_principal
 from ..bundles import bundle_reference_path as _bundle_reference_path
 from ..bundles import safe_relative_path as _safe_relative_path
@@ -204,6 +205,79 @@ def _cleanup_persisted(db: Session, persisted: list[tuple[str, str, int]]) -> No
         store.delete(key)
 
 
+async def _register_bundle_dataset(
+    *,
+    db: Session,
+    request: Request,
+    principal: Principal,
+    project_id: str,
+    files: list[UploadFile],
+    allowed_extensions: set[str],
+    primary_exts: set[str],
+    primary_error: str,
+    sniff_members: bool,
+    presniff_primary: bool,
+    validate_primary: Callable[[str, str, str, set[str]], None],
+) -> Dataset:
+    """Shared body of the two multi-file bundle upload endpoints.
+
+    Owns authorization, member normalization, primary selection, streaming
+    persistence with cleanup-on-failure, dataset/DatasetFile registration, and
+    audit tagging. ``validate_primary(local_path, primary_path, primary_ext,
+    manifest)`` runs against the persisted descriptor and raises HTTPException
+    on invalid references.
+    """
+    require_project(db, project_id, principal, "editor")
+    if not files:
+        raise HTTPException(400, "at least one file is required")
+
+    normalized = _normalize_bundle_uploads(files, allowed_extensions)
+
+    primaries = [item for item in normalized if item[2] in primary_exts]
+    if len(primaries) != 1:
+        raise HTTPException(400, primary_error)
+    primary_path, primary_upload, primary_ext = primaries[0]
+    if presniff_primary:
+        await _sniff_upload(primary_upload, primary_ext, primary_path)
+
+    persisted: list[tuple[str, str, int]] = []
+    try:
+        total_size = await _persist_bundle_uploads(
+            normalized, persisted, sniff_members=sniff_members
+        )
+
+        by_path = {relative_path: key for relative_path, key, _ in persisted}
+        primary_key = by_path[primary_path]
+        with store.local_path(primary_key) as local_primary:
+            validate_primary(str(local_primary), primary_path, primary_ext, set(by_path))
+
+        with locked_project(db, project_id, principal, "editor"):
+            dataset = Dataset(
+                project_id=project_id,
+                filename=PurePosixPath(primary_path).name,
+                ext=primary_ext,
+                size_bytes=total_size,
+                object_key=primary_key,
+                status="registered",
+            )
+            db.add(dataset)
+            db.flush()
+            for relative_path, key, size in persisted:
+                db.add(DatasetFile(
+                    dataset_id=dataset.id,
+                    relative_path=relative_path,
+                    object_key=key,
+                    size_bytes=size,
+                    is_primary=relative_path == primary_path,
+                ))
+            db.flush()
+        tag_audit(request, "dataset", dataset.id, project_id)
+        return dataset
+    except Exception:
+        _cleanup_persisted(db, persisted)
+        raise
+
+
 @router.post("/projects/{project_id}/datasets", response_model=DatasetOut, status_code=201)
 async def upload_dataset(
     project_id: str,
@@ -242,9 +316,7 @@ async def upload_dataset(
         db.rollback()
         store.delete(key)
         raise
-    request.state.audit_project_id = project_id
-    request.state.audit_resource_type = "dataset"
-    request.state.audit_resource_id = ds.id
+    tag_audit(request, "dataset", ds.id, project_id)
     return ds
 
 
@@ -261,32 +333,16 @@ async def upload_dataset_bundle(
     principal: Principal = Depends(get_principal),
 ):
     """Register a PVD and every relative file it references as one dataset."""
-    require_project(db, project_id, principal, "editor")
-    if not files:
-        raise HTTPException(400, "at least one file is required")
 
-    normalized = _normalize_bundle_uploads(files, settings.allowed_extensions)
-
-    pvd_members = [item for item in normalized if item[2] == ".pvd"]
-    if len(pvd_members) != 1:
-        raise HTTPException(400, "a dataset bundle requires exactly one .pvd file")
-    primary_path = pvd_members[0][0]
-
-    persisted: list[tuple[str, str, int]] = []
-    try:
-        total_size = await _persist_bundle_uploads(normalized, persisted, sniff_members=True)
-
-        by_path = {relative_path: key for relative_path, key, _ in persisted}
-        primary_key = by_path[primary_path]
+    def validate_pvd(local_primary: str, primary_path: str, _ext: str, manifest: set[str]) -> None:
         try:
-            with store.local_path(primary_key) as local_primary:
-                references = _pvd_references(str(local_primary))
+            references = _pvd_references(local_primary)
             resolved_references = [
                 _bundle_reference_path(primary_path, reference) for reference in references
             ]
         except (ET.ParseError, DefusedXmlException, ValueError) as exc:
             raise HTTPException(422, f"invalid PVD collection: {exc}") from exc
-        missing = sorted({path for path in resolved_references if path not in by_path})
+        missing = sorted({path for path in resolved_references if path not in manifest})
         if missing:
             raise HTTPException(422, f"PVD referenced files are missing: {', '.join(missing)}")
         referenced_extensions = {PurePosixPath(path).suffix.lower() for path in resolved_references}
@@ -295,33 +351,19 @@ async def upload_dataset_bundle(
         if len(referenced_extensions) != 1:
             raise HTTPException(422, "PVD members must use one consistent browser-renderable format")
 
-        with locked_project(db, project_id, principal, "editor"):
-            dataset = Dataset(
-                project_id=project_id,
-                filename=PurePosixPath(primary_path).name,
-                ext=".pvd",
-                size_bytes=total_size,
-                object_key=primary_key,
-                status="registered",
-            )
-            db.add(dataset)
-            db.flush()
-            for relative_path, key, size in persisted:
-                db.add(DatasetFile(
-                    dataset_id=dataset.id,
-                    relative_path=relative_path,
-                    object_key=key,
-                    size_bytes=size,
-                    is_primary=relative_path == primary_path,
-                ))
-            db.flush()
-        request.state.audit_project_id = project_id
-        request.state.audit_resource_type = "dataset"
-        request.state.audit_resource_id = dataset.id
-        return dataset
-    except Exception:
-        _cleanup_persisted(db, persisted)
-        raise
+    return await _register_bundle_dataset(
+        db=db,
+        request=request,
+        principal=principal,
+        project_id=project_id,
+        files=files,
+        allowed_extensions=settings.allowed_extensions,
+        primary_exts={".pvd"},
+        primary_error="a dataset bundle requires exactly one .pvd file",
+        sniff_members=True,
+        presniff_primary=False,
+        validate_primary=validate_pvd,
+    )
 
 
 @router.post(
@@ -337,66 +379,28 @@ async def upload_external_dataset_bundle(
     principal: Principal = Depends(get_principal),
 ):
     """Upload an EnSight or XDMF descriptor together with its sidecar files."""
-    require_project(db, project_id, principal, "editor")
-    if not files:
-        raise HTTPException(400, "at least one file is required")
 
-    normalized = _normalize_bundle_uploads(files, settings.external_bundle_extensions)
-
-    primaries = [item for item in normalized if item[2] in {".case", ".xdmf", ".xmf"}]
-    if len(primaries) != 1:
-        raise HTTPException(400, "external bundle requires exactly one .case, .xdmf, or .xmf descriptor")
-    primary_path, primary_upload, primary_ext = primaries[0]
-
-    head = await primary_upload.read(4096)
-    if not _sniff_ok(primary_ext, head):
-        raise HTTPException(400, f"descriptor content does not match {primary_ext}")
-    await primary_upload.seek(0)
-
-    persisted: list[tuple[str, str, int]] = []
-    try:
-        total_size = await _persist_bundle_uploads(normalized, persisted, sniff_members=False)
-
-        primary_key = next(key for path, key, _ in persisted if path == primary_path)
+    def validate_external(
+        local_primary: str, primary_path: str, primary_ext: str, manifest: set[str]
+    ) -> None:
         try:
-            with store.local_path(primary_key) as local_primary:
-                _validate_external_descriptor(
-                    str(local_primary),
-                    primary_path,
-                    primary_ext,
-                    {path for path, _, _ in persisted},
-                )
+            _validate_external_descriptor(local_primary, primary_path, primary_ext, manifest)
         except (ET.ParseError, DefusedXmlException, UnicodeDecodeError, ValueError) as exc:
             raise HTTPException(422, f"invalid external descriptor: {exc}") from exc
-        with locked_project(db, project_id, principal, "editor"):
-            dataset = Dataset(
-                project_id=project_id,
-                filename=PurePosixPath(primary_path).name,
-                ext=primary_ext,
-                size_bytes=total_size,
-                object_key=primary_key,
-                status="registered",
-            )
-            db.add(dataset)
-            db.flush()
-            for relative_path, key, size in persisted:
-                db.add(
-                    DatasetFile(
-                        dataset_id=dataset.id,
-                        relative_path=relative_path,
-                        object_key=key,
-                        size_bytes=size,
-                        is_primary=relative_path == primary_path,
-                    )
-                )
-            db.flush()
-        request.state.audit_project_id = project_id
-        request.state.audit_resource_type = "dataset"
-        request.state.audit_resource_id = dataset.id
-        return dataset
-    except Exception:
-        _cleanup_persisted(db, persisted)
-        raise
+
+    return await _register_bundle_dataset(
+        db=db,
+        request=request,
+        principal=principal,
+        project_id=project_id,
+        files=files,
+        allowed_extensions=settings.external_bundle_extensions,
+        primary_exts={".case", ".xdmf", ".xmf"},
+        primary_error="external bundle requires exactly one .case, .xdmf, or .xmf descriptor",
+        sniff_members=False,
+        presniff_primary=True,
+        validate_primary=validate_external,
+    )
 
 
 @router.get("/projects/{project_id}/datasets", response_model=list[DatasetOut])

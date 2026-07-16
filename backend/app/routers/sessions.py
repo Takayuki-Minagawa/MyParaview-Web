@@ -11,7 +11,7 @@ import websockets
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
-from ..access import require_project
+from ..access import require_project, tag_audit
 from ..auth import Principal, get_principal, require_project_role
 from ..config import settings
 from ..db import SessionLocal, get_db
@@ -157,9 +157,7 @@ def create_session(
         db.rollback()
         _best_effort_delete_remote(remote_id)
         raise
-    request.state.audit_project_id = payload.project_id
-    request.state.audit_resource_type = "session"
-    request.state.audit_resource_id = render_session.id
+    tag_audit(request, "session", render_session.id, payload.project_id)
     return {
         **RenderSessionOut.model_validate(render_session).model_dump(),
         "websocket_path": f"/sessions/{render_session.id}/ws",
@@ -204,9 +202,7 @@ def delete_session(
     if render_session is None:
         raise HTTPException(404, "render session not found")
     require_project_role(db, render_session.project_id, principal, "editor")
-    request.state.audit_project_id = render_session.project_id
-    request.state.audit_resource_type = "session"
-    request.state.audit_resource_id = render_session.id
+    tag_audit(request, "session", render_session.id, render_session.project_id)
     try:
         _delete_remote_session(render_session)
     except httpx.HTTPError as exc:

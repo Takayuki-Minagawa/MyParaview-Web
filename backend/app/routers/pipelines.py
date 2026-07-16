@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..access import authorized_pipeline, require_project
+from ..access import authorized_pipeline, require_project, tag_audit
 from ..auth import Principal, get_principal
 from ..db import get_db
 from ..jobs import manager
@@ -88,9 +88,7 @@ def create_pipeline(
         db.flush()
         _replace_nodes(db, pipeline, payload.nodes)
         db.flush()
-    request.state.audit_project_id = payload.project_id
-    request.state.audit_resource_type = "pipeline"
-    request.state.audit_resource_id = pipeline.id
+    tag_audit(request, "pipeline", pipeline.id, payload.project_id)
     return pipeline
 
 
@@ -171,9 +169,7 @@ def run_pipeline(
         )
         db.add(job)
         db.flush()
-    request.state.audit_project_id = project_id
-    request.state.audit_resource_type = "job"
-    request.state.audit_resource_id = job.id
+    tag_audit(request, "job", job.id, project_id)
     manager.submit(job.id, run_pipeline_execution(pipeline_id, dataset_id, filters))
     return job
 
@@ -191,8 +187,6 @@ def delete_pipeline(
         pipeline = db.get(Pipeline, pipeline_id)
         if pipeline is None:
             raise HTTPException(404, "pipeline not found")
-        request.state.audit_project_id = project_id
-        request.state.audit_resource_type = "pipeline"
-        request.state.audit_resource_id = pipeline.id
+        tag_audit(request, "pipeline", pipeline.id, project_id)
         detach_pipeline_inputs(db, pipeline_id=pipeline.id)
         db.delete(pipeline)

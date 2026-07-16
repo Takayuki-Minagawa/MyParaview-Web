@@ -31,10 +31,10 @@
 
 ## Phase R2: 高優先リファクタ
 
-- [ ] R2-1 (RB-1): services.py ジョブ骨格の共通ヘルパー抽出
-- [ ] R2-2 (RB-3): access.py 認可リゾルバ集約
-- [ ] R2-3 (RB-2): アップロード3エンドポイント共通化 + audit付与ヘルパー
-- [ ] R2-4 (RB-4): run_ingest 分割
+- [x] R2-1 (RB-1): services.py ジョブ骨格の共通ヘルパー抽出
+- [x] R2-2 (RB-3): access.py 認可リゾルバ集約
+- [x] R2-3 (RB-2): アップロード3エンドポイント共通化 + audit付与ヘルパー
+- [x] R2-4 (RB-4): run_ingest 分割
 - [ ] R2-5 (RF-3): lib/download.ts blob download統一（timestep拡張子修正込み）
 - [ ] R2-6 (RF-1): App.tsx フック分割（usePipelineActions / useDatasetJobs / useRemoteSession / useDeepLink / useDatasetUpload）
 - [ ] R2-7 (RF-2): DisplayStateContext 導入、PropertiesPanel props削減 + memo化

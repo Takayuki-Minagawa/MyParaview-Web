@@ -43,6 +43,78 @@ def _set_dataset_status(dataset_id: str, status: str, *, error: Optional[str]) -
         db.commit()
 
 
+def _materialize_ingest_member(root: Path, relative_path: str, object_key: str) -> Path:
+    """Copy one bundle member from the object store under ``root``."""
+    target = materialized_bundle_path(root, relative_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with store.local_path(object_key) as local_object:
+        shutil.copyfile(local_object, target)
+    return target
+
+
+def _enrich_pvd_first_sibling(
+    dataset_id: str, root: Path, primary_path: Path, primary_relative_path: str
+):
+    """Re-extract PVD metadata with its first referenced piece materialized.
+
+    A PVD descriptor alone yields only collection structure; sampling the
+    first referenced file adds array/bounds detail. Returns the richer
+    metadata, or the descriptor-only metadata when the sibling row is absent.
+    """
+    meta = extract_metadata(str(primary_path))
+    referenced = list(meta.extra.get("files") or [])
+    if not referenced or not primary_relative_path:
+        return meta
+    first_relative = bundle_reference_path(primary_relative_path, str(referenced[0]))
+    with SessionLocal() as db:
+        first_object_key = db.scalar(
+            select(DatasetFile.object_key).where(
+                DatasetFile.dataset_id == dataset_id,
+                DatasetFile.relative_path == first_relative,
+            )
+        )
+    if not first_object_key:
+        return meta
+    _materialize_ingest_member(root, first_relative, first_object_key)
+    return extract_metadata(str(primary_path), pvd_enrich_siblings=True)
+
+
+def _ingest_bundle_metadata(
+    ctx: JobContext, dataset_id: str, source_ext: str, bundle_files: list
+):
+    """Materialize a bundle into a temp dir and extract its metadata."""
+    with tempfile.TemporaryDirectory(prefix="pvweb-bundle-") as temp_dir:
+        root = Path(temp_dir).resolve()
+        primary_path: Path | None = None
+        primary_relative_path: str | None = None
+        for relative_path, object_key, is_primary in bundle_files:
+            target = _materialize_ingest_member(root, relative_path, object_key)
+            if is_primary:
+                if primary_path is not None:
+                    raise ValueError("dataset bundle has multiple primary files")
+                primary_path = target
+                primary_relative_path = relative_path
+        if primary_path is None:
+            raise ValueError("dataset bundle has no primary file")
+        if source_ext == ".pvd":
+            return _enrich_pvd_first_sibling(
+                dataset_id, root, primary_path, primary_relative_path
+            )
+        if source_ext in settings.external_extensions:
+            return extract_external_metadata(primary_path, ctx)
+        return extract_metadata(str(primary_path))
+
+
+def _ingest_single_metadata(ctx: JobContext, source_object_key: str, source_ext: str):
+    """Extract metadata for a single stored object (no bundle members)."""
+    with store.local_path(source_object_key) as local_object:
+        if source_ext in settings.external_extensions:
+            return extract_external_metadata(local_object, ctx)
+        # A standalone PVD has no sibling rows to materialize, so sibling
+        # enrichment must stay off; the flag is ignored for other formats.
+        return extract_metadata(str(local_object), pvd_enrich_siblings=False)
+
+
 def run_ingest(dataset_id: str):
     """Return a job body that extracts metadata for ``dataset_id``.
 
@@ -81,60 +153,9 @@ def run_ingest(dataset_id: str):
             ctx.check_cancelled()
             ctx.update(progress=0.3, log_line="parsing metadata")
             if bundle_files:
-                with tempfile.TemporaryDirectory(prefix="pvweb-bundle-") as temp_dir:
-                    root = Path(temp_dir).resolve()
-                    primary_path: Path | None = None
-                    primary_relative_path: str | None = None
-                    for relative_path, object_key, is_primary in bundle_files:
-                        target = materialized_bundle_path(root, relative_path)
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with store.local_path(object_key) as local_object:
-                            shutil.copyfile(local_object, target)
-                        if is_primary:
-                            if primary_path is not None:
-                                raise ValueError("dataset bundle has multiple primary files")
-                            primary_path = target
-                            primary_relative_path = relative_path
-                    if primary_path is None:
-                        raise ValueError("dataset bundle has no primary file")
-                    if source_ext == ".pvd":
-                        meta = extract_metadata(str(primary_path))
-                        referenced = list(meta.extra.get("files") or [])
-                        if referenced and primary_relative_path:
-                            first_relative = bundle_reference_path(
-                                primary_relative_path, str(referenced[0])
-                            )
-                            with SessionLocal() as db:
-                                first_object_key = db.scalar(
-                                    select(DatasetFile.object_key).where(
-                                        DatasetFile.dataset_id == dataset_id,
-                                        DatasetFile.relative_path == first_relative,
-                                    )
-                                )
-                            if first_object_key:
-                                first_target = materialized_bundle_path(root, first_relative)
-                                first_target.parent.mkdir(parents=True, exist_ok=True)
-                                with store.local_path(first_object_key) as local_object:
-                                    shutil.copyfile(local_object, first_target)
-                                meta = extract_metadata(
-                                    str(primary_path), pvd_enrich_siblings=True
-                                )
-                    else:
-                        meta = (
-                            extract_external_metadata(primary_path, ctx)
-                            if source_ext in settings.external_extensions
-                            else extract_metadata(str(primary_path))
-                        )
+                meta = _ingest_bundle_metadata(ctx, dataset_id, source_ext, bundle_files)
             else:
-                with store.local_path(source_object_key) as local_object:
-                    meta = (
-                        extract_external_metadata(local_object, ctx)
-                        if source_ext in settings.external_extensions
-                        else extract_metadata(
-                            str(local_object),
-                            pvd_enrich_siblings=source_ext != ".pvd",
-                        )
-                    )
+                meta = _ingest_single_metadata(ctx, source_object_key, source_ext)
             if source_ext == ".pvd":
                 # A standalone PVD can provide useful collection metadata, but
                 # playback is only enabled for a server-validated full bundle.

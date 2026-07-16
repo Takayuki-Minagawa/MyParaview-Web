@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 import os
-import struct
-import zlib
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -18,58 +14,12 @@ from ..config import settings
 from ..db import get_db
 from ..models import Artifact, Dataset, Job
 from ..project_locks import locked_project
-from ..responses import LeasedFileResponse
+from ..responses import serve_object
 from ..schemas import ArtifactOut, DatasetOut
 from ..storage import store
-from .datasets import _sniff_ok
+from ..validation import sniff_ok, valid_png
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
-
-
-def _valid_png(path: Path) -> bool:
-    """Validate PNG structure and per-chunk CRCs by streaming, not read_bytes()."""
-    total = path.stat().st_size
-    with open(path, "rb") as source:
-        if source.read(8) != b"\x89PNG\r\n\x1a\n":
-            return False
-        offset = 8
-        saw_header = False
-        while offset + 12 <= total:
-            header = source.read(8)
-            if len(header) != 8:
-                return False
-            length = struct.unpack(">I", header[:4])[0]
-            chunk_type = header[4:8]
-            end = offset + 12 + length
-            if end > total:
-                return False
-            crc = zlib.crc32(chunk_type)
-            remaining = length
-            first_payload = b""
-            while remaining > 0:
-                chunk = source.read(min(remaining, 1024 * 1024))
-                if not chunk:
-                    return False
-                if not first_payload:
-                    first_payload = chunk
-                crc = zlib.crc32(chunk, crc)
-                remaining -= len(chunk)
-            crc_bytes = source.read(4)
-            if len(crc_bytes) != 4:
-                return False
-            if crc & 0xFFFFFFFF != struct.unpack(">I", crc_bytes)[0]:
-                return False
-            if not saw_header:
-                if chunk_type != b"IHDR" or length != 13 or len(first_payload) < 8:
-                    return False
-                width, height = struct.unpack(">II", first_payload[:8])
-                if width == 0 or height == 0:
-                    return False
-                saw_header = True
-            if chunk_type == b"IEND":
-                return saw_header and length == 0 and end == total
-            offset = end
-    return False
 
 
 @router.get("", response_model=list[ArtifactOut])
@@ -121,7 +71,7 @@ async def upload_artifact(
         if kind == "screenshot":
             def _validate() -> bool:
                 with store.local_path(object_key) as local_object:
-                    return _valid_png(local_object)
+                    return valid_png(local_object)
 
             if not await run_in_threadpool(_validate):
                 raise HTTPException(400, "screenshot artifact is not a valid PNG")
@@ -189,7 +139,7 @@ def promote_artifact(
             # must pass the same magic/header guard as a direct upload.
             with open(source_path, "rb") as source_head:
                 head = source_head.read(4096)
-            if not _sniff_ok(ext, head):
+            if not sniff_ok(ext, head):
                 raise HTTPException(400, f"artifact content does not match a {ext} file")
             size = store.copy_in(new_key, source_path)
         with locked_project(db, project_id, principal, "editor"):
@@ -236,19 +186,4 @@ def get_artifact(
     if not project_id:
         raise HTTPException(410, "artifact has no accessible project scope")
     require_project_role(db, project_id, principal)
-    presigned = store.presigned_url(art.object_key, filename=art.filename)
-    # Presigning does not verify the object exists; fall through to the
-    # streaming path (and its 410) when the object is gone.
-    if presigned and store.exists(art.object_key):
-        return RedirectResponse(presigned, status_code=307)
-    path = store.acquire_path(art.object_key)
-    if not path.is_file():
-        store.release_path(art.object_key)
-        raise HTTPException(410, "artifact object no longer available")
-    return LeasedFileResponse(
-        str(path),
-        store=store,
-        object_key=art.object_key,
-        media_type=art.content_type,
-        filename=art.filename,
-    )
+    return serve_object(store, art.object_key, filename=art.filename, media_type=art.content_type)

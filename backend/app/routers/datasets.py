@@ -11,7 +11,6 @@ from typing import Optional
 from defusedxml import ElementTree as SafeET
 from defusedxml.common import DefusedXmlException
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -25,10 +24,11 @@ from ..db import get_db
 from ..jobs import manager
 from ..models import Dataset, DatasetFile, Job
 from ..project_locks import locked_project
-from ..responses import LeasedFileResponse
+from ..responses import serve_object
 from ..schemas import CollectionStepOut, DatasetOut, JobOut
 from ..services import run_ingest
 from ..storage import store
+from ..validation import sniff_upload as _sniff_upload
 
 router = APIRouter(tags=["datasets"])
 
@@ -116,27 +116,6 @@ def _pvd_references(path: str) -> list[str]:
     return references
 
 
-def _sniff_ok(ext: str, head: bytes) -> bool:
-    """Lightweight magic/header check (work_plan 8.3): don't trust the extension."""
-    if ext in {".vtp", ".vti", ".vtu", ".vts", ".vtr", ".pvd"}:
-        prefix = head.lstrip()[:200].lower()
-        return prefix.startswith(b"<?xml") or b"<vtkfile" in prefix or b"<collection" in prefix
-    if ext == ".csv":
-        # A UTF-8 multibyte char can straddle the 4 KB read boundary, so a strict
-        # decode would false-reject valid (e.g. Japanese) CSVs. Treat as text
-        # unless it contains a NUL byte (a reliable binary marker).
-        return b"\x00" not in head
-    if ext in {".xdmf", ".xmf"}:
-        prefix = head.lstrip()[:300].lower()
-        return prefix.startswith(b"<?xml") or b"<xdmf" in prefix
-    if ext in {".cgns", ".exo", ".e"}:
-        return head.startswith(b"\x89HDF\r\n\x1a\n") or head.startswith((b"CDF\x01", b"CDF\x02"))
-    if ext == ".case":
-        upper = head.upper()
-        return b"\x00" not in head and b"FORMAT" in upper and b"GEOMETRY" in upper
-    return False
-
-
 def _normalize_bundle_uploads(
     files: list[UploadFile], allowed_extensions: set[str]
 ) -> list[tuple[str, UploadFile, str]]:
@@ -156,13 +135,6 @@ def _normalize_bundle_uploads(
             raise HTTPException(415, f"unsupported extension {ext!r}")
         normalized.append((relative_path, upload, ext))
     return normalized
-
-
-async def _sniff_upload(upload: UploadFile, ext: str, label: str) -> None:
-    head = await upload.read(4096)
-    if not _sniff_ok(ext, head):
-        raise HTTPException(400, f"file content does not match a {ext} file: {label}")
-    await upload.seek(0)
 
 
 async def _persist_bundle_uploads(
@@ -517,16 +489,7 @@ def download_collection_timestep(
     )
     if member is None or not store.exists(member.object_key):
         raise HTTPException(410, "timestep object is unavailable")
-    path = store.acquire_path(member.object_key)
-    if not path.is_file():
-        store.release_path(member.object_key)
-        raise HTTPException(410, "timestep object is unavailable")
-    return LeasedFileResponse(
-        str(path),
-        store=store,
-        object_key=member.object_key,
-        filename=PurePosixPath(relative_path).name,
-    )
+    return serve_object(store, member.object_key, filename=PurePosixPath(relative_path).name)
 
 
 @router.post("/datasets/{dataset_id}/ingest", response_model=JobOut, status_code=202)
@@ -566,18 +529,4 @@ def download_dataset(
     principal: Principal = Depends(get_principal),
 ):
     ds = authorized_dataset(db, dataset_id, principal)
-    presigned = store.presigned_url(ds.object_key, filename=ds.filename)
-    # Presigning does not verify the object exists; a redirect to a missing
-    # object would surface S3's raw 404 instead of the API's clean 410 below.
-    if presigned and store.exists(ds.object_key):
-        return RedirectResponse(presigned, status_code=307)
-    path = store.acquire_path(ds.object_key)
-    if not path.is_file():
-        store.release_path(ds.object_key)
-        raise HTTPException(410, "object no longer available")
-    return LeasedFileResponse(
-        str(path),
-        store=store,
-        object_key=ds.object_key,
-        filename=ds.filename,
-    )
+    return serve_object(store, ds.object_key, filename=ds.filename)

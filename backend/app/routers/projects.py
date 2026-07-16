@@ -4,7 +4,6 @@ import csv
 import io
 import logging
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, or_, select
@@ -12,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..access import tag_audit
 from ..auth import Principal, get_principal, require_project_role
+from ..broker import try_delete_remote
 from ..config import settings
 from ..db import get_db
 from ..models import Artifact, AuditEvent, Dataset, DatasetFile, Job, Project, ProjectMember, User
@@ -25,7 +25,6 @@ from ..schemas import (
     ProjectOut,
 )
 from ..storage import store
-from .sessions import _delete_remote_id
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 logger = logging.getLogger(__name__)
@@ -115,18 +114,11 @@ def delete_project(
             )
         detach_pipeline_inputs(db, project_id=project_id)
         db.delete(project)
+    # The project and its local session records are already deleted. Keep
+    # external cleanup best-effort so an unavailable broker does not hold a
+    # database write lock or misreport the committed delete.
     for remote_session_id in remote_session_ids:
-        try:
-            _delete_remote_id(remote_session_id)
-        except httpx.HTTPError:
-            # The project and its local session records are already deleted.
-            # Keep external cleanup best-effort so an unavailable broker does
-            # not hold a database write lock or misreport the committed delete.
-            logger.exception(
-                "failed to delete remote session %s for project %s",
-                remote_session_id,
-                project_id,
-            )
+        try_delete_remote(remote_session_id)
     for object_key in object_keys:
         try:
             store.delete(object_key)

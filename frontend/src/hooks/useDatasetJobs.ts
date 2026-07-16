@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { api, authorizedFetch, pollJob } from "../api";
-import type { Artifact, Job } from "../types";
+import type { Artifact, Job, JobKind } from "../types";
 import { responseFilename, triggerBlobDownload } from "../lib/download";
 import type { ProjectScope, ScopeTicket } from "./useProjectScope";
 
@@ -14,8 +14,6 @@ interface Options {
   /** Localized prefix for a failed post-promotion ingest. */
   metadataFailedText: string;
 }
-
-type JobKind = "convert" | "filter" | "export" | "render" | "stats" | "movie";
 
 /** Job-producing dataset actions (export/convert/stats/server filter),
  * artifact promotion, and timestep download — each with its pending state. */

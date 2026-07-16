@@ -6,6 +6,7 @@ import type {
   CollectionStep,
   Dataset,
   Job,
+  JobKind,
   Pipeline,
   Project,
   ProjectMember,
@@ -126,7 +127,7 @@ export const api = {
   cancelJob: (id: string) => req<Job>(`/jobs/${id}/cancel`, { method: "POST" }),
   createJob: (
     projectId: string,
-    kind: "convert" | "filter" | "export" | "render" | "stats" | "movie",
+    kind: JobKind,
     targetId: string,
     params: Record<string, unknown>,
   ) => req<Job>("/jobs", {

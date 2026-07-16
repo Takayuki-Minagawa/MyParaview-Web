@@ -9,15 +9,10 @@ import type {
   ViewState,
   VolumeOpacityPoint,
 } from "../types";
+import { COLOR_MAP_NAMES, REPRESENTATION_NAMES } from "../types";
 
-const REPRESENTATIONS = new Set<Representation>(["surface", "wireframe", "points"]);
-const COLOR_MAPS = new Set<ColorMapName>([
-  "cool-to-warm",
-  "viridis",
-  "grayscale",
-  "plasma",
-  "turbo",
-]);
+const REPRESENTATIONS = new Set<Representation>(REPRESENTATION_NAMES);
+const COLOR_MAPS = new Set<ColorMapName>(COLOR_MAP_NAMES);
 
 function finiteTuple(value: unknown, length: number): value is number[] {
   return Array.isArray(value) && value.length === length && value.every(Number.isFinite);

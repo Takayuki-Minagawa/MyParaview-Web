@@ -1,8 +1,8 @@
 import { memo } from "react";
 import type { Representation } from "../../types";
+import { REPRESENTATION_NAMES } from "../../types";
 import { useMessages } from "../../i18n-context";
 
-const REPRESENTATIONS: Representation[] = ["surface", "wireframe", "points"];
 
 interface Props {
   isImageData: boolean;
@@ -33,7 +33,7 @@ export const DisplaySection = memo(function DisplaySection({
       <h3>{messages.properties.display}</h3>
       {!isImageData && (
         <div className="row">
-          {REPRESENTATIONS.map((r) => (
+          {REPRESENTATION_NAMES.map((r) => (
             <label key={r} className="radio">
               <input
                 type="radio"

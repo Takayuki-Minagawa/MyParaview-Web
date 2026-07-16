@@ -12,6 +12,7 @@ import { ServerFilterSection } from "./properties/ServerFilterSection";
 import { AssistantSection } from "./properties/AssistantSection";
 import { RemoteSessionSection } from "./properties/RemoteSessionSection";
 import { ArtifactsSection } from "./properties/ArtifactsSection";
+import { StatsSection } from "./properties/StatsSection";
 
 /** Derived view values and camera commands the raw display state does not
  * carry (clamped slice index, slice bounds, wrapped handlers). */
@@ -173,6 +174,8 @@ export const PropertiesPanel = memo(function PropertiesPanel({
         onJobCreated={jobs.onJobCreated}
         onError={onError}
       />
+
+      <StatsSection artifacts={artifacts} onError={onError} />
 
       <RemoteSessionSection
         dataset={dataset}

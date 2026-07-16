@@ -225,6 +225,16 @@ export const MESSAGES = {
         tablePoint: "point (table)",
       },
     },
+    stats: {
+      title: "統計",
+      show: "ヒストグラムを表示",
+      loading: "統計を読み込み中…",
+      empty: "統計対象の配列がありません。",
+      count: "件数",
+      mean: "平均",
+      range: "範囲",
+      stddev: "標準偏差",
+    },
     viewer: {
       loading: "読み込み中…",
       standardViews: "標準ビュー方向",
@@ -476,6 +486,16 @@ export const MESSAGES = {
         table: "table",
         tablePoint: "point (table)",
       },
+    },
+    stats: {
+      title: "Statistics",
+      show: "Show histograms",
+      loading: "Loading statistics…",
+      empty: "No arrays with statistics.",
+      count: "Count",
+      mean: "Mean",
+      range: "Range",
+      stddev: "Std dev",
     },
     viewer: {
       loading: "Loading…",

@@ -133,6 +133,29 @@ export interface Artifact {
   created_at: string;
 }
 
+/** Shape of a stats_json artifact produced by the statistics job. */
+export interface ArrayStatistics {
+  name: string;
+  association: string;
+  count: number;
+  min: number;
+  max: number;
+  mean: number;
+  stddev: number;
+  histogram: {
+    bins: number;
+    min: number;
+    max: number;
+    counts: number[];
+  };
+}
+
+export interface DatasetStatistics {
+  dataset_id: string;
+  bins: number;
+  arrays: ArrayStatistics[];
+}
+
 export interface CollectionStep {
   index: number;
   time: number;

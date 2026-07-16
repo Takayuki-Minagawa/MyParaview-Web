@@ -531,7 +531,52 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   const onScreenshot = useCallback(() => setScreenshotNonce((n) => n + 1), []);
   const onResetCamera = useCallback(() => setResetNonce((n) => n + 1), []);
 
-  const remoteAvailable = !!serverCapabilities?.trame_sessions;
+  // ---- grouped props for the memoized PropertiesPanel
+  const viewControls = useMemo(() => ({
+    dataColorRange: availableColorRange,
+    sliceIndex: clampedSliceIndex,
+    sliceMin,
+    sliceMax,
+    onSliceAxis,
+    onTimestepIndex,
+    onScreenshot,
+    onResetCamera,
+  }), [
+    availableColorRange, clampedSliceIndex, sliceMin, sliceMax,
+    onSliceAxis, onTimestepIndex, onScreenshot, onResetCamera,
+  ]);
+
+  const serverFilterAvailable = serverCapabilities?.paraview_worker ?? false;
+  const jobControls = useMemo(() => ({
+    onExport: exportDataset,
+    exportPending,
+    onConvert: convertDataset,
+    convertPending,
+    onRunStats: runStats,
+    statsPending,
+    onPromoteArtifact: promoteArtifact,
+    promotePendingIds,
+    onClientExport: clientExport,
+    clientExportPending,
+    filterPending,
+    serverFilterAvailable,
+    onRunFilter: runServerFilter,
+    onJobCreated: onAssistJobCreated,
+    onDownloadTimestep: downloadTimestep,
+  }), [
+    exportDataset, exportPending, convertDataset, convertPending,
+    runStats, statsPending, promoteArtifact, promotePendingIds,
+    clientExport, clientExportPending, filterPending, serverFilterAvailable,
+    runServerFilter, onAssistJobCreated, downloadTimestep,
+  ]);
+
+  const remoteControls = useMemo(() => ({
+    available: !!serverCapabilities?.trame_sessions,
+    session: remoteSession,
+    pending: remotePending,
+    onStart: startRemote,
+    onStop: stopRemote,
+  }), [serverCapabilities?.trame_sessions, remoteSession, remotePending, startRemote, stopRemote]);
 
   return (
     <div className="app">
@@ -714,60 +759,11 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
 
         <PropertiesPanel
           dataset={selectedDataset}
-          representation={display.representation}
-          onRepresentation={display.setRepresentation}
-          colorBy={display.colorBy}
-          onColorBy={display.setColorBy}
-          dataColorRange={availableColorRange}
-          customColorRange={display.customColorRange}
-          onCustomColorRange={display.setCustomColorRange}
-          opacity={display.opacity}
-          onOpacity={display.setOpacity}
-          colorMap={display.colorMap}
-          onColorMap={display.setColorMap}
-          legendVisible={display.legendVisible}
-          onLegendVisible={display.setLegendVisible}
-          onScreenshot={onScreenshot}
-          onResetCamera={onResetCamera}
-          axesVisible={display.axesVisible}
-          onAxesVisible={display.setAxesVisible}
+          display={display}
+          view={viewControls}
+          jobs={jobControls}
+          remote={remoteControls}
           artifacts={artifacts}
-          onExport={exportDataset}
-          exportPending={exportPending}
-          onConvert={convertDataset}
-          convertPending={convertPending}
-          onRunStats={runStats}
-          statsPending={statsPending}
-          onPromoteArtifact={promoteArtifact}
-          promotePendingIds={promotePendingIds}
-          onClientExport={clientExport}
-          clientExportPending={clientExportPending}
-          filterPending={filterPending}
-          serverFilterAvailable={serverCapabilities?.paraview_worker ?? false}
-          onRunFilter={runServerFilter}
-          onJobCreated={onAssistJobCreated}
-          tableCoordinates={display.tableCoordinates}
-          onTableCoordinates={display.setTableCoordinates}
-          imageMode={display.imageMode}
-          onImageMode={display.setImageMode}
-          sliceAxis={display.sliceAxis}
-          onSliceAxis={onSliceAxis}
-          sliceIndex={clampedSliceIndex}
-          onSliceIndex={display.setSliceIndex}
-          sliceMin={sliceMin}
-          sliceMax={sliceMax}
-          volumeOpacityPoints={display.volumeOpacityPoints}
-          onVolumeOpacityPoints={display.setVolumeOpacityPoints}
-          timestepIndex={display.timestepIndex}
-          onTimestepIndex={onTimestepIndex}
-          playing={display.playing}
-          onTogglePlayback={() => display.setPlaying((value) => !value)}
-          onDownloadTimestep={downloadTimestep}
-          remoteAvailable={remoteAvailable}
-          remoteSession={remoteSession}
-          remotePending={remotePending}
-          onStartRemote={startRemote}
-          onStopRemote={stopRemote}
           onError={pushError}
         />
       </div>

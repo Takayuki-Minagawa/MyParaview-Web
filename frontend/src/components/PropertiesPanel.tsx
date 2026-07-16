@@ -1,14 +1,6 @@
-import type {
-  ColorMapName,
-  Dataset,
-  Representation,
-  ScalarSelection,
-  Artifact,
-  ImageMode,
-  SliceAxis,
-  TableCoordinates,
-} from "../types";
-import type { VolumeOpacityPoint, RenderSession, Job } from "../types";
+import { memo } from "react";
+import type { Artifact, Dataset, Job, RenderSession, SliceAxis } from "../types";
+import type { DisplayState } from "../hooks/useDisplayState";
 import { useMessages } from "../i18n-context";
 import { MetadataTable } from "./properties/MetadataTable";
 import { DisplaySection } from "./properties/DisplaySection";
@@ -21,26 +13,22 @@ import { AssistantSection } from "./properties/AssistantSection";
 import { RemoteSessionSection } from "./properties/RemoteSessionSection";
 import { ArtifactsSection } from "./properties/ArtifactsSection";
 
-interface Props {
-  dataset: Dataset | null;
-  representation: Representation;
-  onRepresentation: (r: Representation) => void;
-  colorBy: ScalarSelection | null;
-  onColorBy: (selection: ScalarSelection | null) => void;
+/** Derived view values and camera commands the raw display state does not
+ * carry (clamped slice index, slice bounds, wrapped handlers). */
+export interface ViewControls {
   dataColorRange: [number, number] | null;
-  customColorRange: [number, number] | null;
-  onCustomColorRange: (range: [number, number] | null) => void;
-  opacity: number;
-  onOpacity: (opacity: number) => void;
-  colorMap: ColorMapName;
-  onColorMap: (name: ColorMapName) => void;
-  legendVisible: boolean;
-  onLegendVisible: (visible: boolean) => void;
+  /** Clamped to the current dataset's extent. */
+  sliceIndex: number;
+  sliceMin: number;
+  sliceMax: number;
+  onSliceAxis: (axis: SliceAxis) => void;
+  onTimestepIndex: (index: number) => void;
   onScreenshot: () => void;
   onResetCamera: () => void;
-  axesVisible: boolean;
-  onAxesVisible: (visible: boolean) => void;
-  artifacts: Artifact[];
+}
+
+/** Job-producing actions plus their pending flags (from useDatasetJobs). */
+export interface DatasetJobControls {
   onExport: () => void;
   exportPending: boolean;
   onConvert: () => void;
@@ -55,87 +43,34 @@ interface Props {
   serverFilterAvailable: boolean;
   onRunFilter: (params: Record<string, unknown>) => void;
   onJobCreated: (job: Job) => void;
-  tableCoordinates: TableCoordinates | null;
-  onTableCoordinates: (coordinates: TableCoordinates) => void;
-  imageMode: ImageMode;
-  onImageMode: (mode: ImageMode) => void;
-  sliceAxis: SliceAxis;
-  onSliceAxis: (axis: SliceAxis) => void;
-  sliceIndex: number;
-  onSliceIndex: (index: number) => void;
-  sliceMin: number;
-  sliceMax: number;
-  volumeOpacityPoints: VolumeOpacityPoint[];
-  onVolumeOpacityPoints: (points: VolumeOpacityPoint[]) => void;
-  timestepIndex: number;
-  onTimestepIndex: (index: number) => void;
-  playing: boolean;
-  onTogglePlayback: () => void;
   onDownloadTimestep: (index: number) => void;
-  remoteAvailable: boolean;
-  remoteSession: RenderSession | null;
-  remotePending: boolean;
-  onStartRemote: () => void;
-  onStopRemote: () => void;
+}
+
+export interface RemoteControls {
+  available: boolean;
+  session: RenderSession | null;
+  pending: boolean;
+  onStart: () => void;
+  onStop: () => void;
+}
+
+interface Props {
+  dataset: Dataset | null;
+  display: DisplayState;
+  view: ViewControls;
+  jobs: DatasetJobControls;
+  remote: RemoteControls;
+  artifacts: Artifact[];
   onError: (message: string) => void;
 }
 
-export function PropertiesPanel({
+export const PropertiesPanel = memo(function PropertiesPanel({
   dataset,
-  representation,
-  onRepresentation,
-  colorBy,
-  onColorBy,
-  dataColorRange,
-  customColorRange,
-  onCustomColorRange,
-  opacity,
-  onOpacity,
-  colorMap,
-  onColorMap,
-  legendVisible,
-  onLegendVisible,
-  onScreenshot,
-  onResetCamera,
-  axesVisible,
-  onAxesVisible,
+  display,
+  view,
+  jobs,
+  remote,
   artifacts,
-  onExport,
-  exportPending,
-  onConvert,
-  convertPending,
-  onRunStats,
-  statsPending,
-  onPromoteArtifact,
-  promotePendingIds,
-  onClientExport,
-  clientExportPending,
-  filterPending,
-  serverFilterAvailable,
-  onRunFilter,
-  onJobCreated,
-  tableCoordinates,
-  onTableCoordinates,
-  imageMode,
-  onImageMode,
-  sliceAxis,
-  onSliceAxis,
-  sliceIndex,
-  onSliceIndex,
-  sliceMin,
-  sliceMax,
-  volumeOpacityPoints,
-  onVolumeOpacityPoints,
-  timestepIndex,
-  onTimestepIndex,
-  playing,
-  onTogglePlayback,
-  onDownloadTimestep,
-  remoteAvailable,
-  remoteSession,
-  remotePending,
-  onStartRemote,
-  onStopRemote,
   onError,
 }: Props) {
   const messages = useMessages();
@@ -163,108 +98,108 @@ export function PropertiesPanel({
 
       <DisplaySection
         isImageData={isImageData}
-        representation={representation}
-        onRepresentation={onRepresentation}
-        opacity={opacity}
-        onOpacity={onOpacity}
-        axesVisible={axesVisible}
-        onAxesVisible={onAxesVisible}
-        onScreenshot={onScreenshot}
-        onResetCamera={onResetCamera}
+        representation={display.representation}
+        onRepresentation={display.setRepresentation}
+        opacity={display.opacity}
+        onOpacity={display.setOpacity}
+        axesVisible={display.axesVisible}
+        onAxesVisible={display.setAxesVisible}
+        onScreenshot={view.onScreenshot}
+        onResetCamera={view.onResetCamera}
       />
 
       {dataset.dataset_type === "Collection" && (
         <TimeSection
           dataset={dataset}
-          timestepIndex={timestepIndex}
-          onTimestepIndex={onTimestepIndex}
-          playing={playing}
-          onTogglePlayback={onTogglePlayback}
-          onDownloadTimestep={onDownloadTimestep}
+          timestepIndex={display.timestepIndex}
+          onTimestepIndex={view.onTimestepIndex}
+          playing={display.playing}
+          onTogglePlayback={() => display.setPlaying((value) => !value)}
+          onDownloadTimestep={jobs.onDownloadTimestep}
         />
       )}
 
-      {dataset.dataset_type === "Table" && tableCoordinates && (
+      {dataset.dataset_type === "Table" && display.tableCoordinates && (
         <TableCoordinatesSection
           dataset={dataset}
-          tableCoordinates={tableCoordinates}
-          onTableCoordinates={onTableCoordinates}
+          tableCoordinates={display.tableCoordinates}
+          onTableCoordinates={display.setTableCoordinates}
         />
       )}
 
       {isImageData && (
         <ImageSection
-          imageMode={imageMode}
-          onImageMode={onImageMode}
-          sliceAxis={sliceAxis}
-          onSliceAxis={onSliceAxis}
-          sliceIndex={sliceIndex}
-          onSliceIndex={onSliceIndex}
-          sliceMin={sliceMin}
-          sliceMax={sliceMax}
-          volumeOpacityPoints={volumeOpacityPoints}
-          onVolumeOpacityPoints={onVolumeOpacityPoints}
+          imageMode={display.imageMode}
+          onImageMode={display.setImageMode}
+          sliceAxis={display.sliceAxis}
+          onSliceAxis={view.onSliceAxis}
+          sliceIndex={view.sliceIndex}
+          onSliceIndex={display.setSliceIndex}
+          sliceMin={view.sliceMin}
+          sliceMax={view.sliceMax}
+          volumeOpacityPoints={display.volumeOpacityPoints}
+          onVolumeOpacityPoints={display.setVolumeOpacityPoints}
         />
       )}
 
       <ScalarColorSection
         dataset={dataset}
         isImageData={isImageData}
-        colorBy={colorBy}
-        onColorBy={onColorBy}
-        dataColorRange={dataColorRange}
-        customColorRange={customColorRange}
-        onCustomColorRange={onCustomColorRange}
-        colorMap={colorMap}
-        onColorMap={onColorMap}
-        legendVisible={legendVisible}
-        onLegendVisible={onLegendVisible}
+        colorBy={display.colorBy}
+        onColorBy={display.setColorBy}
+        dataColorRange={view.dataColorRange}
+        customColorRange={display.customColorRange}
+        onCustomColorRange={display.setCustomColorRange}
+        colorMap={display.colorMap}
+        onColorMap={display.setColorMap}
+        legendVisible={display.legendVisible}
+        onLegendVisible={display.setLegendVisible}
       />
 
       <ServerFilterSection
         dataset={dataset}
-        sliceAxis={sliceAxis}
-        filterPending={filterPending}
-        serverFilterAvailable={serverFilterAvailable}
-        onRunFilter={onRunFilter}
+        sliceAxis={display.sliceAxis}
+        filterPending={jobs.filterPending}
+        serverFilterAvailable={jobs.serverFilterAvailable}
+        onRunFilter={jobs.onRunFilter}
       />
 
       <AssistantSection
         dataset={dataset}
-        serverFilterAvailable={serverFilterAvailable}
-        filterPending={filterPending}
-        onColorBy={onColorBy}
-        onColorMap={onColorMap}
-        onJobCreated={onJobCreated}
+        serverFilterAvailable={jobs.serverFilterAvailable}
+        filterPending={jobs.filterPending}
+        onColorBy={display.setColorBy}
+        onColorMap={display.setColorMap}
+        onJobCreated={jobs.onJobCreated}
         onError={onError}
       />
 
       <RemoteSessionSection
         dataset={dataset}
-        remoteAvailable={remoteAvailable}
-        remoteSession={remoteSession}
-        remotePending={remotePending}
-        onStartRemote={onStartRemote}
-        onStopRemote={onStopRemote}
+        remoteAvailable={remote.available}
+        remoteSession={remote.session}
+        remotePending={remote.pending}
+        onStartRemote={remote.onStart}
+        onStopRemote={remote.onStop}
       />
 
       <ArtifactsSection
         dataset={dataset}
         isClientExportable={isClientExportable}
         artifacts={artifacts}
-        onExport={onExport}
-        exportPending={exportPending}
-        onConvert={onConvert}
-        convertPending={convertPending}
-        serverFilterAvailable={serverFilterAvailable}
-        onRunStats={onRunStats}
-        statsPending={statsPending}
-        onClientExport={onClientExport}
-        clientExportPending={clientExportPending}
-        onPromoteArtifact={onPromoteArtifact}
-        promotePendingIds={promotePendingIds}
+        onExport={jobs.onExport}
+        exportPending={jobs.exportPending}
+        onConvert={jobs.onConvert}
+        convertPending={jobs.convertPending}
+        serverFilterAvailable={jobs.serverFilterAvailable}
+        onRunStats={jobs.onRunStats}
+        statsPending={jobs.statsPending}
+        onClientExport={jobs.onClientExport}
+        clientExportPending={jobs.clientExportPending}
+        onPromoteArtifact={jobs.onPromoteArtifact}
+        promotePendingIds={jobs.promotePendingIds}
         onError={onError}
       />
     </aside>
   );
-}
+});

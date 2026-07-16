@@ -668,7 +668,14 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
         }`}
       >
         {manualOpen && (
-          <div className="manual-backdrop" role="presentation" onClick={() => setManualOpen(false)}>
+          <div
+            className="manual-backdrop"
+            role="presentation"
+            onClick={() => setManualOpen(false)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setManualOpen(false);
+            }}
+          >
             <section
               className="manual-dialog"
               role="dialog"
@@ -678,7 +685,8 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
             >
               <div className="manual-header">
                 <h2 id="manual-title">{t.manual.title}</h2>
-                <button onClick={() => setManualOpen(false)}>{t.common.close}</button>
+                {/* autoFocus moves focus into the dialog so Escape works immediately */}
+                <button autoFocus onClick={() => setManualOpen(false)}>{t.common.close}</button>
               </div>
               <p>{t.manual.intro}</p>
               <ol>

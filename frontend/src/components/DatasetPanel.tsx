@@ -235,7 +235,16 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
           <li
             key={d.id}
             className={d.id === props.selectedDatasetId ? "selected" : ""}
+            role="button"
+            tabIndex={0}
+            aria-pressed={d.id === props.selectedDatasetId}
             onClick={() => props.onSelectDataset(d.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                props.onSelectDataset(d.id);
+              }
+            }}
           >
             <span className="ds-name">{d.filename}</span>
             <span className={`badge badge-${d.status}`}>{t.datasetStatus[d.status]}</span>

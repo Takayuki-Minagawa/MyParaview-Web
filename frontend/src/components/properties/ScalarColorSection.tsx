@@ -58,7 +58,7 @@ function RangeEditor({
         onBlur={commit}
         onKeyDown={(e) => e.key === "Enter" && commit()}
       />
-      <span>〜</span>
+      <span>{messages.properties.rangeSeparator}</span>
       <input
         type="number"
         aria-label={messages.properties.rangeMaximum}

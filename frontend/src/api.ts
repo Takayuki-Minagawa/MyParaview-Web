@@ -39,11 +39,26 @@ export function authorizedFetch(input: RequestInfo | URL, init?: RequestInit) {
   return fetch(input, { ...init, headers });
 }
 
+/** API failure with the HTTP status and raw body preserved, so callers can
+ * branch (401 -> re-login, 413 -> friendly size message) instead of string
+ * matching. The message keeps the historical banner format. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: string;
+
+  constructor(status: number, statusText: string, body: string) {
+    super(`${status} ${statusText}: ${body}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await authorizedFetch(`${API_BASE}${path}`, init);
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
+    throw new ApiError(resp.status, resp.statusText, text);
   }
   if (resp.status === 204) return undefined as T;
   return (await resp.json()) as T;

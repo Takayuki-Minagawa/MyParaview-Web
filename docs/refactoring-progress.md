@@ -41,14 +41,14 @@
 
 ## Phase R3: 中優先リファクタ
 
-- [ ] R3-1 (RB-5): responses.serve_object 共通化
-- [ ] R3-2 (RB-6): broker.py 新設、remote削除ヘルパー2本化
-- [ ] R3-3 (RB-7): validation.py 新設（sniff系移動）
-- [ ] R3-4 (RF-4/5): VtkViewer シーンビルダー分割 + Scene型付け
-- [ ] R3-5 (RF-6): JobKind/colormap/representation 単一情報源化
-- [ ] R3-6 (RF-7): nonce廃止 → useImperativeHandle
-- [ ] R3-7 (RB-8): backend小型修正一式（audit CSV分離、last-adminガード抽出、owning_project_id一元化、型注釈、_plan_output、_write_params）
-- [ ] R3-8 (RF-8): frontend小型修正一式（ApiError構造化、a11y、i18n `〜`）
+- [x] R3-1 (RB-5): responses.serve_object 共通化
+- [x] R3-2 (RB-6): broker.py 新設、remote削除ヘルパー2本化
+- [x] R3-3 (RB-7): validation.py 新設（sniff系移動）
+- [x] R3-4 (RF-4/5): VtkViewer シーンビルダー分割 + Scene型付け
+- [x] R3-5 (RF-6): JobKind/colormap/representation 単一情報源化
+- [x] R3-6 (RF-7): nonce廃止 → useImperativeHandle
+- [x] R3-7 (RB-8): backend小型修正一式（audit CSV分離、last-adminガード抽出、owning_project_id一元化、型注釈、_plan_output、_write_params）
+- [x] R3-8 (RF-8): frontend小型修正一式（ApiError構造化、a11y、i18n `〜`）
 
 ## Phase R4: 機能追加
 

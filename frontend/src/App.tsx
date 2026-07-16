@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type {
   Dataset,
@@ -10,6 +10,7 @@ import type {
 import { DatasetPanel } from "./components/DatasetPanel";
 import { PropertiesPanel } from "./components/PropertiesPanel";
 import { VtkViewer } from "./components/VtkViewer";
+import type { VtkViewerHandle } from "./components/VtkViewer";
 import { RemoteViewer } from "./components/RemoteViewer";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { clampSliceIndex } from "./lib/viewState";
@@ -73,9 +74,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
-  const [screenshotNonce, setScreenshotNonce] = useState(0);
-  const [exportNonce, setExportNonce] = useState(0);
-  const [resetNonce, setResetNonce] = useState(0);
+  const viewerRef = useRef<VtkViewerHandle | null>(null);
   const [authState, setAuthState] = useState({
     ready: false,
     configured: false,
@@ -358,9 +357,10 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   const clientExport = useCallback(() => {
     if (clientExportPending) return;
     setClientExportPending(true);
-    setExportNonce((n) => n + 1);
-    // If the viewer cannot export (no geometry scene), release the pending flag.
-    window.setTimeout(() => setClientExportPending(false), 10000);
+    // The handle reports synchronously whether an exportable geometry scene
+    // exists, so no timeout race is needed to release the pending flag.
+    const started = viewerRef.current?.exportGeometry() ?? false;
+    if (!started) setClientExportPending(false);
   }, [clientExportPending]);
 
   const putMember = useCallback((userId: string, role: ProjectRole) => {
@@ -528,8 +528,8 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   );
 
   const onLoadComplete = useCallback(() => setViewerLoadedUrl(viewerUrl), [viewerUrl]);
-  const onScreenshot = useCallback(() => setScreenshotNonce((n) => n + 1), []);
-  const onResetCamera = useCallback(() => setResetNonce((n) => n + 1), []);
+  const onScreenshot = useCallback(() => viewerRef.current?.screenshot(), []);
+  const onResetCamera = useCallback(() => viewerRef.current?.resetCamera(), []);
 
   // ---- grouped props for the memoized PropertiesPanel
   const viewControls = useMemo(() => ({
@@ -734,6 +734,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
               <RemoteViewer session={remoteSession} onError={pushError} />
             ) : (
               <VtkViewer
+                ref={viewerRef}
                 datasetId={selectedDataset?.id ?? null}
                 url={viewerUrl}
                 datasetType={viewerDatasetType}
@@ -756,9 +757,6 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
                 onGeometryExported={onGeometryExported}
                 onColorRangeResolved={onColorRangeResolved}
                 onLoadComplete={onLoadComplete}
-                screenshotNonce={screenshotNonce}
-                exportNonce={exportNonce}
-                resetNonce={resetNonce}
                 viewerBackground={viewerBackground}
               />
             )}

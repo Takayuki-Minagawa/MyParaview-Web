@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -10,23 +11,24 @@ from typing import Optional
 from defusedxml import ElementTree as SafeET
 from defusedxml.common import DefusedXmlException
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ..auth import Principal, get_principal, require_project_role
+from ..access import authorized_dataset, require_project, tag_audit
+from ..auth import Principal, get_principal
 from ..bundles import bundle_reference_path as _bundle_reference_path
 from ..bundles import safe_relative_path as _safe_relative_path
 from ..config import settings
 from ..db import get_db
 from ..jobs import manager
-from ..models import Dataset, DatasetFile, Job, Project
+from ..models import Dataset, DatasetFile, Job
 from ..project_locks import locked_project
-from ..responses import LeasedFileResponse
+from ..responses import serve_object
 from ..schemas import CollectionStepOut, DatasetOut, JobOut
 from ..services import run_ingest
 from ..storage import store
+from ..validation import sniff_upload as _sniff_upload
 
 router = APIRouter(tags=["datasets"])
 
@@ -114,27 +116,6 @@ def _pvd_references(path: str) -> list[str]:
     return references
 
 
-def _sniff_ok(ext: str, head: bytes) -> bool:
-    """Lightweight magic/header check (work_plan 8.3): don't trust the extension."""
-    if ext in {".vtp", ".vti", ".vtu", ".vts", ".vtr", ".pvd"}:
-        prefix = head.lstrip()[:200].lower()
-        return prefix.startswith(b"<?xml") or b"<vtkfile" in prefix or b"<collection" in prefix
-    if ext == ".csv":
-        # A UTF-8 multibyte char can straddle the 4 KB read boundary, so a strict
-        # decode would false-reject valid (e.g. Japanese) CSVs. Treat as text
-        # unless it contains a NUL byte (a reliable binary marker).
-        return b"\x00" not in head
-    if ext in {".xdmf", ".xmf"}:
-        prefix = head.lstrip()[:300].lower()
-        return prefix.startswith(b"<?xml") or b"<xdmf" in prefix
-    if ext in {".cgns", ".exo", ".e"}:
-        return head.startswith(b"\x89HDF\r\n\x1a\n") or head.startswith((b"CDF\x01", b"CDF\x02"))
-    if ext == ".case":
-        upper = head.upper()
-        return b"\x00" not in head and b"FORMAT" in upper and b"GEOMETRY" in upper
-    return False
-
-
 def _normalize_bundle_uploads(
     files: list[UploadFile], allowed_extensions: set[str]
 ) -> list[tuple[str, UploadFile, str]]:
@@ -154,13 +135,6 @@ def _normalize_bundle_uploads(
             raise HTTPException(415, f"unsupported extension {ext!r}")
         normalized.append((relative_path, upload, ext))
     return normalized
-
-
-async def _sniff_upload(upload: UploadFile, ext: str, label: str) -> None:
-    head = await upload.read(4096)
-    if not _sniff_ok(ext, head):
-        raise HTTPException(400, f"file content does not match a {ext} file: {label}")
-    await upload.seek(0)
 
 
 async def _persist_bundle_uploads(
@@ -203,6 +177,79 @@ def _cleanup_persisted(db: Session, persisted: list[tuple[str, str, int]]) -> No
         store.delete(key)
 
 
+async def _register_bundle_dataset(
+    *,
+    db: Session,
+    request: Request,
+    principal: Principal,
+    project_id: str,
+    files: list[UploadFile],
+    allowed_extensions: set[str],
+    primary_exts: set[str],
+    primary_error: str,
+    sniff_members: bool,
+    presniff_primary: bool,
+    validate_primary: Callable[[str, str, str, set[str]], None],
+) -> Dataset:
+    """Shared body of the two multi-file bundle upload endpoints.
+
+    Owns authorization, member normalization, primary selection, streaming
+    persistence with cleanup-on-failure, dataset/DatasetFile registration, and
+    audit tagging. ``validate_primary(local_path, primary_path, primary_ext,
+    manifest)`` runs against the persisted descriptor and raises HTTPException
+    on invalid references.
+    """
+    require_project(db, project_id, principal, "editor")
+    if not files:
+        raise HTTPException(400, "at least one file is required")
+
+    normalized = _normalize_bundle_uploads(files, allowed_extensions)
+
+    primaries = [item for item in normalized if item[2] in primary_exts]
+    if len(primaries) != 1:
+        raise HTTPException(400, primary_error)
+    primary_path, primary_upload, primary_ext = primaries[0]
+    if presniff_primary:
+        await _sniff_upload(primary_upload, primary_ext, primary_path)
+
+    persisted: list[tuple[str, str, int]] = []
+    try:
+        total_size = await _persist_bundle_uploads(
+            normalized, persisted, sniff_members=sniff_members
+        )
+
+        by_path = {relative_path: key for relative_path, key, _ in persisted}
+        primary_key = by_path[primary_path]
+        with store.local_path(primary_key) as local_primary:
+            validate_primary(str(local_primary), primary_path, primary_ext, set(by_path))
+
+        with locked_project(db, project_id, principal, "editor"):
+            dataset = Dataset(
+                project_id=project_id,
+                filename=PurePosixPath(primary_path).name,
+                ext=primary_ext,
+                size_bytes=total_size,
+                object_key=primary_key,
+                status="registered",
+            )
+            db.add(dataset)
+            db.flush()
+            for relative_path, key, size in persisted:
+                db.add(DatasetFile(
+                    dataset_id=dataset.id,
+                    relative_path=relative_path,
+                    object_key=key,
+                    size_bytes=size,
+                    is_primary=relative_path == primary_path,
+                ))
+            db.flush()
+        tag_audit(request, "dataset", dataset.id, project_id)
+        return dataset
+    except Exception:
+        _cleanup_persisted(db, persisted)
+        raise
+
+
 @router.post("/projects/{project_id}/datasets", response_model=DatasetOut, status_code=201)
 async def upload_dataset(
     project_id: str,
@@ -211,9 +258,7 @@ async def upload_dataset(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal, "editor")
+    require_project(db, project_id, principal, "editor")
 
     filename = os.path.basename(file.filename or "upload")
     ext = os.path.splitext(filename)[1].lower()
@@ -243,9 +288,7 @@ async def upload_dataset(
         db.rollback()
         store.delete(key)
         raise
-    request.state.audit_project_id = project_id
-    request.state.audit_resource_type = "dataset"
-    request.state.audit_resource_id = ds.id
+    tag_audit(request, "dataset", ds.id, project_id)
     return ds
 
 
@@ -262,34 +305,16 @@ async def upload_dataset_bundle(
     principal: Principal = Depends(get_principal),
 ):
     """Register a PVD and every relative file it references as one dataset."""
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal, "editor")
-    if not files:
-        raise HTTPException(400, "at least one file is required")
 
-    normalized = _normalize_bundle_uploads(files, settings.allowed_extensions)
-
-    pvd_members = [item for item in normalized if item[2] == ".pvd"]
-    if len(pvd_members) != 1:
-        raise HTTPException(400, "a dataset bundle requires exactly one .pvd file")
-    primary_path = pvd_members[0][0]
-
-    persisted: list[tuple[str, str, int]] = []
-    try:
-        total_size = await _persist_bundle_uploads(normalized, persisted, sniff_members=True)
-
-        by_path = {relative_path: key for relative_path, key, _ in persisted}
-        primary_key = by_path[primary_path]
+    def validate_pvd(local_primary: str, primary_path: str, _ext: str, manifest: set[str]) -> None:
         try:
-            with store.local_path(primary_key) as local_primary:
-                references = _pvd_references(str(local_primary))
+            references = _pvd_references(local_primary)
             resolved_references = [
                 _bundle_reference_path(primary_path, reference) for reference in references
             ]
         except (ET.ParseError, DefusedXmlException, ValueError) as exc:
             raise HTTPException(422, f"invalid PVD collection: {exc}") from exc
-        missing = sorted({path for path in resolved_references if path not in by_path})
+        missing = sorted({path for path in resolved_references if path not in manifest})
         if missing:
             raise HTTPException(422, f"PVD referenced files are missing: {', '.join(missing)}")
         referenced_extensions = {PurePosixPath(path).suffix.lower() for path in resolved_references}
@@ -298,33 +323,19 @@ async def upload_dataset_bundle(
         if len(referenced_extensions) != 1:
             raise HTTPException(422, "PVD members must use one consistent browser-renderable format")
 
-        with locked_project(db, project_id, principal, "editor"):
-            dataset = Dataset(
-                project_id=project_id,
-                filename=PurePosixPath(primary_path).name,
-                ext=".pvd",
-                size_bytes=total_size,
-                object_key=primary_key,
-                status="registered",
-            )
-            db.add(dataset)
-            db.flush()
-            for relative_path, key, size in persisted:
-                db.add(DatasetFile(
-                    dataset_id=dataset.id,
-                    relative_path=relative_path,
-                    object_key=key,
-                    size_bytes=size,
-                    is_primary=relative_path == primary_path,
-                ))
-            db.flush()
-        request.state.audit_project_id = project_id
-        request.state.audit_resource_type = "dataset"
-        request.state.audit_resource_id = dataset.id
-        return dataset
-    except Exception:
-        _cleanup_persisted(db, persisted)
-        raise
+    return await _register_bundle_dataset(
+        db=db,
+        request=request,
+        principal=principal,
+        project_id=project_id,
+        files=files,
+        allowed_extensions=settings.allowed_extensions,
+        primary_exts={".pvd"},
+        primary_error="a dataset bundle requires exactly one .pvd file",
+        sniff_members=True,
+        presniff_primary=False,
+        validate_primary=validate_pvd,
+    )
 
 
 @router.post(
@@ -340,68 +351,28 @@ async def upload_external_dataset_bundle(
     principal: Principal = Depends(get_principal),
 ):
     """Upload an EnSight or XDMF descriptor together with its sidecar files."""
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal, "editor")
-    if not files:
-        raise HTTPException(400, "at least one file is required")
 
-    normalized = _normalize_bundle_uploads(files, settings.external_bundle_extensions)
-
-    primaries = [item for item in normalized if item[2] in {".case", ".xdmf", ".xmf"}]
-    if len(primaries) != 1:
-        raise HTTPException(400, "external bundle requires exactly one .case, .xdmf, or .xmf descriptor")
-    primary_path, primary_upload, primary_ext = primaries[0]
-
-    head = await primary_upload.read(4096)
-    if not _sniff_ok(primary_ext, head):
-        raise HTTPException(400, f"descriptor content does not match {primary_ext}")
-    await primary_upload.seek(0)
-
-    persisted: list[tuple[str, str, int]] = []
-    try:
-        total_size = await _persist_bundle_uploads(normalized, persisted, sniff_members=False)
-
-        primary_key = next(key for path, key, _ in persisted if path == primary_path)
+    def validate_external(
+        local_primary: str, primary_path: str, primary_ext: str, manifest: set[str]
+    ) -> None:
         try:
-            with store.local_path(primary_key) as local_primary:
-                _validate_external_descriptor(
-                    str(local_primary),
-                    primary_path,
-                    primary_ext,
-                    {path for path, _, _ in persisted},
-                )
+            _validate_external_descriptor(local_primary, primary_path, primary_ext, manifest)
         except (ET.ParseError, DefusedXmlException, UnicodeDecodeError, ValueError) as exc:
             raise HTTPException(422, f"invalid external descriptor: {exc}") from exc
-        with locked_project(db, project_id, principal, "editor"):
-            dataset = Dataset(
-                project_id=project_id,
-                filename=PurePosixPath(primary_path).name,
-                ext=primary_ext,
-                size_bytes=total_size,
-                object_key=primary_key,
-                status="registered",
-            )
-            db.add(dataset)
-            db.flush()
-            for relative_path, key, size in persisted:
-                db.add(
-                    DatasetFile(
-                        dataset_id=dataset.id,
-                        relative_path=relative_path,
-                        object_key=key,
-                        size_bytes=size,
-                        is_primary=relative_path == primary_path,
-                    )
-                )
-            db.flush()
-        request.state.audit_project_id = project_id
-        request.state.audit_resource_type = "dataset"
-        request.state.audit_resource_id = dataset.id
-        return dataset
-    except Exception:
-        _cleanup_persisted(db, persisted)
-        raise
+
+    return await _register_bundle_dataset(
+        db=db,
+        request=request,
+        principal=principal,
+        project_id=project_id,
+        files=files,
+        allowed_extensions=settings.external_bundle_extensions,
+        primary_exts={".case", ".xdmf", ".xmf"},
+        primary_error="external bundle requires exactly one .case, .xdmf, or .xmf descriptor",
+        sniff_members=False,
+        presniff_primary=True,
+        validate_primary=validate_external,
+    )
 
 
 @router.get("/projects/{project_id}/datasets", response_model=list[DatasetOut])
@@ -415,9 +386,7 @@ def list_datasets(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal)
+    require_project(db, project_id, principal)
     stmt = (
         select(Dataset)
         .where(Dataset.project_id == project_id)
@@ -436,11 +405,7 @@ def get_dataset(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    ds = db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, ds.project_id, principal)
-    return ds
+    return authorized_dataset(db, dataset_id, principal)
 
 
 @router.get("/datasets/{dataset_id}/metadata", response_model=DatasetOut)
@@ -470,10 +435,7 @@ def list_collection_timesteps(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    dataset = db.get(Dataset, dataset_id)
-    if dataset is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, dataset.project_id, principal)
+    dataset = authorized_dataset(db, dataset_id, principal)
     entries = _collection_entries(dataset)
     times = _collection_times(dataset, entries)
     return [
@@ -495,10 +457,7 @@ def download_collection_timestep(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    dataset = db.get(Dataset, dataset_id)
-    if dataset is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, dataset.project_id, principal)
+    dataset = authorized_dataset(db, dataset_id, principal)
     entries = _collection_entries(dataset)
     times = _collection_times(dataset, entries)
     if step_index < 0 or step_index >= len(times):
@@ -530,16 +489,7 @@ def download_collection_timestep(
     )
     if member is None or not store.exists(member.object_key):
         raise HTTPException(410, "timestep object is unavailable")
-    path = store.acquire_path(member.object_key)
-    if not path.is_file():
-        store.release_path(member.object_key)
-        raise HTTPException(410, "timestep object is unavailable")
-    return LeasedFileResponse(
-        str(path),
-        store=store,
-        object_key=member.object_key,
-        filename=PurePosixPath(relative_path).name,
-    )
+    return serve_object(store, member.object_key, filename=PurePosixPath(relative_path).name)
 
 
 @router.post("/datasets/{dataset_id}/ingest", response_model=JobOut, status_code=202)
@@ -548,9 +498,7 @@ def ingest_dataset(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    ds = db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(404, "dataset not found")
+    ds = authorized_dataset(db, dataset_id, principal, "editor")
     project_id = ds.project_id
     with locked_project(db, project_id, principal, "editor"):
         ds = db.get(Dataset, dataset_id)
@@ -580,22 +528,5 @@ def download_dataset(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    ds = db.get(Dataset, dataset_id)
-    if ds is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, ds.project_id, principal)
-    presigned = store.presigned_url(ds.object_key, filename=ds.filename)
-    # Presigning does not verify the object exists; a redirect to a missing
-    # object would surface S3's raw 404 instead of the API's clean 410 below.
-    if presigned and store.exists(ds.object_key):
-        return RedirectResponse(presigned, status_code=307)
-    path = store.acquire_path(ds.object_key)
-    if not path.is_file():
-        store.release_path(ds.object_key)
-        raise HTTPException(410, "object no longer available")
-    return LeasedFileResponse(
-        str(path),
-        store=store,
-        object_key=ds.object_key,
-        filename=ds.filename,
-    )
+    ds = authorized_dataset(db, dataset_id, principal)
+    return serve_object(store, ds.object_key, filename=ds.filename)

@@ -11,45 +11,16 @@ import websockets
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
+from ..access import require_project, tag_audit
 from ..auth import Principal, get_principal, require_project_role
+from ..broker import broker_headers, delete_remote, try_delete_remote
 from ..config import settings
 from ..db import SessionLocal, get_db
-from ..models import Dataset, Project, RenderSession
+from ..models import Dataset, RenderSession
 from ..project_locks import locked_project
 from ..schemas import RenderSessionCreate, RenderSessionCreated, RenderSessionOut
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
-
-
-def _broker_headers() -> dict[str, str]:
-    return (
-        {"Authorization": f"Bearer {settings.trame_broker_token}"}
-        if settings.trame_broker_token
-        else {}
-    )
-
-
-def _delete_remote_id(remote_session_id: str) -> None:
-    if not settings.trame_broker_url:
-        return
-    response = httpx.delete(
-        f"{settings.trame_broker_url.rstrip('/')}/sessions/{remote_session_id}",
-        headers=_broker_headers(),
-        timeout=10,
-    )
-    if response.status_code >= 400 and response.status_code != 404:
-        response.raise_for_status()
-
-
-def _delete_remote_session(render_session: RenderSession) -> None:
-    _delete_remote_id(render_session.remote_session_id)
-
-
-def _best_effort_delete_remote(remote_session_id: str) -> None:
-    try:
-        _delete_remote_id(remote_session_id)
-    except httpx.HTTPError:
-        pass
 
 
 def _is_expired(render_session: RenderSession) -> bool:
@@ -102,9 +73,7 @@ def create_session(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, payload.project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, payload.project_id, principal, "editor")
+    require_project(db, payload.project_id, principal, "editor")
     dataset = db.get(Dataset, payload.dataset_id)
     if dataset is None:
         raise HTTPException(404, "dataset not found")
@@ -116,7 +85,7 @@ def create_session(
     try:
         response = httpx.post(
             f"{settings.trame_broker_url.rstrip('/')}/sessions",
-            headers=_broker_headers(),
+            headers=broker_headers(),
             json={
                 "dataset_id": dataset.id,
                 "object_key": dataset.object_key,
@@ -133,7 +102,7 @@ def create_session(
     except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
         raise HTTPException(502, "trame session broker failed to create a session") from exc
     if _validated_remote_target(remote_ws_url) is None:
-        _best_effort_delete_remote(remote_id)
+        try_delete_remote(remote_id)
         raise HTTPException(502, "trame broker returned an invalid WebSocket URL")
 
     access_token = secrets.token_urlsafe(32)
@@ -156,11 +125,9 @@ def create_session(
             db.flush()
     except Exception:
         db.rollback()
-        _best_effort_delete_remote(remote_id)
+        try_delete_remote(remote_id)
         raise
-    request.state.audit_project_id = payload.project_id
-    request.state.audit_resource_type = "session"
-    request.state.audit_resource_id = render_session.id
+    tag_audit(request, "session", render_session.id, payload.project_id)
     return {
         **RenderSessionOut.model_validate(render_session).model_dump(),
         "websocket_path": f"/sessions/{render_session.id}/ws",
@@ -187,10 +154,7 @@ def get_session(
             render_session.status = "expired"
             db.add(render_session)
             db.flush()
-        try:
-            _delete_remote_session(render_session)
-        except httpx.HTTPError:
-            pass
+        try_delete_remote(render_session.remote_session_id)
     return render_session
 
 
@@ -205,11 +169,9 @@ def delete_session(
     if render_session is None:
         raise HTTPException(404, "render session not found")
     require_project_role(db, render_session.project_id, principal, "editor")
-    request.state.audit_project_id = render_session.project_id
-    request.state.audit_resource_type = "session"
-    request.state.audit_resource_id = render_session.id
+    tag_audit(request, "session", render_session.id, render_session.project_id)
     try:
-        _delete_remote_session(render_session)
+        delete_remote(render_session.remote_session_id)
     except httpx.HTTPError as exc:
         raise HTTPException(502, "trame broker failed to delete the remote session") from exc
     project_id = render_session.project_id
@@ -302,10 +264,9 @@ async def proxy_session_websocket(
             if expiry_task in done:
                 expired_session = await asyncio.to_thread(_mark_session_expired, session_id)
                 if expired_session is not None:
-                    try:
-                        await asyncio.to_thread(_delete_remote_session, expired_session)
-                    except httpx.HTTPError:
-                        pass
+                    await asyncio.to_thread(
+                        try_delete_remote, expired_session.remote_session_id
+                    )
                 await websocket.close(code=4401, reason="render session expired")
     except (WebSocketDisconnect, OSError, websockets.WebSocketException):
         await websocket.close(code=1011)

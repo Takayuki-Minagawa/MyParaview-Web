@@ -1,0 +1,38 @@
+# Lint configuration for the FastAPI backend, pv worker, and python client.
+# Kept intentionally close to default; rule additions should come with the
+# codebase actually satisfying them (no blanket ignores).
+line-length = 100
+target-version = "py39"
+
+[lint]
+select = [
+    "E4", "E7", "E9",  # pycodestyle errors
+    "F",               # pyflakes
+    "B",               # bugbear
+    "I",               # isort
+]
+# Deliberately not selected: "UP" (pyupgrade) — would touch ~150 annotation
+# sites mechanically; adopt separately if desired.
+
+[lint.isort]
+# Make first-party detection independent of the invocation directory: CI runs
+# ruff from the repo root, developers typically from backend/.
+known-first-party = ["app", "conftest"]
+# backend/alembic/ is a directory, but `import alembic` means the library.
+known-third-party = ["alembic"]
+
+[lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom puts calls in defaults by design.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Body",
+]
+
+[lint.per-file-ignores]
+# Alembic migrations are generated once and frozen; don't churn them.
+"alembic/versions/*.py" = ["I", "UP", "E501"]

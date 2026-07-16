@@ -22,7 +22,6 @@ from xml.sax.handler import ContentHandler
 
 from defusedxml import sax as SafeSAX
 
-
 _ASSOCIATIONS = {"PointData": "point", "CellData": "cell"}
 _WHITESPACE = re.compile(r"\s+")
 # A float token longer than this is malformed for practical VTK use. Bounding

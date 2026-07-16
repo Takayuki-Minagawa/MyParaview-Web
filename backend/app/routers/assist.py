@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import math
 import re
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..access import authorized_dataset, tag_audit
 from ..auth import Principal, get_principal, require_project_role
 from ..db import get_db
 from ..jobs import manager
@@ -177,13 +179,8 @@ def propose_operation(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    dataset = db.get(Dataset, payload.dataset_id)
-    if dataset is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, dataset.project_id, principal)
-    request.state.audit_project_id = dataset.project_id
-    request.state.audit_resource_type = "assistant_proposal"
-    request.state.audit_resource_id = dataset.id
+    dataset = authorized_dataset(db, payload.dataset_id, principal)
+    tag_audit(request, "assistant_proposal", dataset.id, dataset.project_id)
     proposal = _build_proposal(dataset, payload.prompt)
     record = AssistProposal(
         project_id=dataset.project_id,
@@ -208,10 +205,7 @@ def list_proposals(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    dataset = db.get(Dataset, dataset_id)
-    if dataset is None:
-        raise HTTPException(404, "dataset not found")
-    require_project_role(db, dataset.project_id, principal)
+    authorized_dataset(db, dataset_id, principal)
     stmt = (
         select(AssistProposal)
         .where(AssistProposal.dataset_id == dataset_id)
@@ -272,9 +266,7 @@ def apply_proposal(
         current.status = "applied"
         current.applied_job_id = job.id
         db.add(current)
-    request.state.audit_project_id = project_id
-    request.state.audit_resource_type = "job"
-    request.state.audit_resource_id = job.id
+    tag_audit(request, "job", job.id, project_id)
     manager.submit(job.id, run_dataset_operation(record.dataset_id, "filter", params))
     return job
 

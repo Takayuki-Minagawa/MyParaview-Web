@@ -2,6 +2,7 @@ import { memo } from "react";
 import type { Artifact, Dataset } from "../../types";
 import { api } from "../../api";
 import { humanFileSize } from "../../lib/format";
+import { triggerBlobDownload } from "../../lib/download";
 import { useMessages } from "../../i18n-context";
 
 const STATS_EXTENSIONS = new Set([".vtp", ".vti", ".vtu", ".vts", ".vtr", ".csv"]);
@@ -79,14 +80,7 @@ export const ArtifactsSection = memo(function ArtifactsSection({
               className="link-button"
               onClick={() => {
                 void api.downloadArtifact(artifact.id)
-                  .then((blob) => {
-                    const url = URL.createObjectURL(blob);
-                    const link = document.createElement("a");
-                    link.href = url;
-                    link.download = artifact.filename;
-                    link.click();
-                    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-                  })
+                  .then((blob) => triggerBlobDownload(blob, artifact.filename))
                   .catch((e) => onError(String(e)));
               }}
             >

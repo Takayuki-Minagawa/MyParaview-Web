@@ -17,12 +17,13 @@ trame session、PostgreSQL/S3連携はサーバーモードで提供する機能
 ## 主な機能
 
 - VTP: surface / wireframe / points、point/cell scalar、5種のcolormap（cool-to-warm / viridis / grayscale / plasma / turbo）、手動range、opacity、凡例
+- VTU: ブラウザ内で外表面を抽出して直接描画（ascii / inline binary / raw appended、zlib対応。未対応形式はサーバVTP変換へ誘導）、point/cell scalar着色、表面のclient export
 - VTI: X/Y/Z slice とvolume rendering（2〜4点の不透明度transfer function編集）
 - CSV: X/Y/Z列選択による点群化（ブラウザ上限250,000点、無効行スキップ数を表示）
 - PVD: 参照ファイル込みbundle upload、時系列slider/playback、step単位download、完全bundle ZIP export
 - 表示状態: Pipeline browser（保存・復元・リネーム・サーバ実行）、camera/representation/color/VTI/PVD状態の保存・復元、共有リンクコピー
 - UX: job center（フィルタ/ページングAPI、SSEストリーム）、cancel、進捗/ログ、panel折りたたみ、resize、orientation axesトグル、6方向標準view、背景色選択
-- Artifact: source/bundle export、VTP変換、統計JSON（ヒストグラム含む）、client screenshot/geometry export、Artifact→Dataset昇格、認証付きdownload
+- Artifact: source/bundle export、VTP変換、統計JSON（ヒストグラム含む）とそのUI可視化（配列別ヒストグラム/件数/平均/範囲/標準偏差）、client screenshot/geometry export、Artifact→Dataset昇格、認証付きdownload
 - 本番基盤: Alembic、PostgreSQL、S3/MinIO（presigned URL redirect対応）、OIDC Code+PKCE、Project RBAC（メンバー削除対応）、監査ログ（Web UIビューア + CSV export）
 - Server capability: pvpython reader/convert/filter/render/movie、Pipelineフィルタ連鎖のサーバ実行、trame broker session、期限付きWebSocket proxy とフロントのリモートビューア
 - R&D: WebGPU/WASM検出（描画は安定版vtk.js WebGL）、Python/Jupyter deep link、安全な操作提案（永続化・確認後適用・却下）
@@ -179,8 +180,9 @@ request世代の一致を再確認してから、利用者の明示操作で適�
 ## テスト
 
 ```bash
-cd backend && .venv/bin/pytest -q
-cd frontend && npm run typecheck && npm test -- --run && npm run build
+cd backend && .venv/bin/pytest -q && .venv/bin/ruff check --config ruff.toml .
+cd frontend && npm run typecheck && npm run lint && npm test -- --run && npm run build
+cd frontend && npm run e2e   # Playwright（初回は npx playwright install chromium）
 python3 -m pytest -q python
 git diff --check
 ```

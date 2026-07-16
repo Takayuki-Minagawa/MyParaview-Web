@@ -1,16 +1,11 @@
 import { memo, useEffect, useRef, useState } from "react";
 import type { AssistProposal, ColorMapName, Dataset, ScalarSelection } from "../../types";
+import { COLOR_MAP_NAMES } from "../../types";
 import { api } from "../../api";
 import type { Job } from "../../types";
 import { useMessages } from "../../i18n-context";
 
-const VALID_COLOR_MAPS: ColorMapName[] = [
-  "cool-to-warm",
-  "viridis",
-  "grayscale",
-  "plasma",
-  "turbo",
-];
+
 
 interface Props {
   dataset: Dataset;
@@ -83,7 +78,7 @@ export const AssistantSection = memo(function AssistantSection({
       color?.name &&
       (color.association === "point" || color.association === "cell")
     ) onColorBy(color as ScalarSelection);
-    if (VALID_COLOR_MAPS.includes(map as ColorMapName)) {
+    if (COLOR_MAP_NAMES.includes(map as ColorMapName)) {
       onColorMap(map as ColorMapName);
     }
     setAssistantProposal(null);

@@ -15,9 +15,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
+from .access import artifact_project_id
 from .config import settings
-from .db import init_db
-from .db import SessionLocal
+from .db import SessionLocal, init_db
 from .jobs import recover_interrupted_jobs
 from .models import Artifact, AuditEvent, Dataset, Job, Pipeline, RenderSession
 from .routers import artifacts, assist, datasets, jobs, pipelines, projects, sessions
@@ -47,6 +47,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Lets the browser client read download filenames from blob responses.
+    expose_headers=["Content-Disposition"],
 )
 
 
@@ -71,12 +73,10 @@ def _resolve_audit_project_id(
             return job.project_id
     if path_params.get("artifact_id"):
         artifact = db.get(Artifact, path_params["artifact_id"])
-        dataset = db.get(Dataset, artifact.dataset_id) if artifact and artifact.dataset_id else None
-        if dataset:
-            return dataset.project_id
-        job = db.get(Job, artifact.job_id) if artifact and artifact.job_id else None
-        if job:
-            return job.project_id
+        if artifact:
+            resolved = artifact_project_id(db, artifact)
+            if resolved:
+                return resolved
     if path_params.get("session_id"):
         render_session = db.get(RenderSession, path_params["session_id"])
         if render_session:

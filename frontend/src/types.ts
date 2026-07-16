@@ -54,10 +54,25 @@ export interface Job {
   updated_at: string;
 }
 
-export type Representation = "surface" | "wireframe" | "points";
+// Canonical value lists; UI pickers, validators, and the assistant all
+// derive from these so a new entry cannot be added in one place only.
+export const REPRESENTATION_NAMES = ["surface", "wireframe", "points"] as const;
+export type Representation = (typeof REPRESENTATION_NAMES)[number];
 
 export type ScalarAssociation = "point" | "cell";
-export type ColorMapName = "cool-to-warm" | "viridis" | "grayscale" | "plasma" | "turbo";
+
+export const COLOR_MAP_NAMES = [
+  "cool-to-warm",
+  "viridis",
+  "grayscale",
+  "plasma",
+  "turbo",
+] as const;
+export type ColorMapName = (typeof COLOR_MAP_NAMES)[number];
+
+/** Client-creatable job kinds (POST /jobs). */
+export const JOB_KINDS = ["convert", "filter", "export", "render", "stats", "movie"] as const;
+export type JobKind = (typeof JOB_KINDS)[number];
 
 export interface ScalarSelection {
   name: string;
@@ -116,6 +131,29 @@ export interface Artifact {
   size_bytes: number;
   content_type: string;
   created_at: string;
+}
+
+/** Shape of a stats_json artifact produced by the statistics job. */
+export interface ArrayStatistics {
+  name: string;
+  association: string;
+  count: number;
+  min: number;
+  max: number;
+  mean: number;
+  stddev: number;
+  histogram: {
+    bins: number;
+    min: number;
+    max: number;
+    counts: number[];
+  };
+}
+
+export interface DatasetStatistics {
+  dataset_id: string;
+  bins: number;
+  arrays: ArrayStatistics[];
 }
 
 export interface CollectionStep {

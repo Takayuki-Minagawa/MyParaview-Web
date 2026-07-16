@@ -2,20 +2,21 @@ from __future__ import annotations
 
 import csv
 import io
-import httpx
 import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from ..access import tag_audit
 from ..auth import Principal, get_principal, require_project_role
+from ..broker import try_delete_remote
 from ..config import settings
 from ..db import get_db
 from ..models import Artifact, AuditEvent, Dataset, DatasetFile, Job, Project, ProjectMember, User
-from ..project_locks import locked_project
 from ..pipeline_lifecycle import detach_pipeline_inputs
-from .sessions import _delete_remote_id
+from ..project_locks import locked_project
 from ..schemas import (
     AuditEventOut,
     ProjectCreate,
@@ -39,9 +40,7 @@ def create_project(
     project = Project(name=payload.name)
     db.add(project)
     db.flush()
-    request.state.audit_project_id = project.id
-    request.state.audit_resource_type = "project"
-    request.state.audit_resource_id = project.id
+    tag_audit(request, "project", project.id, project.id)
     db.add(ProjectMember(project_id=project.id, user_id=principal.id, role="admin"))
     db.commit()
     db.refresh(project)
@@ -93,9 +92,7 @@ def delete_project(
         )
         if active_job:
             raise HTTPException(409, "cancel or wait for active project jobs before deletion")
-        request.state.audit_project_id = project.id
-        request.state.audit_resource_type = "project"
-        request.state.audit_resource_id = project.id
+        tag_audit(request, "project", project.id, project.id)
         remote_session_ids = [
             render_session.remote_session_id for render_session in project.render_sessions
         ]
@@ -117,18 +114,11 @@ def delete_project(
             )
         detach_pipeline_inputs(db, project_id=project_id)
         db.delete(project)
+    # The project and its local session records are already deleted. Keep
+    # external cleanup best-effort so an unavailable broker does not hold a
+    # database write lock or misreport the committed delete.
     for remote_session_id in remote_session_ids:
-        try:
-            _delete_remote_id(remote_session_id)
-        except httpx.HTTPError:
-            # The project and its local session records are already deleted.
-            # Keep external cleanup best-effort so an unavailable broker does
-            # not hold a database write lock or misreport the committed delete.
-            logger.exception(
-                "failed to delete remote session %s for project %s",
-                remote_session_id,
-                project_id,
-            )
+        try_delete_remote(remote_session_id)
     for object_key in object_keys:
         try:
             store.delete(object_key)
@@ -168,6 +158,18 @@ def get_current_membership(
     return membership
 
 
+def _assert_not_last_admin(db: Session, project_id: str, *, action: str) -> None:
+    """Reject demoting/removing the only admin; a project must stay manageable."""
+    admin_count = db.scalar(
+        select(func.count()).select_from(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.role == "admin",
+        )
+    )
+    if (admin_count or 0) <= 1:
+        raise HTTPException(409, f"cannot {action} the project's last admin")
+
+
 def _put_member(
     project_id: str,
     user_id: str,
@@ -190,14 +192,7 @@ def _put_member(
             )
         )
         if membership is not None and membership.role == "admin" and payload.role != "admin":
-            admin_count = db.scalar(
-                select(func.count()).select_from(ProjectMember).where(
-                    ProjectMember.project_id == project_id,
-                    ProjectMember.role == "admin",
-                )
-            )
-            if (admin_count or 0) <= 1:
-                raise HTTPException(409, "cannot demote the project's last admin")
+            _assert_not_last_admin(db, project_id, action="demote")
         if membership is None:
             membership = ProjectMember(project_id=project_id, user_id=user_id, role=payload.role)
         else:
@@ -248,14 +243,7 @@ def delete_member(
         if membership is None:
             raise HTTPException(404, "project member not found")
         if membership.role == "admin":
-            admin_count = db.scalar(
-                select(func.count()).select_from(ProjectMember).where(
-                    ProjectMember.project_id == project_id,
-                    ProjectMember.role == "admin",
-                )
-            )
-            if (admin_count or 0) <= 1:
-                raise HTTPException(409, "cannot remove the project's last admin")
+            _assert_not_last_admin(db, project_id, action="remove")
         removed = ProjectMemberOut.model_validate(membership)
         db.delete(membership)
         db.flush()
@@ -282,7 +270,19 @@ def _audit_csv(events: list[AuditEvent]) -> str:
     return buffer.getvalue()
 
 
-@router.get("/{project_id}/audit", response_model=list[AuditEventOut])
+# response_model is None because the csv format intentionally returns
+# text/csv; the JSON branch validates through AuditEventOut itself. Both
+# content types are declared for OpenAPI accuracy.
+@router.get(
+    "/{project_id}/audit",
+    response_model=None,
+    responses={
+        200: {
+            "model": list[AuditEventOut],
+            "content": {"text/csv": {}},
+        }
+    },
+)
 def list_audit_events(
     project_id: str,
     format: str = Query(default="json", pattern="^(json|csv)$"),
@@ -309,4 +309,5 @@ def list_audit_events(
             media_type="text/csv",
             headers={"Content-Disposition": 'attachment; filename="audit.csv"'},
         )
-    return events
+    # response_model=None skips FastAPI's ORM conversion; validate explicitly.
+    return [AuditEventOut.model_validate(event) for event in events]

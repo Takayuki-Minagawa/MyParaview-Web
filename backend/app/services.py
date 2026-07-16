@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select
-
-import json
 
 from .bundles import bundle_reference_path, materialized_bundle_path
 from .config import settings
@@ -41,6 +41,78 @@ def _set_dataset_status(dataset_id: str, status: str, *, error: Optional[str]) -
         ds.error = error
         db.add(ds)
         db.commit()
+
+
+def _materialize_ingest_member(root: Path, relative_path: str, object_key: str) -> Path:
+    """Copy one bundle member from the object store under ``root``."""
+    target = materialized_bundle_path(root, relative_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with store.local_path(object_key) as local_object:
+        shutil.copyfile(local_object, target)
+    return target
+
+
+def _enrich_pvd_first_sibling(
+    dataset_id: str, root: Path, primary_path: Path, primary_relative_path: str
+):
+    """Re-extract PVD metadata with its first referenced piece materialized.
+
+    A PVD descriptor alone yields only collection structure; sampling the
+    first referenced file adds array/bounds detail. Returns the richer
+    metadata, or the descriptor-only metadata when the sibling row is absent.
+    """
+    meta = extract_metadata(str(primary_path))
+    referenced = list(meta.extra.get("files") or [])
+    if not referenced or not primary_relative_path:
+        return meta
+    first_relative = bundle_reference_path(primary_relative_path, str(referenced[0]))
+    with SessionLocal() as db:
+        first_object_key = db.scalar(
+            select(DatasetFile.object_key).where(
+                DatasetFile.dataset_id == dataset_id,
+                DatasetFile.relative_path == first_relative,
+            )
+        )
+    if not first_object_key:
+        return meta
+    _materialize_ingest_member(root, first_relative, first_object_key)
+    return extract_metadata(str(primary_path), pvd_enrich_siblings=True)
+
+
+def _ingest_bundle_metadata(
+    ctx: JobContext, dataset_id: str, source_ext: str, bundle_files: list[tuple[str, str, bool]]
+):
+    """Materialize a bundle into a temp dir and extract its metadata."""
+    with tempfile.TemporaryDirectory(prefix="pvweb-bundle-") as temp_dir:
+        root = Path(temp_dir).resolve()
+        primary_path: Path | None = None
+        primary_relative_path: str | None = None
+        for relative_path, object_key, is_primary in bundle_files:
+            target = _materialize_ingest_member(root, relative_path, object_key)
+            if is_primary:
+                if primary_path is not None:
+                    raise ValueError("dataset bundle has multiple primary files")
+                primary_path = target
+                primary_relative_path = relative_path
+        if primary_path is None:
+            raise ValueError("dataset bundle has no primary file")
+        if source_ext == ".pvd":
+            return _enrich_pvd_first_sibling(
+                dataset_id, root, primary_path, primary_relative_path
+            )
+        if source_ext in settings.external_extensions:
+            return extract_external_metadata(primary_path, ctx)
+        return extract_metadata(str(primary_path))
+
+
+def _ingest_single_metadata(ctx: JobContext, source_object_key: str, source_ext: str):
+    """Extract metadata for a single stored object (no bundle members)."""
+    with store.local_path(source_object_key) as local_object:
+        if source_ext in settings.external_extensions:
+            return extract_external_metadata(local_object, ctx)
+        # A standalone PVD has no sibling rows to materialize, so sibling
+        # enrichment must stay off; the flag is ignored for other formats.
+        return extract_metadata(str(local_object), pvd_enrich_siblings=False)
 
 
 def run_ingest(dataset_id: str):
@@ -81,60 +153,9 @@ def run_ingest(dataset_id: str):
             ctx.check_cancelled()
             ctx.update(progress=0.3, log_line="parsing metadata")
             if bundle_files:
-                with tempfile.TemporaryDirectory(prefix="pvweb-bundle-") as temp_dir:
-                    root = Path(temp_dir).resolve()
-                    primary_path: Path | None = None
-                    primary_relative_path: str | None = None
-                    for relative_path, object_key, is_primary in bundle_files:
-                        target = materialized_bundle_path(root, relative_path)
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with store.local_path(object_key) as local_object:
-                            shutil.copyfile(local_object, target)
-                        if is_primary:
-                            if primary_path is not None:
-                                raise ValueError("dataset bundle has multiple primary files")
-                            primary_path = target
-                            primary_relative_path = relative_path
-                    if primary_path is None:
-                        raise ValueError("dataset bundle has no primary file")
-                    if source_ext == ".pvd":
-                        meta = extract_metadata(str(primary_path))
-                        referenced = list(meta.extra.get("files") or [])
-                        if referenced and primary_relative_path:
-                            first_relative = bundle_reference_path(
-                                primary_relative_path, str(referenced[0])
-                            )
-                            with SessionLocal() as db:
-                                first_object_key = db.scalar(
-                                    select(DatasetFile.object_key).where(
-                                        DatasetFile.dataset_id == dataset_id,
-                                        DatasetFile.relative_path == first_relative,
-                                    )
-                                )
-                            if first_object_key:
-                                first_target = materialized_bundle_path(root, first_relative)
-                                first_target.parent.mkdir(parents=True, exist_ok=True)
-                                with store.local_path(first_object_key) as local_object:
-                                    shutil.copyfile(local_object, first_target)
-                                meta = extract_metadata(
-                                    str(primary_path), pvd_enrich_siblings=True
-                                )
-                    else:
-                        meta = (
-                            extract_external_metadata(primary_path, ctx)
-                            if source_ext in settings.external_extensions
-                            else extract_metadata(str(primary_path))
-                        )
+                meta = _ingest_bundle_metadata(ctx, dataset_id, source_ext, bundle_files)
             else:
-                with store.local_path(source_object_key) as local_object:
-                    meta = (
-                        extract_external_metadata(local_object, ctx)
-                        if source_ext in settings.external_extensions
-                        else extract_metadata(
-                            str(local_object),
-                            pvd_enrich_siblings=source_ext != ".pvd",
-                        )
-                    )
+                meta = _ingest_single_metadata(ctx, source_object_key, source_ext)
             if source_ext == ".pvd":
                 # A standalone PVD can provide useful collection metadata, but
                 # playback is only enabled for a server-validated full bundle.
@@ -180,7 +201,8 @@ class _DatasetSource:
     project_id: str
     filename: str
     ext: str
-    bundle_files: list
+    # (relative_path, object_key, is_primary) rows from DatasetFile
+    bundle_files: list[tuple[str, str, bool]]
 
 
 @dataclass(frozen=True)
@@ -220,6 +242,10 @@ def _load_dataset_source(dataset_id: str) -> _DatasetSource:
 _PLAN_SUFFIX = {"filter": "filtered", "convert": "converted", "render": "render"}
 
 
+def _stem(filename: str) -> str:
+    return os.path.splitext(os.path.basename(filename))[0]
+
+
 def _plan_output(kind: str, params: dict, source: _DatasetSource) -> _OutputPlan:
     output_format = str(params.get("output_format", "source")).lower()
     if kind == "export" and output_format != "source":
@@ -237,13 +263,16 @@ def _plan_output(kind: str, params: dict, source: _DatasetSource) -> _OutputPlan
         output_ext = ".png"
     else:
         output_ext = source.ext
-    stem = os.path.splitext(os.path.basename(source.filename))[0]
+    stem = _stem(source.filename)
     suffix = _PLAN_SUFFIX.get(kind, "export")
-    artifact_kind = (
-        "filtered_vtp" if kind == "filter" else
-        "render_png" if kind == "render" else
-        ("converted_vtp" if output_ext == ".vtp" and kind == "convert" else kind)
-    )
+    if kind == "filter":
+        artifact_kind = "filtered_vtp"
+    elif kind == "render":
+        artifact_kind = "render_png"
+    elif kind == "convert" and output_ext == ".vtp":
+        artifact_kind = "converted_vtp"
+    else:
+        artifact_kind = kind
     return _OutputPlan(
         filename=f"{stem}-{suffix}{output_ext}",
         output_ext=output_ext,
@@ -253,7 +282,7 @@ def _plan_output(kind: str, params: dict, source: _DatasetSource) -> _OutputPlan
     )
 
 
-def materialize_bundle(bundle_files: list, root: Path) -> Path:
+def materialize_bundle(bundle_files: list[tuple[str, str, bool]], root: Path) -> Path:
     """Copy bundle members under ``root`` and return the primary file path."""
     primary: Path | None = None
     for relative_path, bundle_object_key, is_primary in bundle_files:
@@ -355,47 +384,112 @@ def rollback_job_artifact(artifact_id: Optional[str], object_key: str) -> None:
     store.delete(object_key)
 
 
+@dataclass(frozen=True)
+class _ArtifactSpec:
+    """Naming/typing decisions for one artifact-producing job."""
+
+    filename: str
+    output_ext: str
+    kind: str
+    content_type: str
+
+
+# Writes the output object for (source_path, object_key) and returns
+# (stored size, extra fields to merge into the job result).
+_Producer = Callable[[Optional[Path], str], "tuple[int, dict]"]
+
+
+def _run_artifact_job(
+    ctx: JobContext,
+    dataset_id: str,
+    *,
+    start_log: str,
+    done_noun: str = "artifact",
+    needs_source_path: bool = True,
+    plan: Callable[[_DatasetSource], "tuple[_ArtifactSpec, _Producer]"],
+) -> dict:
+    """Shared skeleton for jobs that publish exactly one artifact.
+
+    Owns the invariants every such job must repeat identically: dataset
+    snapshot, output-key allocation, the optional source lease, artifact
+    persistence, rollback of a partially published artifact on failure, and
+    the final progress update. ``plan`` sees the dataset snapshot and returns
+    the artifact naming plus the producer that writes the object bytes.
+    """
+    ctx.update(progress=0.05, log_line=start_log)
+    source = _load_dataset_source(dataset_id)
+    ctx.check_cancelled()
+    spec, produce = plan(source)
+    object_key = store.new_key(spec.output_ext)
+    artifact_id: Optional[str] = None
+    source_path = store.acquire_path(source.object_key) if needs_source_path else None
+    try:
+        size, extra = produce(source_path, object_key)
+        ctx.check_cancelled()
+        artifact_id = persist_job_artifact(
+            ctx,
+            project_id=source.project_id,
+            dataset_id=dataset_id,
+            kind=spec.kind,
+            filename=spec.filename,
+            size=size,
+            object_key=object_key,
+            content_type=spec.content_type,
+        )
+        ctx.check_cancelled()
+        ctx.update(progress=1.0, log_line=f"{done_noun} created id={artifact_id}")
+        result = {
+            "project_id": source.project_id,
+            "dataset_id": dataset_id,
+            "artifact_id": artifact_id,
+            "filename": spec.filename,
+            "size_bytes": size,
+        }
+        result.update(extra)
+        return result
+    except Exception:
+        rollback_job_artifact(artifact_id, object_key)
+        raise
+    finally:
+        if needs_source_path:
+            store.release_path(source.object_key)
+
+
 def run_stats_operation(dataset_id: str, params: dict):
     """Compute per-array statistics and publish them as a JSON artifact."""
 
     def body(ctx: JobContext) -> dict:
-        ctx.update(progress=0.05, log_line=f"stats start dataset={dataset_id}")
-        source = _load_dataset_source(dataset_id)
-        ctx.check_cancelled()
         bins = int(params.get("bins", 32))
-        stem = os.path.splitext(os.path.basename(source.filename))[0]
-        filename = f"{stem}-stats.json"
-        object_key = store.new_key(".json")
-        artifact_id: Optional[str] = None
-        try:
-            ctx.update(progress=0.3, log_line="computing array statistics")
-            with store.local_path(source.object_key) as local_object:
-                arrays = compute_dataset_statistics(str(local_object), source.ext, bins)
-            ctx.check_cancelled()
-            payload = {"dataset_id": dataset_id, "bins": bins, "arrays": arrays}
-            size = store.save_bytes(object_key, json.dumps(payload, allow_nan=False).encode())
-            artifact_id = persist_job_artifact(
-                ctx,
-                project_id=source.project_id,
-                dataset_id=dataset_id,
+
+        def plan(source: _DatasetSource):
+            spec = _ArtifactSpec(
+                filename=f"{_stem(source.filename)}-stats.json",
+                output_ext=".json",
                 kind="stats_json",
-                filename=filename,
-                size=size,
-                object_key=object_key,
                 content_type="application/json",
             )
-            ctx.check_cancelled()
-            ctx.update(progress=1.0, log_line=f"statistics artifact created id={artifact_id}")
-            return {
-                "project_id": source.project_id,
-                "dataset_id": dataset_id,
-                "artifact_id": artifact_id,
-                "filename": filename,
-                "size_bytes": size,
-            }
-        except Exception:
-            rollback_job_artifact(artifact_id, object_key)
-            raise
+
+            def produce(_source_path: Optional[Path], object_key: str):
+                ctx.update(progress=0.3, log_line="computing array statistics")
+                with store.local_path(source.object_key) as local_object:
+                    arrays = compute_dataset_statistics(str(local_object), source.ext, bins)
+                ctx.check_cancelled()
+                payload = {"dataset_id": dataset_id, "bins": bins, "arrays": arrays}
+                size = store.save_bytes(
+                    object_key, json.dumps(payload, allow_nan=False).encode()
+                )
+                return size, {}
+
+            return spec, produce
+
+        return _run_artifact_job(
+            ctx,
+            dataset_id,
+            start_log=f"stats start dataset={dataset_id}",
+            done_noun="statistics artifact",
+            needs_source_path=False,
+            plan=plan,
+        )
 
     return body
 
@@ -404,59 +498,44 @@ def run_movie_export(dataset_id: str, params: dict):
     """Render per-timestep frames through the ParaView worker into a ZIP artifact."""
 
     def body(ctx: JobContext) -> dict:
-        ctx.update(progress=0.05, log_line=f"movie start dataset={dataset_id}")
-        source = _load_dataset_source(dataset_id)
-        ctx.check_cancelled()
-        stem = os.path.splitext(os.path.basename(source.filename))[0]
-        filename = f"{stem}-movie.zip"
-        object_key = store.new_key(".zip")
-        artifact_id: Optional[str] = None
-        source_path = store.acquire_path(source.object_key)
-        try:
-            with tempfile.TemporaryDirectory(prefix="pvweb-movie-") as movie_dir:
-                root = Path(movie_dir).resolve()
-                worker_source = (
-                    materialize_bundle(source.bundle_files, root / "bundle")
-                    if source.bundle_files
-                    else source_path
-                )
-                ctx.update(progress=0.2, log_line="rendering timestep frames")
-                frames = run_movie_frames(Path(worker_source), root / "frames", params, ctx)
-                ctx.check_cancelled()
-                ctx.update(progress=0.8, log_line=f"packaging {len(frames)} frames")
-                archive_path = root / filename
-                with zipfile.ZipFile(
-                    archive_path, "w", compression=zipfile.ZIP_DEFLATED
-                ) as archive:
-                    for frame in frames:
-                        archive.write(frame, arcname=frame.name)
-                size = store.copy_in(object_key, archive_path)
-            ctx.check_cancelled()
-            artifact_id = persist_job_artifact(
-                ctx,
-                project_id=source.project_id,
-                dataset_id=dataset_id,
+        def plan(source: _DatasetSource):
+            spec = _ArtifactSpec(
+                filename=f"{_stem(source.filename)}-movie.zip",
+                output_ext=".zip",
                 kind="movie_frames",
-                filename=filename,
-                size=size,
-                object_key=object_key,
                 content_type="application/zip",
             )
-            ctx.check_cancelled()
-            ctx.update(progress=1.0, log_line=f"movie artifact created id={artifact_id}")
-            return {
-                "project_id": source.project_id,
-                "dataset_id": dataset_id,
-                "artifact_id": artifact_id,
-                "filename": filename,
-                "size_bytes": size,
-                "frame_count": len(frames),
-            }
-        except Exception:
-            rollback_job_artifact(artifact_id, object_key)
-            raise
-        finally:
-            store.release_path(source.object_key)
+
+            def produce(source_path: Optional[Path], object_key: str):
+                with tempfile.TemporaryDirectory(prefix="pvweb-movie-") as movie_dir:
+                    root = Path(movie_dir).resolve()
+                    worker_source = (
+                        materialize_bundle(source.bundle_files, root / "bundle")
+                        if source.bundle_files
+                        else source_path
+                    )
+                    ctx.update(progress=0.2, log_line="rendering timestep frames")
+                    frames = run_movie_frames(Path(worker_source), root / "frames", params, ctx)
+                    ctx.check_cancelled()
+                    ctx.update(progress=0.8, log_line=f"packaging {len(frames)} frames")
+                    archive_path = root / spec.filename
+                    with zipfile.ZipFile(
+                        archive_path, "w", compression=zipfile.ZIP_DEFLATED
+                    ) as archive:
+                        for frame in frames:
+                            archive.write(frame, arcname=frame.name)
+                    size = store.copy_in(object_key, archive_path)
+                return size, {"frame_count": len(frames)}
+
+            return spec, produce
+
+        return _run_artifact_job(
+            ctx,
+            dataset_id,
+            start_log=f"movie start dataset={dataset_id}",
+            done_noun="movie artifact",
+            plan=plan,
+        )
 
     return body
 
@@ -506,59 +585,42 @@ def run_pipeline_execution(pipeline_id: str, dataset_id: str, filters: list[dict
     """Execute a stored pipeline's filter chain and publish the final VTP."""
 
     def body(ctx: JobContext) -> dict:
-        ctx.update(progress=0.05, log_line=f"pipeline start pipeline={pipeline_id}")
-        source = _load_dataset_source(dataset_id)
-        ctx.check_cancelled()
-        stem = os.path.splitext(os.path.basename(source.filename))[0]
-        filename = f"{stem}-pipeline.vtp"
-        object_key = store.new_key(".vtp")
-        artifact_id: Optional[str] = None
-        source_path = store.acquire_path(source.object_key)
-        try:
-            with tempfile.TemporaryDirectory(prefix="pvweb-pipeline-") as work_dir:
-                root = Path(work_dir).resolve()
-                current = (
-                    materialize_bundle(source.bundle_files, root / "bundle")
-                    if source.bundle_files
-                    else source_path
-                )
-                filter_names = ", ".join(str(item.get("filter")) for item in filters)
-                ctx.update(
-                    progress=0.1,
-                    log_line=f"applying {len(filters)} pipeline filters: {filter_names}",
-                )
-                worker_output = root / filename
-                run_pipeline_transform(
-                    Path(current), worker_output, filters, ctx
-                )
-                ctx.update(progress=0.8, log_line="pipeline filters complete")
-                size = store.copy_in(object_key, worker_output)
-            ctx.check_cancelled()
-            artifact_id = persist_job_artifact(
-                ctx,
-                project_id=source.project_id,
-                dataset_id=dataset_id,
+        def plan(source: _DatasetSource):
+            spec = _ArtifactSpec(
+                filename=f"{_stem(source.filename)}-pipeline.vtp",
+                output_ext=".vtp",
                 kind="pipeline_vtp",
-                filename=filename,
-                size=size,
-                object_key=object_key,
                 content_type="application/octet-stream",
             )
-            ctx.check_cancelled()
-            ctx.update(progress=1.0, log_line=f"pipeline artifact created id={artifact_id}")
-            return {
-                "project_id": source.project_id,
-                "dataset_id": dataset_id,
-                "pipeline_id": pipeline_id,
-                "artifact_id": artifact_id,
-                "filename": filename,
-                "size_bytes": size,
-            }
-        except Exception:
-            rollback_job_artifact(artifact_id, object_key)
-            raise
-        finally:
-            store.release_path(source.object_key)
+
+            def produce(source_path: Optional[Path], object_key: str):
+                with tempfile.TemporaryDirectory(prefix="pvweb-pipeline-") as work_dir:
+                    root = Path(work_dir).resolve()
+                    current = (
+                        materialize_bundle(source.bundle_files, root / "bundle")
+                        if source.bundle_files
+                        else source_path
+                    )
+                    filter_names = ", ".join(str(item.get("filter")) for item in filters)
+                    ctx.update(
+                        progress=0.1,
+                        log_line=f"applying {len(filters)} pipeline filters: {filter_names}",
+                    )
+                    worker_output = root / spec.filename
+                    run_pipeline_transform(Path(current), worker_output, filters, ctx)
+                    ctx.update(progress=0.8, log_line="pipeline filters complete")
+                    size = store.copy_in(object_key, worker_output)
+                return size, {"pipeline_id": pipeline_id}
+
+            return spec, produce
+
+        return _run_artifact_job(
+            ctx,
+            dataset_id,
+            start_log=f"pipeline start pipeline={pipeline_id}",
+            done_noun="pipeline artifact",
+            plan=plan,
+        )
 
     return body
 
@@ -572,44 +634,30 @@ def run_dataset_operation(dataset_id: str, kind: str, params: dict):
     """
 
     def body(ctx: JobContext) -> dict:
-        ctx.update(progress=0.05, log_line=f"{kind} start dataset={dataset_id}")
-        source = _load_dataset_source(dataset_id)
-        ctx.check_cancelled()
-        plan = _plan_output(kind, params, source)
-        object_key = store.new_key(plan.output_ext)
-        artifact_id: Optional[str] = None
-        source_path = store.acquire_path(source.object_key)
-        try:
-            size = _produce_object(ctx, kind, params, source, plan, object_key, source_path)
-            ctx.check_cancelled()
-            content_type = (
-                "application/zip"
-                if plan.is_bundle_export
-                else mimetypes.guess_type(plan.filename)[0] or "application/octet-stream"
+        def plan(source: _DatasetSource):
+            output = _plan_output(kind, params, source)
+            spec = _ArtifactSpec(
+                filename=output.filename,
+                output_ext=output.output_ext,
+                kind=output.artifact_kind,
+                content_type=(
+                    "application/zip"
+                    if output.is_bundle_export
+                    else mimetypes.guess_type(output.filename)[0] or "application/octet-stream"
+                ),
             )
-            artifact_id = persist_job_artifact(
-                ctx,
-                project_id=source.project_id,
-                dataset_id=dataset_id,
-                kind=plan.artifact_kind,
-                filename=plan.filename,
-                size=size,
-                object_key=object_key,
-                content_type=content_type,
-            )
-            ctx.check_cancelled()
-            ctx.update(progress=1.0, log_line=f"artifact created id={artifact_id}")
-            return {
-                "project_id": source.project_id,
-                "dataset_id": dataset_id,
-                "artifact_id": artifact_id,
-                "filename": plan.filename,
-                "size_bytes": size,
-            }
-        except Exception:
-            rollback_job_artifact(artifact_id, object_key)
-            raise
-        finally:
-            store.release_path(source.object_key)
+
+            def produce(source_path: Optional[Path], object_key: str):
+                size = _produce_object(ctx, kind, params, source, output, object_key, source_path)
+                return size, {}
+
+            return spec, produce
+
+        return _run_artifact_job(
+            ctx,
+            dataset_id,
+            start_log=f"{kind} start dataset={dataset_id}",
+            plan=plan,
+        )
 
     return body

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -10,11 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ..auth import Principal, get_principal, require_project_role
+from ..access import authorized_job, require_project, tag_audit
+from ..auth import Principal, get_principal
 from ..config import settings
 from ..db import SessionLocal, get_db
 from ..jobs import manager
-from ..models import Dataset, Job, Project
+from ..models import Dataset, Job
 from ..project_locks import locked_project
 from ..schemas import JobCreate, JobOut
 from ..services import run_dataset_operation, run_movie_export, run_stats_operation
@@ -31,10 +33,10 @@ def _job_body_for(kind: str, dataset_id: str, params: dict):
 
 
 def filter_new_job_events(
-    rows: list[tuple[dict, object, str]],
-    cursor,
+    rows: list[tuple[dict, datetime, str]],
+    cursor: Optional[datetime],
     emitted_at_cursor: set[str],
-) -> tuple[list[dict], object, set[str]]:
+) -> tuple[list[dict], Optional[datetime], set[str]]:
     """Advance the SSE cursor over ``rows`` sorted by (updated_at, id).
 
     The snapshot query uses ``updated_at >= cursor`` so that a job committed
@@ -45,7 +47,7 @@ def filter_new_job_events(
     for payload, updated_at, job_id in rows:
         if updated_at == cursor and job_id in emitted_at_cursor:
             continue
-        if cursor is None or updated_at > cursor:  # type: ignore[operator]
+        if cursor is None or updated_at > cursor:
             cursor = updated_at
             emitted_at_cursor = {job_id}
         else:
@@ -95,9 +97,7 @@ def create_job(
         )
         db.add(job)
         db.flush()
-    request.state.audit_project_id = payload.project_id
-    request.state.audit_resource_type = "job"
-    request.state.audit_resource_id = job.id
+    tag_audit(request, "job", job.id, payload.project_id)
     manager.submit(job.id, _job_body_for(payload.kind, dataset.id, payload.params))
     return job
 
@@ -114,15 +114,13 @@ async def stream_jobs(
     heartbeat comments. Connections close after PVWEB_JOB_STREAM_MAX_SECONDS
     (default 5 minutes); clients reconnect.
     """
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal)
+    require_project(db, project_id, principal)
     # The request-scoped session was only needed for the checks above; keeping
     # it open would pin one pooled connection for the stream's whole lifetime
     # (get_db's finally-close only runs after streaming ends).
     db.close()
 
-    def snapshot(after) -> list[tuple[dict, object, str]]:
+    def snapshot(after: Optional[datetime]) -> list[tuple[dict, datetime, str]]:
         with SessionLocal() as session:
             stmt = (
                 select(Job)
@@ -169,9 +167,7 @@ def list_jobs(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal)
+    require_project(db, project_id, principal)
     stmt = (
         select(Job)
         .where(Job.project_id == project_id)
@@ -192,13 +188,7 @@ def get_job(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-    if not job.project_id:
-        raise HTTPException(403, "unscoped job access is forbidden")
-    require_project_role(db, job.project_id, principal)
-    return job
+    return authorized_job(db, job_id, principal)
 
 
 @router.post("/{job_id}/cancel", response_model=JobOut)
@@ -207,11 +197,7 @@ def cancel_job(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-    if not job.project_id:
-        raise HTTPException(403, "unscoped job access is forbidden")
+    job = authorized_job(db, job_id, principal, "editor")
     project_id = job.project_id
     with locked_project(db, project_id, principal, "editor"):
         job = db.get(Job, job_id)

@@ -12,8 +12,8 @@ import shutil
 import threading
 import time
 import uuid
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
@@ -203,7 +203,7 @@ class S3ObjectStore(ObjectStore):
             if self.cache_max_bytes <= 0:
                 self._needs_eviction = deferred
                 return
-            for path, stat in sorted(cached, key=lambda item: item[1].st_mtime):
+            for path, _stat in sorted(cached, key=lambda item: item[1].st_mtime):
                 if total <= self.cache_max_bytes:
                     break
                 if path == exclude:

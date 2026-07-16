@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional, Union
 
+from fastapi import HTTPException
+from fastapi.responses import RedirectResponse
 from starlette.responses import FileResponse
 
 from .storage import ObjectStore
@@ -41,3 +44,33 @@ class LeasedFileResponse(FileResponse):
             await super().__call__(scope, receive, send)
         finally:
             self._release_lease()
+
+
+def serve_object(
+    store: ObjectStore,
+    object_key: str,
+    *,
+    filename: str,
+    media_type: Optional[str] = None,
+) -> Union[RedirectResponse, LeasedFileResponse]:
+    """Serve a stored object: presigned redirect when available, else a lease.
+
+    Presigning does not verify the object exists; a redirect to a missing
+    object would surface S3's raw 404 instead of the API's clean 410 below.
+    Raises 410 when the object is gone from the store.
+    """
+    presigned = store.presigned_url(object_key, filename=filename)
+    if presigned and store.exists(object_key):
+        return RedirectResponse(presigned, status_code=307)
+    path = store.acquire_path(object_key)
+    if not path.is_file():
+        store.release_path(object_key)
+        raise HTTPException(410, "object no longer available")
+    kwargs = {"media_type": media_type} if media_type else {}
+    return LeasedFileResponse(
+        str(path),
+        store=store,
+        object_key=object_key,
+        filename=filename,
+        **kwargs,
+    )

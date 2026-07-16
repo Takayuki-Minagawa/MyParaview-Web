@@ -6,6 +6,7 @@ import type {
   CollectionStep,
   Dataset,
   Job,
+  JobKind,
   Pipeline,
   Project,
   ProjectMember,
@@ -38,11 +39,27 @@ export function authorizedFetch(input: RequestInfo | URL, init?: RequestInit) {
   return fetch(input, { ...init, headers });
 }
 
+/** API failure with the HTTP status and raw body preserved, so callers can
+ * branch (401 -> re-login, 413 -> friendly size message) instead of string
+ * matching. The message keeps the historical banner format. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: string;
+
+  constructor(status: number, statusText: string, body: string) {
+    super(`${status} ${statusText}: ${body}`);
+    // Keep the default "Error" name: banners render String(error), and the
+    // visible text must stay identical to the pre-refactor format.
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await authorizedFetch(`${API_BASE}${path}`, init);
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
+    throw new ApiError(resp.status, resp.statusText, text);
   }
   if (resp.status === 204) return undefined as T;
   return (await resp.json()) as T;
@@ -126,7 +143,7 @@ export const api = {
   cancelJob: (id: string) => req<Job>(`/jobs/${id}/cancel`, { method: "POST" }),
   createJob: (
     projectId: string,
-    kind: "convert" | "filter" | "export" | "render" | "stats" | "movie",
+    kind: JobKind,
     targetId: string,
     params: Record<string, unknown>,
   ) => req<Job>("/jobs", {
@@ -230,7 +247,6 @@ export async function pollJob(
   { intervalMs = 400, timeoutMs = 600000 }: { intervalMs?: number; timeoutMs?: number } = {},
 ): Promise<Job> {
   const deadline = Date.now() + timeoutMs;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const job = await api.getJob(jobId);
     onTick?.(job);

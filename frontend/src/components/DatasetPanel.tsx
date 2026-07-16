@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import type { AuditEvent, Dataset, Job, Project, ProjectMember, ProjectRole } from "../types";
 import { api } from "../api";
 import { humanFileSize } from "../lib/format";
+import { triggerBlobDownload } from "../lib/download";
 import { isCancellable, lastLogLine } from "../lib/job";
 import { PipelinePanel } from "./PipelinePanel";
 import type { Pipeline } from "../types";
@@ -71,14 +72,7 @@ function AuditSection({
 
   const downloadCsv = () => {
     api.downloadAuditCsv(projectId)
-      .then((blob) => {
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = "audit.csv";
-        link.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      })
+      .then((blob) => triggerBlobDownload(blob, "audit.csv"))
       .catch((reason) => onError(String(reason)));
   };
 
@@ -241,7 +235,16 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
           <li
             key={d.id}
             className={d.id === props.selectedDatasetId ? "selected" : ""}
+            role="button"
+            tabIndex={0}
+            aria-pressed={d.id === props.selectedDatasetId}
             onClick={() => props.onSelectDataset(d.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                props.onSelectDataset(d.id);
+              }
+            }}
           >
             <span className="ds-name">{d.filename}</span>
             <span className={`badge badge-${d.status}`}>{t.datasetStatus[d.status]}</span>

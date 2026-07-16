@@ -1,4 +1,10 @@
-import type { ArrayInfo, ScalarSelection } from "../types";
+import type { ArrayInfo, ScalarSelection, VolumeOpacityPoint } from "../types";
+
+/** Default two-point ramp matching the historical fixed volume transfer function. */
+export const DEFAULT_VOLUME_OPACITY_POINTS: VolumeOpacityPoint[] = [
+  { value: 0, alpha: 0 },
+  { value: 1, alpha: 0.85 },
+];
 
 export function isImageScalarArray(array: ArrayInfo): boolean {
   return array.association === "point" && array.num_components === 1;

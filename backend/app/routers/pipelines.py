@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..auth import Principal, get_principal, require_project_role
+from ..access import authorized_pipeline, require_project, tag_audit
+from ..auth import Principal, get_principal
 from ..db import get_db
 from ..jobs import manager
-from ..models import Dataset, Job, Pipeline, PipelineNode, Project
+from ..models import Dataset, Job, Pipeline, PipelineNode
 from ..pipeline_lifecycle import detach_pipeline_inputs
 from ..project_locks import locked_project
 from ..schemas import (
@@ -87,9 +88,7 @@ def create_pipeline(
         db.flush()
         _replace_nodes(db, pipeline, payload.nodes)
         db.flush()
-    request.state.audit_project_id = payload.project_id
-    request.state.audit_resource_type = "pipeline"
-    request.state.audit_resource_id = pipeline.id
+    tag_audit(request, "pipeline", pipeline.id, payload.project_id)
     return pipeline
 
 
@@ -99,9 +98,7 @@ def list_pipelines(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if db.get(Project, project_id) is None:
-        raise HTTPException(404, "project not found")
-    require_project_role(db, project_id, principal)
+    require_project(db, project_id, principal)
     stmt = (
         select(Pipeline)
         .where(Pipeline.project_id == project_id)
@@ -116,11 +113,7 @@ def get_pipeline(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    pipeline = db.get(Pipeline, pipeline_id)
-    if pipeline is None:
-        raise HTTPException(404, "pipeline not found")
-    require_project_role(db, pipeline.project_id, principal)
-    return pipeline
+    return authorized_pipeline(db, pipeline_id, principal)
 
 
 @router.patch("/{pipeline_id}", response_model=PipelineOut)
@@ -130,9 +123,7 @@ def update_pipeline(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    pipeline = db.get(Pipeline, pipeline_id)
-    if pipeline is None:
-        raise HTTPException(404, "pipeline not found")
+    pipeline = authorized_pipeline(db, pipeline_id, principal, "editor")
     project_id = pipeline.project_id
     with locked_project(db, project_id, principal, "editor"):
         pipeline = db.get(Pipeline, pipeline_id)
@@ -155,9 +146,7 @@ def run_pipeline(
     principal: Principal = Depends(get_principal),
 ):
     """Execute the pipeline's filter chain server-side into a VTP artifact."""
-    pipeline = db.get(Pipeline, pipeline_id)
-    if pipeline is None:
-        raise HTTPException(404, "pipeline not found")
+    pipeline = authorized_pipeline(db, pipeline_id, principal, "editor")
     project_id = pipeline.project_id
     with locked_project(db, project_id, principal, "editor"):
         try:
@@ -180,9 +169,7 @@ def run_pipeline(
         )
         db.add(job)
         db.flush()
-    request.state.audit_project_id = project_id
-    request.state.audit_resource_type = "job"
-    request.state.audit_resource_id = job.id
+    tag_audit(request, "job", job.id, project_id)
     manager.submit(job.id, run_pipeline_execution(pipeline_id, dataset_id, filters))
     return job
 
@@ -194,16 +181,12 @@ def delete_pipeline(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    pipeline = db.get(Pipeline, pipeline_id)
-    if pipeline is None:
-        raise HTTPException(404, "pipeline not found")
+    pipeline = authorized_pipeline(db, pipeline_id, principal, "editor")
     project_id = pipeline.project_id
     with locked_project(db, project_id, principal, "editor"):
         pipeline = db.get(Pipeline, pipeline_id)
         if pipeline is None:
             raise HTTPException(404, "pipeline not found")
-        request.state.audit_project_id = project_id
-        request.state.audit_resource_type = "pipeline"
-        request.state.audit_resource_id = pipeline.id
+        tag_audit(request, "pipeline", pipeline.id, project_id)
         detach_pipeline_inputs(db, pipeline_id=pipeline.id)
         db.delete(pipeline)

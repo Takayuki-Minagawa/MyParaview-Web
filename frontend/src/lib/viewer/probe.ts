@@ -58,6 +58,15 @@ interface ProbePointPicker extends ProbeRayPicker {
   setUseCells?: (useCells: boolean) => void;
 }
 
+export function configureProbePointPicker(
+  picker: Pick<ProbePointPicker, "setTolerance" | "setUseCells">,
+): void {
+  picker.setTolerance?.(0.025);
+  // vtk.js 36's useCells branch reports the loop counter instead of the
+  // source point index. The normal all-points branch returns the correct ID.
+  picker.setUseCells?.(false);
+}
+
 export interface ProbeScalarValue {
   association: "point" | "cell";
   name: string;
@@ -139,8 +148,7 @@ export function createProbeController(
   const cellPicker = vtkCellPicker.newInstance() as unknown as ProbeCellPicker;
   const pointPicker = vtkPointPicker.newInstance() as unknown as ProbePointPicker;
   cellPicker.setTolerance?.(0.001);
-  pointPicker.setTolerance?.(0.025);
-  pointPicker.setUseCells?.(true);
+  configureProbePointPicker(pointPicker);
   const subscription = interactor.onLeftButtonPress((event) => {
     if (!enabled || deleted || !event.position) return;
     const displayPosition: [number, number] = [event.position.x, event.position.y];

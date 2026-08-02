@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { VtkAttributes, VtkDataSet } from "./vtkTypes";
-import { probeValues, scalarValuesAt } from "./probe";
+import { configureProbePointPicker, probeValues, scalarValuesAt } from "./probe";
 
 function attributes(arrays: Array<{
   name: string;
@@ -46,6 +46,21 @@ describe("probeValues", () => {
     expect(probeValues(output, 0, 0)).toEqual([
       { association: "point", name: "p", value: 2 },
       { association: "cell", name: "c", value: 3 },
+    ]);
+  });
+});
+
+describe("configureProbePointPicker", () => {
+  it("uses vtk.js's correct all-points ID path for fallback picks", () => {
+    const calls: Array<[string, number | boolean]> = [];
+    configureProbePointPicker({
+      setTolerance: (value) => { calls.push(["tolerance", value]); },
+      setUseCells: (value) => { calls.push(["useCells", value]); },
+    });
+
+    expect(calls).toEqual([
+      ["tolerance", 0.025],
+      ["useCells", false],
     ]);
   });
 });

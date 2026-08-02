@@ -42,6 +42,11 @@ class Settings:
             if subject.strip()
         }
         self.worker_command = shlex.split(os.environ.get("PVWEB_PVPYTHON", ""))
+        # Video export is opt-in, just like pvpython.  Keep this as one
+        # executable name/path (rather than a shell fragment); worker.py
+        # resolves it to an executable absolute path before passing it to the
+        # isolated pvpython process.
+        self.ffmpeg_executable = os.environ.get("PVWEB_FFMPEG", "").strip()
         self.worker_timeout_seconds = int(os.environ.get("PVWEB_WORKER_TIMEOUT", "900"))
         self.trame_broker_url = os.environ.get("PVWEB_TRAME_BROKER_URL") or None
         self.trame_broker_token = os.environ.get("PVWEB_TRAME_BROKER_TOKEN") or None

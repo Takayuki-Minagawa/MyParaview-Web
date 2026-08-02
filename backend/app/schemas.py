@@ -364,6 +364,30 @@ def validate_stats_params(params: dict[str, Any]) -> dict[str, Any]:
     return {**params, "bins": bins}
 
 
+def validate_movie_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Validate movie rendering and encoding parameters.
+
+    Omitting ``format`` intentionally preserves the historical frame-PNG ZIP
+    artifact.  Video codecs and quality knobs are not client-controlled; the
+    worker maps the two video containers to fixed, interoperable codecs.
+    """
+    normalized = validate_render_params(params)
+    output_format = params.get("format", "zip")
+    if not isinstance(output_format, str) or output_format not in {
+        "zip",
+        "mp4",
+        "webm",
+    }:
+        raise ValueError("format must be zip, mp4, or webm")
+    fps = _integer_param(params, "fps", 24)
+    if not (1 <= fps <= 120):
+        raise ValueError("fps must be between 1 and 120")
+    # This internal field is injected from PVWEB_FFMPEG by app.worker.  Never
+    # retain a client-provided executable path in a persisted Job.
+    normalized.pop("ffmpeg_executable", None)
+    return {**normalized, "format": output_format, "fps": fps}
+
+
 class JobCreate(BaseModel):
     project_id: str
     kind: JobKind
@@ -374,8 +398,10 @@ class JobCreate(BaseModel):
     def validate_operation_params(self):
         if self.kind == "filter":
             self.params = validate_filter_params(self.params)
-        elif self.kind in {"render", "movie"}:
+        elif self.kind == "render":
             self.params = validate_render_params(self.params)
+        elif self.kind == "movie":
+            self.params = validate_movie_params(self.params)
         elif self.kind == "stats":
             self.params = validate_stats_params(self.params)
         return self

@@ -3,6 +3,7 @@ import type {
   Artifact,
   Dataset,
   Job,
+  MovieParams,
   RenderSession,
   ServerFilterParams,
   SliceAxis,
@@ -49,6 +50,9 @@ export interface DatasetJobControls {
   clientExportPending: boolean;
   filterPending: boolean;
   serverFilterAvailable: boolean;
+  videoExportAvailable: boolean;
+  onMovieExport: (params: MovieParams) => void;
+  moviePending: boolean;
   onRunFilter: (params: ServerFilterParams) => void;
   onJobCreated: (job: Job) => void;
   onDownloadTimestep: (index: number) => void;
@@ -204,10 +208,13 @@ export const PropertiesPanel = memo(function PropertiesPanel({
         onConvert={jobs.onConvert}
         convertPending={jobs.convertPending}
         serverFilterAvailable={jobs.serverFilterAvailable}
+        videoExportAvailable={jobs.videoExportAvailable}
         onRunStats={jobs.onRunStats}
         statsPending={jobs.statsPending}
         onClientExport={jobs.onClientExport}
         clientExportPending={jobs.clientExportPending}
+        onMovieExport={jobs.onMovieExport}
+        moviePending={jobs.moviePending}
         onPromoteArtifact={jobs.onPromoteArtifact}
         promotePendingIds={jobs.promotePendingIds}
         onError={onError}

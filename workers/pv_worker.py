@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -166,10 +169,8 @@ def render(source: str, output: str, params_file: str) -> None:
     simple.SaveScreenshot(output, view)
 
 
-def movie(source: str, output_dir: str, params_file: str) -> None:
-    """Render one PNG frame per timestep into ``output_dir``."""
-    simple = _paraview()
-    params = json.loads(Path(params_file).read_text(encoding="utf-8"))
+def _render_movie_frames(simple, source: str, output_dir: Path, params: dict) -> list[Path]:
+    """Render one PNG per timestep and return the ordered frame paths."""
     reader = simple.OpenDataFile(source)
     if reader is None:
         raise RuntimeError(f"ParaView has no reader for {source}")
@@ -178,12 +179,150 @@ def movie(source: str, output_dir: str, params_file: str) -> None:
     timesteps = [float(value) for value in (getattr(reader, "TimestepValues", None) or [])]
     if not timesteps:
         timesteps = [0.0]
-    frames_root = Path(output_dir)
-    frames_root.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames: list[Path] = []
     for index, time_value in enumerate(timesteps):
         view.ViewTime = time_value
         simple.Render(view)
-        simple.SaveScreenshot(str(frames_root / f"frame-{index:04d}.png"), view)
+        frame = output_dir / f"frame-{index:04d}.png"
+        simple.SaveScreenshot(str(frame), view)
+        frames.append(frame)
+    return frames
+
+
+def _ffmpeg_argv(
+    executable: str,
+    frames_dir: Path,
+    output: Path,
+    output_format: str,
+    fps: int,
+) -> list[str]:
+    """Build the complete ffmpeg argv; no client value becomes an option."""
+    common = [
+        executable,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-framerate",
+        str(fps),
+        "-start_number",
+        "0",
+        "-i",
+        str(frames_dir / "frame-%04d.png"),
+        "-an",
+        # yuv420p codecs need even dimensions.  Padding avoids silently
+        # rejecting otherwise valid render sizes while preserving every pixel.
+        "-vf",
+        "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+    ]
+    if output_format == "mp4":
+        codec = [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+        ]
+    elif output_format == "webm":
+        codec = [
+            "-c:v",
+            "libvpx-vp9",
+            "-crf",
+            "32",
+            "-b:v",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+        ]
+    else:
+        raise RuntimeError(f"unsupported movie video format {output_format!r}")
+    return [*common, *codec, str(output)]
+
+
+def _encode_video(frames_dir: Path, output: Path, params: dict) -> None:
+    executable_value = params.get("ffmpeg_executable")
+    if not isinstance(executable_value, str) or not executable_value:
+        raise RuntimeError("video export requires a validated PVWEB_FFMPEG executable")
+    executable = Path(executable_value)
+    if (
+        not executable.is_absolute()
+        or not executable.is_file()
+        or not os.access(executable, os.X_OK)
+    ):
+        raise RuntimeError("PVWEB_FFMPEG is not an executable absolute path")
+    output_format = params["format"]
+    fps = params.get("fps")
+    if (
+        isinstance(fps, bool)
+        or not isinstance(fps, int)
+        or not 1 <= fps <= 120
+    ):
+        raise RuntimeError("movie fps must be an integer between 1 and 120")
+    expected_suffix = f".{output_format}"
+    if output.suffix.lower() != expected_suffix:
+        raise RuntimeError(
+            f"movie output suffix must be {expected_suffix} for format {output_format}"
+        )
+    argv = _ffmpeg_argv(
+        str(executable), frames_dir, output, output_format, fps
+    )
+    try:
+        # Do not create a child process group: the API's pvpython timeout and
+        # cancellation handler owns the existing group and can terminate this
+        # ffmpeg descendant together with the worker.  shell=False plus a
+        # complete argv keeps filenames and options out of shell parsing.
+        completed = subprocess.run(
+            argv,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"failed to start PVWEB_FFMPEG: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown ffmpeg error").strip()
+        raise RuntimeError(
+            f"ffmpeg failed ({completed.returncode}): {detail[-4000:]}"
+        )
+    if not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError("ffmpeg produced no video artifact")
+
+
+def movie(source: str, output: str, params_file: str) -> int:
+    """Render a legacy frame ZIP input directory or an encoded video file."""
+    simple = _paraview()
+    params = json.loads(Path(params_file).read_text(encoding="utf-8"))
+    output_format = params.get("format", "zip")
+    if output_format == "zip":
+        return len(_render_movie_frames(simple, source, Path(output), params))
+    if output_format not in {"mp4", "webm"}:
+        raise RuntimeError(f"unsupported movie format {output_format!r}")
+
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Validate the executable before doing potentially expensive rendering.
+    executable = params.get("ffmpeg_executable")
+    if not isinstance(executable, str) or not Path(executable).is_absolute():
+        raise RuntimeError("video export requires a validated PVWEB_FFMPEG executable")
+    if not Path(executable).is_file() or not os.access(executable, os.X_OK):
+        raise RuntimeError("PVWEB_FFMPEG is not an executable absolute path")
+    with tempfile.TemporaryDirectory(
+        prefix="pvweb-video-frames-", dir=str(output_path.parent)
+    ) as frames_dir:
+        frames_root = Path(frames_dir)
+        frames = _render_movie_frames(simple, source, frames_root, params)
+        _encode_video(frames_root, output_path, params)
+    return len(frames)
 
 
 def main(argv: list[str]) -> None:
@@ -197,7 +336,8 @@ def main(argv: list[str]) -> None:
         render(argv[2], argv[3], argv[4])
         return
     if len(argv) == 5 and argv[1] == "movie":
-        movie(argv[2], argv[3], argv[4])
+        frame_count = movie(argv[2], argv[3], argv[4])
+        print(json.dumps({"frame_count": frame_count}, allow_nan=False))
         return
     raise SystemExit(
         "usage: pv_worker.py metadata SOURCE | (filter|convert|pipeline|render) SOURCE OUTPUT PARAMS"

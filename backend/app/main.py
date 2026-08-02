@@ -21,6 +21,7 @@ from .db import SessionLocal, init_db
 from .jobs import recover_interrupted_jobs
 from .models import Artifact, AuditEvent, Dataset, Job, Pipeline, RenderSession
 from .routers import artifacts, assist, datasets, jobs, pipelines, projects, sessions
+from .worker import ffmpeg_available
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,7 @@ def capabilities() -> dict:
             and settings.oidc_jwks_url
         ),
         "paraview_worker": bool(settings.worker_command),
+        "video_export": bool(settings.worker_command) and ffmpeg_available(),
         "trame_sessions": bool(settings.trame_broker_url),
     }
 

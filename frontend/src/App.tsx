@@ -150,6 +150,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     exportDataset, exportPending,
     convertDataset, convertPending,
     runStats, statsPending,
+    exportMovie, moviePending,
     runServerFilter, filterPending,
     onAssistJobCreated, promoteArtifact, promotePendingIds,
     downloadTimestep, resetPending,
@@ -578,15 +579,19 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     promotePendingIds,
     onClientExport: clientExport,
     clientExportPending,
+    onMovieExport: exportMovie,
+    moviePending,
     filterPending,
     serverFilterAvailable,
+    videoExportAvailable: serverCapabilities?.video_export ?? false,
     onRunFilter: runServerFilter,
     onJobCreated: onAssistJobCreated,
     onDownloadTimestep: downloadTimestep,
   }), [
     exportDataset, exportPending, convertDataset, convertPending,
     runStats, statsPending, promoteArtifact, promotePendingIds,
-    clientExport, clientExportPending, filterPending, serverFilterAvailable,
+    clientExport, clientExportPending, exportMovie, moviePending,
+    filterPending, serverFilterAvailable, serverCapabilities?.video_export,
     runServerFilter, onAssistJobCreated, downloadTimestep,
   ]);
 

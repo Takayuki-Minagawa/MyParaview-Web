@@ -330,6 +330,20 @@ button:hover { border-color: var(--accent); }
 .artifact-list li { display: grid; gap: 2px; margin-bottom: 7px; font-size: 12px; }
 .artifact-list a { color: #8ec4ff; overflow-wrap: anywhere; }
 .artifact-list span { color: var(--muted); font-size: 11px; }
+.movie-export {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.movie-export legend { padding: 0 4px; font-size: 12px; font-weight: 600; }
+.movie-export-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.movie-export-grid label { display: grid; gap: 3px; min-width: 0; }
+.movie-export-grid label > span { color: var(--muted); font-size: 11px; }
+.movie-export-grid input, .movie-export-grid select { min-width: 0; width: 100%; }
+.movie-export .muted { margin: 0; }
 
 .meta-table { width: 100%; border-collapse: collapse; }
 .meta-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 3px 8px 3px 0; vertical-align: top; white-space: nowrap; }

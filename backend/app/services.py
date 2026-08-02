@@ -27,6 +27,7 @@ from .storage import store
 from .worker import (
     extract_external_metadata,
     run_movie_frames,
+    run_movie_video,
     run_pipeline_transform,
     run_transform,
 )
@@ -495,15 +496,27 @@ def run_stats_operation(dataset_id: str, params: dict):
 
 
 def run_movie_export(dataset_id: str, params: dict):
-    """Render per-timestep frames through the ParaView worker into a ZIP artifact."""
+    """Render timestep frames into the legacy ZIP or a fixed-codec video."""
 
     def body(ctx: JobContext) -> dict:
         def plan(source: _DatasetSource):
+            output_format = params.get("format", "zip")
+            if output_format not in {"zip", "mp4", "webm"}:
+                raise ValueError("movie format must be zip, mp4, or webm")
+            fps = int(params.get("fps", 24))
+            movie_params = {**params, "format": output_format, "fps": fps}
+            video_specs = {
+                "mp4": (".mp4", "video/mp4"),
+                "webm": (".webm", "video/webm"),
+            }
+            output_ext, content_type = video_specs.get(
+                output_format, (".zip", "application/zip")
+            )
             spec = _ArtifactSpec(
-                filename=f"{_stem(source.filename)}-movie.zip",
-                output_ext=".zip",
-                kind="movie_frames",
-                content_type="application/zip",
+                filename=f"{_stem(source.filename)}-movie{output_ext}",
+                output_ext=output_ext,
+                kind="movie_frames" if output_format == "zip" else "movie_video",
+                content_type=content_type,
             )
 
             def produce(source_path: Optional[Path], object_key: str):
@@ -515,17 +528,38 @@ def run_movie_export(dataset_id: str, params: dict):
                         else source_path
                     )
                     ctx.update(progress=0.2, log_line="rendering timestep frames")
-                    frames = run_movie_frames(Path(worker_source), root / "frames", params, ctx)
+                    if output_format == "zip":
+                        frames = run_movie_frames(
+                            Path(worker_source), root / "frames", movie_params, ctx
+                        )
+                        ctx.check_cancelled()
+                        ctx.update(
+                            progress=0.8,
+                            log_line=f"packaging {len(frames)} frames",
+                        )
+                        output_path = root / spec.filename
+                        with zipfile.ZipFile(
+                            output_path, "w", compression=zipfile.ZIP_DEFLATED
+                        ) as archive:
+                            for frame in frames:
+                                archive.write(frame, arcname=frame.name)
+                        frame_count = len(frames)
+                    else:
+                        ctx.update(
+                            progress=0.4,
+                            log_line=f"encoding {output_format} at {fps} fps",
+                        )
+                        output_path = root / spec.filename
+                        frame_count = run_movie_video(
+                            Path(worker_source), output_path, movie_params, ctx
+                        )
                     ctx.check_cancelled()
-                    ctx.update(progress=0.8, log_line=f"packaging {len(frames)} frames")
-                    archive_path = root / spec.filename
-                    with zipfile.ZipFile(
-                        archive_path, "w", compression=zipfile.ZIP_DEFLATED
-                    ) as archive:
-                        for frame in frames:
-                            archive.write(frame, arcname=frame.name)
-                    size = store.copy_in(object_key, archive_path)
-                return size, {"frame_count": len(frames)}
+                    size = store.copy_in(object_key, output_path)
+                return size, {
+                    "frame_count": frame_count,
+                    "format": output_format,
+                    "fps": fps,
+                }
 
             return spec, produce
 

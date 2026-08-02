@@ -280,5 +280,6 @@ export interface ServerCapabilities {
   object_store: "local" | "s3";
   oidc: boolean;
   paraview_worker: boolean;
+  video_export: boolean;
   trame_sessions: boolean;
 }

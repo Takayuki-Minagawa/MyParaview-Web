@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -203,3 +204,79 @@ def test_metadata_omits_non_finite_bounds(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["bounds"] is None
     assert payload["timesteps"] is None
+
+
+@pytest.mark.parametrize(
+    ("output_format", "codec"),
+    [("mp4", "libx264"), ("webm", "libvpx-vp9")],
+)
+def test_ffmpeg_encoding_uses_safe_argv_and_fixed_codec(
+    tmp_path, monkeypatch, output_format, codec
+):
+    executable = tmp_path / "ffmpeg executable"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    frames_dir = tmp_path / "frames; no shell"
+    frames_dir.mkdir()
+    output = tmp_path / f"movie; no shell.{output_format}"
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        output.write_bytes(b"video")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(pv_worker.subprocess, "run", fake_run)
+
+    pv_worker._encode_video(
+        frames_dir,
+        output,
+        {
+            "format": output_format,
+            "fps": 30,
+            "ffmpeg_executable": str(executable.resolve()),
+        },
+    )
+
+    assert len(calls) == 1
+    argv, kwargs = calls[0]
+    assert argv[0] == str(executable.resolve())
+    assert argv[-1] == str(output)
+    assert str(frames_dir / "frame-%04d.png") in argv
+    assert argv[argv.index("-framerate") + 1] == "30"
+    assert argv[argv.index("-c:v") + 1] == codec
+    assert argv[argv.index("-pix_fmt") + 1] == "yuv420p"
+    assert kwargs["shell"] is False
+    assert "start_new_session" not in kwargs
+    assert kwargs["stdin"] is subprocess.DEVNULL
+
+
+def test_ffmpeg_encoding_rejects_untrusted_or_failed_executable(tmp_path, monkeypatch):
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    output = tmp_path / "movie.mp4"
+    with pytest.raises(RuntimeError, match="executable absolute path"):
+        pv_worker._encode_video(
+            frames_dir,
+            output,
+            {"format": "mp4", "fps": 24, "ffmpeg_executable": "ffmpeg"},
+        )
+
+    executable = tmp_path / "ffmpeg"
+    executable.write_text("#!/bin/sh\nexit 1\n")
+    executable.chmod(0o700)
+    monkeypatch.setattr(
+        pv_worker.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 7, "", "codec missing"),
+    )
+    with pytest.raises(RuntimeError, match=r"ffmpeg failed \(7\): codec missing"):
+        pv_worker._encode_video(
+            frames_dir,
+            output,
+            {
+                "format": "mp4",
+                "fps": 24,
+                "ffmpeg_executable": str(executable.resolve()),
+            },
+        )

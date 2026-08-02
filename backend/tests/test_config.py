@@ -77,6 +77,14 @@ def test_worker_command_uses_shell_style_splitting(monkeypatch):
     assert Settings().worker_command == ["/opt/pv/bin/pvpython", "--force-offscreen", "-dr"]
 
 
+def test_ffmpeg_setting_is_a_single_trimmed_executable(monkeypatch):
+    monkeypatch.delenv("PVWEB_FFMPEG", raising=False)
+    assert Settings().ffmpeg_executable == ""
+
+    monkeypatch.setenv("PVWEB_FFMPEG", "  /opt/ffmpeg/bin/ffmpeg  ")
+    assert Settings().ffmpeg_executable == "/opt/ffmpeg/bin/ffmpeg"
+
+
 def test_empty_optional_envs_normalize_to_none(monkeypatch):
     monkeypatch.setenv("PVWEB_S3_ENDPOINT_URL", "")
     monkeypatch.setenv("PVWEB_OIDC_ISSUER", "")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -16,6 +17,37 @@ from .metadata import ArrayInfo, DatasetMetadata
 
 class WorkerUnavailable(RuntimeError):
     pass
+
+
+def resolve_ffmpeg_executable() -> str:
+    """Return the configured ffmpeg as an executable absolute path.
+
+    The client never supplies this value.  Resolving and validating the
+    operator-controlled setting here prevents a movie parameter from becoming
+    an executable or a shell fragment in the pvpython worker.
+    """
+    configured = settings.ffmpeg_executable
+    if not configured:
+        raise WorkerUnavailable("video export requires PVWEB_FFMPEG (ffmpeg capability)")
+    resolved = shutil.which(configured)
+    if resolved is None:
+        raise WorkerUnavailable(
+            f"PVWEB_FFMPEG executable was not found or is not executable: {configured}"
+        )
+    path = Path(resolved).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise WorkerUnavailable(
+            f"PVWEB_FFMPEG executable was not found or is not executable: {configured}"
+        )
+    return str(path)
+
+
+def ffmpeg_available() -> bool:
+    try:
+        resolve_ffmpeg_executable()
+    except WorkerUnavailable:
+        return False
+    return True
 
 
 def _command(*args: str) -> list[str]:
@@ -150,3 +182,38 @@ def run_movie_frames(
     if not frames:
         raise RuntimeError("ParaView worker produced no movie frames")
     return frames
+
+
+def run_movie_video(
+    source: Path,
+    output: Path,
+    params: dict,
+    ctx: JobContext,
+) -> int:
+    """Render and encode a video within the worker process-group contract.
+
+    ffmpeg is launched by ``pv_worker.py`` without creating a new process
+    group.  Therefore the existing timeout/cancel handling in ``_run`` kills
+    both pvpython and its ffmpeg descendant.
+    """
+    ffmpeg_executable = resolve_ffmpeg_executable()
+    worker_params = {
+        **params,
+        # Always overwrite a similarly named client field with the trusted,
+        # resolved operator setting.
+        "ffmpeg_executable": ffmpeg_executable,
+    }
+    params_path = _write_params(output.with_suffix(".json"), worker_params)
+    result = _run(_command("movie", str(source), str(output), str(params_path)), ctx)
+    _require_output(output)
+    # The final stdout line is a small worker-owned manifest.  ParaView may
+    # write informational lines before it, so parse from the end.
+    for line in reversed(result.stdout.splitlines()):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        frame_count = payload.get("frame_count") if isinstance(payload, dict) else None
+        if isinstance(frame_count, int) and not isinstance(frame_count, bool) and frame_count > 0:
+            return frame_count
+    raise RuntimeError("ParaView worker returned no valid video frame count")

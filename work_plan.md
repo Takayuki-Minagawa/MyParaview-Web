@@ -194,14 +194,13 @@ MVP〜M3の本線とは別トラックで、リスクを取らずに検証する
 
 ## 9. 2026-08追加計画の完了状況と次アクション
 
-[2026-08追加計画](./docs/feature-plan-2026-08.md) のG1〜G13は実装済みで、G14も
-backend/frontend coverageとDependabot設定までは完了した。G14のLICENSEだけは、権利者による
-ライセンス種別の選択が必要なため保留しており、選択前にこちらで許諾条件を決めない。
+[2026-08追加計画](./docs/feature-plan-2026-08.md) のG1〜G14は実装・検証済みである。
+G14はbackend/frontend coverage、Dependabot設定、MIT LICENSEを完了し、配布containerにも
+ライセンス本文を同梱した。
 
-残る次アクションは次のとおり。
+追加計画外の次アクションは次のとおり。
 
-1. **G14**: 利用者がMITまたはApache-2.0等のライセンスを選択後、正式な`LICENSE`を追加する。
-2. **未消化の大規模項目**: M0-Eの実測、M2のblock/set選択、M3のLOD/progressive rendering・
+1. **未消化の大規模項目**: M0-Eの実測、M2のblock/set選択、M3のLOD/progressive rendering・
    Kubernetes/HPC連携を、対象データと運用要件が確定した段階で進める。
 
 外部runtime検証はParaView 5.10.1の実`pvpython`で完了した。G10の3 filterと、G13のPVD frame render、

@@ -29,6 +29,7 @@ FROM nginx:1.27-alpine AS runtime
 
 COPY frontend/nginx.conf /etc/nginx/nginx.conf
 COPY --from=build --chown=nginx:nginx /app/dist /usr/share/nginx/html
+COPY --chown=nginx:nginx LICENSE /usr/share/licenses/myparaview-web/LICENSE
 
 RUN mkdir -p /tmp/nginx/client_temp /tmp/nginx/proxy_temp \
     /tmp/nginx/fastcgi_temp /tmp/nginx/uwsgi_temp /tmp/nginx/scgi_temp \

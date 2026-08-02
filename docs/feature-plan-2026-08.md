@@ -8,9 +8,8 @@
 本計画は未着手の次期候補 F3〜F10、[work_plan.md](../work_plan.md) M2/M3 の未消化項目、
 および新規提案を統合し、優先度付きの実施計画に翻訳したものである。
 
-> **実施状況（2026-08-02）**: G1〜G13は実装済み。G14もbackend/frontend coverageと
-> Dependabot設定までは完了した。LICENSEは利用者によるライセンス選択待ちであり、
-> 許諾条件をこちらで決めず保留する。詳細は[§6 実施結果](#6-実施結果2026-08-02)を参照。
+> **実施状況（2026-08-03）**: G1〜G14を実装・検証済み。G14はbackend/frontend coverage、
+> Dependabot設定、MIT LICENSEを完了した。詳細は[§6 実施結果](#6-実施結果2026-08-02)を参照。
 
 **選定基準**: 「解析ユーザー価値 ÷ 実装コスト」を第一軸とし、既存基盤
 （ViewState / ジョブ基盤 / stats / 分割済み scene builder / DisplayStateContext）の
@@ -39,8 +38,7 @@
   追加し、サーバfilterをCell Data to Point Data / Resample To Image / Decimationを含む7種へ拡張
 - **運用**: backend/frontend containerとfull-stack Compose、Redis/RQ worker、
   PNG frame ZIPに加えてMP4/WebM exportを追加
-- **リポジトリ衛生**: pytest-cov / Vitest coverageとDependabot設定を追加。
-  LICENSEだけは利用者の選択待ち
+- **リポジトリ衛生**: pytest-cov / Vitest coverage、Dependabot設定、MIT LICENSEを追加
 
 避けるべき方向（[additional_feature_candidates.md](../additional_feature_candidates.md) の結論を維持）:
 旧 ParaViewWeb 基盤の採用、vtk.js での全 VTK フィルタ再実装、WebGPU/WASM の本線化。
@@ -83,7 +81,7 @@
 | G11 | **アプリ本体のコンテナ化** | RI-3 | 中（運用） | 中 | backend / frontend（nginx静的配信）のDockerfileと、migration/API/RQ workerを含むfull-stack Compose profileを実装 |
 | G12 | **ジョブキューの外部化** | F6 | 中（運用） | 中〜高 | in-process local executorを開発用に維持し、Redis/RQの独立worker、再起動復旧、retry/cancel契約、永続object削除outboxを追加 |
 | G13 | **animation/video export** | M3 | 中 | 中 | 後方互換のframe PNG ZIPを維持し、pv_worker + ffmpegでMP4/WebM生成を追加 |
-| G14 | **リポジトリ衛生** | 新規 | 中（保守） | 低 | pytest-cov / Vitest coverageとDependabotは完了。LICENSEは利用者のライセンス選択待ち |
+| G14 | **リポジトリ衛生** | 新規 | 中（保守） | 低 | pytest-cov / Vitest coverage、Dependabot、MIT LICENSEを追加 |
 
 ---
 
@@ -101,7 +99,7 @@
 ### Phase G-B: 小粒の独立機能（並行可能）
 1. G6 カスタム colormap import（前提クリア済み・難易度低）
 2. G4 タグ/検索（Alembic 0009 + 一覧フィルタ）
-3. G14 リポジトリ衛生（カバレッジ / Dependabot完了、LICENSE選択待ち）
+3. G14 リポジトリ衛生（カバレッジ / Dependabot / MIT LICENSE）
 
 ### Phase G-C: 比較・計測
 1. G3 計測ツール（G2 のピッキング基盤を再利用するため G-A 後）
@@ -167,7 +165,7 @@
 | G11 | 完了 | backend/frontend Dockerfile、nginx API proxy、migration/API/RQ worker/Redisを含む`full-stack` Compose profileを追加した |
 | G12 | 完了 | local executorを維持しつつRedis/RQを追加した。永続job IDだけをenqueueし、再起動復旧、retry、DB協調cancel、Redis障害時の失敗復旧を実装した。Alembic 0010のobject削除outboxはproducerと同じjob leaseを跨いでdrainし、storage障害・process crash後も再試行する |
 | G13 | 完了 | 後方互換のPNG frame ZIPに加え、ffmpegによるMP4（H.264）とWebM（VP9）export、capability検出、入力上限を追加した |
-| G14 | 一部保留 | backend/frontend coverageとDependabot（pip/npm/GitHub Actions/Docker Compose）は完了。LICENSEは利用者のライセンス選択待ち |
+| G14 | 完了 | backend/frontend coverage、Dependabot（pip/npm/GitHub Actions/Docker Compose）、MIT LICENSEを追加し、配布containerにもライセンス本文を同梱した |
 
 ### 検証記録
 

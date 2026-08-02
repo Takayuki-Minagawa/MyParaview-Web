@@ -79,7 +79,8 @@ placeholderを実値へ置き換えてください。
 ```bash
 docker compose --env-file .env.production \
   -f infra/docker-compose.yml --profile full-stack up --build -d
-docker compose -f infra/docker-compose.yml --profile full-stack ps
+docker compose --env-file .env.production \
+  -f infra/docker-compose.yml --profile full-stack ps
 ```
 
 loopback上でdev認証を使う確認手順とhealth endpointは
@@ -258,9 +259,8 @@ GitHub DependabotはPython・npm・GitHub Actions・Docker Composeの依存関�
 
 ## ライセンス
 
-現時点では、このリポジトリ固有のソースコードに対するオープンソースライセンスは未指定です。
-公開リポジトリとして閲覧できますが、再配布・改変・商用利用などの許諾は、明示的なLICENSEファイルが
-追加されるまで付与されません。
+このリポジトリ固有のソースコードは[MIT License](LICENSE)で提供します。著作権表示と
+ライセンス文を維持する条件で、利用・改変・再配布・商用利用が可能です。
 
 React、vtk.js、FastAPI、ParaView などの第三者ソフトウェアと依存パッケージには、それぞれの
 ライセンスが適用されます。配布物を作成する場合は、各依存関係のライセンス表記とNOTICEの条件を

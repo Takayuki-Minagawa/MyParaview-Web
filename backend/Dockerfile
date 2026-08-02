@@ -21,6 +21,7 @@ COPY backend/app ./app
 COPY backend/alembic ./alembic
 COPY backend/alembic.ini ./alembic.ini
 COPY workers /app/workers
+COPY LICENSE /usr/share/licenses/myparaview-web/LICENSE
 
 RUN addgroup --system --gid 10001 pvweb \
     && adduser --system --uid 10001 --ingroup pvweb --home /nonexistent pvweb \

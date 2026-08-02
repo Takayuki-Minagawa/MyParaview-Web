@@ -339,8 +339,9 @@ MINIO_BIND_ADDRESS=127.0.0.1 \
 3. `.github/dependabot.yml`がpip、npm、GitHub Actions、Docker Composeを週次対象にしていることを
    確認する。脆弱性PRが必要な場合はrepository settingsでDependabot alerts/security updatesも
    有効化する。
-4. LICENSEは利用者がライセンス種別を選択するまで未完了とする。選択前にMIT/Apache-2.0等を
-   推測して追加せず、READMEの「未指定」と実体を一致させる。
+4. rootの`LICENSE`が標準MIT本文と権利者表記を含み、READMEの表記と一致することを確認する。
+   backend/frontend runtime imageの`/usr/share/licenses/myparaview-web/LICENSE`にも同じ本文が
+   同梱されることを確認する。
 
 ## Security boundary test
 

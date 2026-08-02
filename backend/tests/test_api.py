@@ -26,6 +26,24 @@ def test_project_crud(client):
     assert client.get("/projects/nope").status_code == 404
 
 
+def test_project_delete_sync_drain_batch_is_bounded():
+    from app.routers.projects import (
+        PROJECT_DELETE_SYNC_DRAIN_LIMIT,
+        _project_delete_drain_batch_size,
+    )
+
+    assert _project_delete_drain_batch_size(0) == 1
+    assert _project_delete_drain_batch_size(12) == 12
+    assert (
+        _project_delete_drain_batch_size(PROJECT_DELETE_SYNC_DRAIN_LIMIT)
+        == PROJECT_DELETE_SYNC_DRAIN_LIMIT
+    )
+    assert (
+        _project_delete_drain_batch_size(PROJECT_DELETE_SYNC_DRAIN_LIMIT + 1)
+        == PROJECT_DELETE_SYNC_DRAIN_LIMIT
+    )
+
+
 def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data_dir, monkeypatch):
     from sqlalchemy import or_, select
 

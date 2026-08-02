@@ -63,8 +63,8 @@ PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db \
   実ffmpeg単体でも3 frame（322×242）の両codecを確認した。
 - 実ParaView 5.10の内蔵Python 3.8で見つかった`str.removeprefix`非互換を修正し、metadataが
   PolyData、point/cell数、point/cell配列を返すことも再確認した。
-- backend 355 test、frontend 217 test、Python client 3 testがすべてPASS。最終coverageはbackendが
-  line 84.60% / branch 67.75%（branch込み総合80.81%）、frontendがline 51.63% / branch 46.06%だった。
+- backend 356 test、frontend 218 test、Python client 3 testがすべてPASS。最終coverageはbackendが
+  line 84.59% / branch 67.67%（branch込み総合80.78%）、frontendがline 51.74% / branch 46.15%だった。
   新規logicと外部capability未設定時の失敗境界を含む。
 
 実runtime検証には`openfoam/openfoam11-paraview510:latest`のParaView 5.10.1を使用した。

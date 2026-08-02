@@ -6,6 +6,7 @@ import {
   hasColorMap,
   registerCustomColorMap,
   registeredCustomColorMaps,
+  retainColorMap,
   sampleColorMap,
 } from "./colormap";
 
@@ -85,5 +86,27 @@ describe("custom colormap registry", () => {
     expect(registeredCustomColorMaps()).toHaveLength(MAX_REGISTERED_CUSTOM_COLOR_MAPS);
     expect(hasColorMap(first)).toBe(false);
     expect(hasColorMap(`custom:coverage-${MAX_REGISTERED_CUSTOM_COLOR_MAPS}:a`)).toBe(true);
+  });
+
+  it("keeps a colormap retained by an active viewer during eviction", () => {
+    const active = "custom:active-selection:a" as const;
+    registerCustomColorMap(active, "Active", stops);
+    const releasePrimary = retainColorMap(active);
+    const releaseComparison = retainColorMap(active);
+    releasePrimary();
+    try {
+      for (let index = 0; index < MAX_REGISTERED_CUSTOM_COLOR_MAPS; index += 1) {
+        registerCustomColorMap(
+          `custom:active-filler-${index}:a` as never,
+          `Active filler ${index}`,
+          stops,
+        );
+      }
+      expect(registeredCustomColorMaps()).toHaveLength(MAX_REGISTERED_CUSTOM_COLOR_MAPS);
+      expect(hasColorMap(active)).toBe(true);
+      expect(() => colorMapCssGradient(active)).not.toThrow();
+    } finally {
+      releaseComparison();
+    }
   });
 });

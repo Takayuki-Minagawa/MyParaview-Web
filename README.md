@@ -160,7 +160,8 @@ APIと同じbackend image/environmentで`python -m app.rq_worker`を起動しま
 `full-stack` Compose profileではRedisとRQ workerも自動起動します。
 DB commit後のobject削除は永続outboxから再試行されます。APIの周期drainは
 `PVWEB_OBJECT_DELETE_INTERVAL_SECONDS`（既定30秒）と
-`PVWEB_OBJECT_DELETE_BATCH_SIZE`（既定100件）で上限を調整できます。
+`PVWEB_OBJECT_DELETE_BATCH_SIZE`（既定100件）で上限を調整できます。project削除requestでは
+最大5,000件を同期drainし、それを超える安全な残りは周期drainへ引き継ぎます。
 
 ## ParaView / ffmpeg worker capability
 
@@ -183,6 +184,8 @@ PVWEB_WORKER_TIMEOUT=900
 
 ParaView未設定時、これらのジョブは成功を偽らず`PVWEB_PVPYTHON`必要の明示エラーでfailedになります。
 MP4/WebMは`PVWEB_FFMPEG`も必要で、未設定時もPNG ZIPは引き続き利用できます。
+ffmpegの検出成功・失敗はAPI process内でcacheされます。起動後にffmpegをinstallした場合や
+実行fileを差し替えた場合は、APIとjob workerを再起動してcapabilityを再検出してください。
 配列統計（`kind=stats`）はworker不要で、CSVとascii VTK XMLの範囲でmin/max/mean/stddevと
 ヒストグラムをJSON Artifactに出力します（binary/appended配列は明示的に失敗します）。
 

@@ -21,6 +21,11 @@ ParaView worker への変換ジョブなしで vtk.js の `PolyData` として�
 6境界面だけを走査する。ビューアに理由と server VTP conversion の案内を表示し、従来の
 サーバ側 **Convert to VTP** 操作をフォールバックとして残す。
 
+現行実装は境界topologyだけを生成する一方、source pointとpoint attributeは格子全体ぶんを
+保持し、複数Piece結合時にcopyする。200万point上限はこの使用量を有界にする安全策であり、
+attribute配列数に応じた増加は別途発生する。将来この上限を引き上げる場合は、境界で参照する
+pointとattributeだけへ再indexするcompactionを先に実装する。
+
 ## 自動検証
 
 ```bash

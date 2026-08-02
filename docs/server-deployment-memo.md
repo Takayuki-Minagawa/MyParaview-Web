@@ -150,7 +150,7 @@ web imageを再buildします。
 
 API imageは既定ではloopbackからのproxy headerだけを信頼します。Composeは専用networkの
 `PVWEB_COMPOSE_SUBNET`だけを`FORWARDED_ALLOW_IPS`へ渡します。サブネット競合を避けて値を
-変更する場合は、両変数を同じCIDRに設定してください。API portを直接公開する構成で
+変更する場合も、この1変数だけを変更してください。API portを直接公開する構成で
 `FORWARDED_ALLOW_IPS=*`を指定しないでください。
 
 ```bash
@@ -232,7 +232,8 @@ APIとjob-workerは起動時にDBの`queued` jobをRedisへ再投入します。
 実行中にworkerが失われたjobはRQ retry後に同じDB recordから再構築されます。
 object削除意図もPostgreSQLのoutboxへ先にcommitし、APIが既定30秒ごとに最大100件ずつ再試行します。
 間隔とbatch上限は`PVWEB_OBJECT_DELETE_INTERVAL_SECONDS`と
-`PVWEB_OBJECT_DELETE_BATCH_SIZE`で変更できます。
+`PVWEB_OBJECT_DELETE_BATCH_SIZE`で変更できます。project削除時は応答遅延を有界にするため
+最大5,000件だけをrequest内で同期drainし、残りはこの周期drainが回収します。
 
 `docker compose down` は通常volumeを残しますが、`docker compose down -v` は永続volumeを削除するため、
 本番では実行しません。DB recordとobjectを対応させる必要があるため、PostgreSQLとMinIO/S3は同じ

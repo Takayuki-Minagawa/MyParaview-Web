@@ -185,8 +185,8 @@
   H.264/yuv420p MP4とVP9/yuv420p WebMを生成・decode確認した。
 - 実ParaView 5.10の内蔵Python 3.8で見つかった`str.removeprefix`非互換も修正し、metadata経路を
   実runtimeで再確認した。
-- backend 355 test、frontend 217 test、Python client 3 testがすべてPASS。最終coverageはbackendが
-  line 84.60% / branch 67.75%（branch込み総合80.81%）、frontendがline 51.63% / branch 46.06%だった。
+- backend 356 test、frontend 218 test、Python client 3 testがすべてPASS。最終coverageはbackendが
+  line 84.59% / branch 67.67%（branch込み総合80.78%）、frontendがline 51.74% / branch 46.15%だった。
   外部capability未設定、numeric上限、RQ enqueue/restart/cancelを含む失敗境界も確認した。
 
 実runtime検証には`openfoam/openfoam11-paraview510:latest`のParaView 5.10.1を使用した。

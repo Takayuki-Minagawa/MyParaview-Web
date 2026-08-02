@@ -9,7 +9,7 @@ import type {
   TableCoordinates,
   VolumeOpacityPoint,
 } from "../types";
-import { colorMapCssGradient } from "../lib/colormap";
+import { colorMapCssGradient, retainColorMap } from "../lib/colormap";
 import { triggerBlobDownload } from "../lib/download";
 import { useMessages } from "../i18n-context";
 import type {
@@ -152,6 +152,9 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
   const [vectorGlyphSummary, setVectorGlyphSummary] = useState<VectorGlyphSummary | null>(null);
   const vectorGlyphSettingsRef = useRef(vectorGlyphSettings);
   vectorGlyphSettingsRef.current = vectorGlyphSettings;
+
+  useEffect(() => retainColorMap(colorMap), [colorMap]);
+
   const [planeSettings, setPlaneSettings] = useState<ClientPlaneSettings>({
     enabled: false,
     mode: "clip",

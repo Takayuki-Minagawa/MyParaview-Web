@@ -47,6 +47,7 @@ const MAPS: Record<string, ColorStop[]> = {
 };
 
 const CUSTOM_LABELS = new Map<CustomColorMapName, string>();
+const RETAINED_CUSTOM_COLOR_MAPS = new Map<CustomColorMapName, number>();
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const allowedKeys = new Set(allowed);
@@ -161,6 +162,18 @@ export function hasColorMap(name: unknown): name is ColorMapName {
   return typeof name === "string" && Object.prototype.hasOwnProperty.call(MAPS, name);
 }
 
+/** Prevent a custom colormap used by a mounted viewer from being evicted. */
+export function retainColorMap(name: ColorMapName): () => void {
+  if (!name.startsWith("custom:")) return () => undefined;
+  const id = name as CustomColorMapName;
+  RETAINED_CUSTOM_COLOR_MAPS.set(id, (RETAINED_CUSTOM_COLOR_MAPS.get(id) ?? 0) + 1);
+  return () => {
+    const remaining = (RETAINED_CUSTOM_COLOR_MAPS.get(id) ?? 1) - 1;
+    if (remaining > 0) RETAINED_CUSTOM_COLOR_MAPS.set(id, remaining);
+    else RETAINED_CUSTOM_COLOR_MAPS.delete(id);
+  };
+}
+
 export function registerCustomColorMap(
   id: CustomColorMapName,
   label: string,
@@ -175,13 +188,18 @@ export function registerCustomColorMap(
   }
   const validated = validatedStops(stops);
   // Refresh existing entries in insertion order and bound memory for
-  // long-lived tabs that open many embedded ViewStates.
+  // long-lived tabs that open many embedded ViewStates. Mounted viewers retain
+  // their active maps, so only entries that are not being rendered may leave.
   if (CUSTOM_LABELS.has(id)) CUSTOM_LABELS.delete(id);
   while (CUSTOM_LABELS.size >= MAX_REGISTERED_CUSTOM_COLOR_MAPS) {
-    const oldest = CUSTOM_LABELS.keys().next().value;
-    if (oldest === undefined) break;
-    CUSTOM_LABELS.delete(oldest);
-    delete MAPS[oldest];
+    const oldestUnused = Array.from(CUSTOM_LABELS.keys()).find(
+      (candidate) => !RETAINED_CUSTOM_COLOR_MAPS.has(candidate),
+    );
+    if (oldestUnused === undefined) {
+      throw new Error("The custom colormap registry is full with maps currently in use");
+    }
+    CUSTOM_LABELS.delete(oldestUnused);
+    delete MAPS[oldestUnused];
   }
   MAPS[id] = validated;
   CUSTOM_LABELS.set(id, normalizedLabel);

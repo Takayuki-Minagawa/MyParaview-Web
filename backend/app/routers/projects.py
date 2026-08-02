@@ -26,6 +26,11 @@ from ..schemas import (
 )
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+PROJECT_DELETE_SYNC_DRAIN_LIMIT = 5_000
+
+
+def _project_delete_drain_batch_size(object_count: int) -> int:
+    return min(max(object_count, 1), PROJECT_DELETE_SYNC_DRAIN_LIMIT)
 
 
 @router.post("", response_model=ProjectOut, status_code=201)
@@ -117,11 +122,12 @@ def delete_project(
     # The project and its local session records are already deleted. Keep
     # broker cleanup best-effort so its outage cannot misreport the committed
     # delete. Object cleanup is durable in the transaction-backed outbox.
-    # The request already enumerated every matching key. Drain them in one
-    # pass instead of leaving all but the configured periodic batch behind.
+    # Drain a generous bounded prefix immediately. Very large projects leave
+    # the durable tail for the periodic drainer instead of occupying one
+    # request worker for an unbounded number of object-store round trips.
     drain_object_deletions(
         object_keys=set(object_keys),
-        batch_size=max(len(object_keys), 1),
+        batch_size=_project_delete_drain_batch_size(len(object_keys)),
     )
     for remote_session_id in remote_session_ids:
         try_delete_remote(remote_session_id)

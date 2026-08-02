@@ -202,6 +202,7 @@ def test_metadata_omits_non_finite_bounds(monkeypatch, capsys):
     monkeypatch.setattr(pv_worker, "_paraview", MetadataSimple)
     pv_worker.metadata("source.cgns")
     payload = json.loads(capsys.readouterr().out)
+    assert payload["dataset_type"] == "UnstructuredGrid"
     assert payload["bounds"] is None
     assert payload["timesteps"] is None
 

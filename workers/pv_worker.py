@@ -52,8 +52,12 @@ def metadata(source: str) -> None:
     timesteps = raw_timesteps if all(map(math.isfinite, raw_timesteps)) else []
     raw_bounds = [float(value) for value in info.GetBounds()]
     bounds = raw_bounds if len(raw_bounds) == 6 and all(map(math.isfinite, raw_bounds)) else None
+    data_class_name = str(info.GetDataClassName())
     payload = {
-        "dataset_type": info.GetDataClassName().removeprefix("vtk"),
+        # ParaView 5.10 embeds Python 3.8, which has no str.removeprefix().
+        "dataset_type": (
+            data_class_name[3:] if data_class_name.startswith("vtk") else data_class_name
+        ),
         "num_points": int(info.GetNumberOfPoints()),
         "num_cells": int(info.GetNumberOfCells()),
         "num_blocks": int(info.GetNumberOfDataSets() or 1),

@@ -100,9 +100,10 @@ export const PropertiesPanel = memo(function PropertiesPanel({
     ? String(dataset.extra?.inner_type ?? "")
     : dataset.dataset_type;
   const isImageData = renderType === "ImageData";
-  // UnstructuredGrid renders as an extracted surface, which exports as VTP too.
+  // Grid formats render as extracted PolyData surfaces, which export as VTP too.
   const isClientExportable =
-    renderType === "PolyData" || renderType === "Table" || renderType === "UnstructuredGrid";
+    renderType === "PolyData" || renderType === "Table" || renderType === "UnstructuredGrid"
+    || renderType === "StructuredGrid" || renderType === "RectilinearGrid";
 
   return (
     <aside className="panel panel-right">

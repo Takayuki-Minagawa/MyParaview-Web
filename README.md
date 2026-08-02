@@ -18,6 +18,7 @@ trame session、PostgreSQL/S3連携はサーバーモードで提供する機能
 
 - VTP: surface / wireframe / points、point/cell scalar、5種のcolormap（cool-to-warm / viridis / grayscale / plasma / turbo）、手動range、opacity、凡例
 - VTU: ブラウザ内で外表面を抽出して直接描画（ascii / inline binary / raw appended、zlib対応。未対応形式はサーバVTP変換へ誘導）、point/cell scalar着色、表面のclient export
+- VTS/VTR: StructuredGrid / RectilinearGridの外表面をブラウザ内で抽出して直接描画（VTUと同じDataArray encoding範囲、未対応形式はサーバVTP変換へ誘導）
 - VTI: X/Y/Z slice とvolume rendering（2〜4点の不透明度transfer function編集）
 - CSV: X/Y/Z列選択による点群化（ブラウザ上限250,000点、無効行スキップ数を表示）
 - PVD: 参照ファイル込みbundle upload、時系列slider/playback、step単位download、完全bundle ZIP export
@@ -191,7 +192,7 @@ git diff --check
 
 ## 重要な制約
 
-- PVD browser playbackは現時点で各時刻1 DataSet（VTPまたはVTI、同一形式）です。
+- PVD browser playbackは現時点で各時刻1 DataSet（VTP/VTI/VTU/VTS/VTRの同一形式）です。
 - WebGPU/WASMはfeature detection段階で、rendererはvtk.js WebGLです。
 - trame/ParaView自体はこのrepositoryに同梱しません。外部capabilityとして接続します。
 - productionではworker/brokerをcontainer分離し、CPU/GPU/memory/time quotaを設定してください。

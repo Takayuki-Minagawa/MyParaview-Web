@@ -30,6 +30,7 @@ import {
 import {
   buildImageScene,
   buildPolyDataScene,
+  buildStructuredScene,
   buildTableScene,
   buildUnstructuredScene,
 } from "../lib/viewer/scenes";
@@ -58,6 +59,13 @@ import vtkXMLPolyDataWriter from "@kitware/vtk.js/IO/XML/XMLPolyDataWriter";
 import vtkAxesActor from "@kitware/vtk.js/Rendering/Core/AxesActor";
 import vtkOrientationMarkerWidget from "@kitware/vtk.js/Interaction/Widgets/OrientationMarkerWidget";
 import vtkImageMapper from "@kitware/vtk.js/Rendering/Core/ImageMapper";
+
+type SurfaceDatasetType = "PolyData" | "UnstructuredGrid" | "StructuredGrid" | "RectilinearGrid";
+
+function isSurfaceDatasetType(value: string | null | undefined): value is SurfaceDatasetType {
+  return value === "PolyData" || value === "UnstructuredGrid"
+    || value === "StructuredGrid" || value === "RectilinearGrid";
+}
 
 /** Imperative commands the parent can send without nonce-state plumbing. */
 export interface VtkViewerHandle {
@@ -158,15 +166,13 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     sliceAxis, sliceIndex, volumeOpacityPoints,
   };
 
-  const supported = datasetType === "PolyData" || datasetType === "ImageData"
-    || datasetType === "Table" || datasetType === "UnstructuredGrid";
+  const supported = datasetType === "ImageData" || datasetType === "Table"
+    || isSurfaceDatasetType(datasetType);
   const tableReady = datasetType !== "Table" || (
     !!tableCoordinates && new Set(Object.values(tableCoordinates)).size === 3
   );
   const renderable = !!url && supported && tableReady;
-  const planeToolAvailable = renderable && (
-    datasetType === "PolyData" || datasetType === "UnstructuredGrid"
-  );
+  const planeToolAvailable = renderable && isSurfaceDatasetType(datasetType);
 
   useImperativeHandle(ref, () => ({
     screenshot: () => {
@@ -282,7 +288,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
         applyGeometryColor(scene, display.colorBy, resolvedRange, display.colorMap);
         scene.prop.getProperty().setOpacity(display.opacity);
         scene.renderer.addActor(scene.prop);
-        if (datasetType === "PolyData" || datasetType === "UnstructuredGrid") {
+        if (isSurfaceDatasetType(datasetType)) {
           planeController = createClientPlaneController(scene);
           planeControllerRef.current = planeController;
           planeController?.apply(planeSettingsRef.current);
@@ -344,6 +350,10 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
         await buildPolyDataScene(scene, url, abortController.signal, isDisposed);
       } else if (datasetType === "UnstructuredGrid") {
         await buildUnstructuredScene(scene, url, strings, abortController.signal, isDisposed);
+      } else if (datasetType === "StructuredGrid" || datasetType === "RectilinearGrid") {
+        await buildStructuredScene(
+          scene, url, datasetType, strings, abortController.signal, isDisposed,
+        );
       } else if (datasetType === "Table" && tableCoordinates) {
         await buildTableScene(
           scene, url, tableCoordinates, strings, abortController.signal, isDisposed,

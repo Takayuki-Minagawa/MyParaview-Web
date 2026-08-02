@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { csvDiagnostics, tableToPolyData } from "./scenes";
+import { csvDiagnostics, structuredSurfaceToPolyData, tableToPolyData } from "./scenes";
 import { MESSAGES } from "../../i18n";
 
 const CSV = "x,y,z,temp\n0,0,0,1\n1,0,0,2\n1,1,0,bad\n";
@@ -38,5 +38,29 @@ describe("csvDiagnostics", () => {
     const text = csvDiagnostics(messages, 2, 3);
     expect(text).toContain("3");
     expect(text).toContain("2");
+  });
+});
+
+describe("structuredSurfaceToPolyData", () => {
+  it("attaches VTS/VTR boundary topology and scalar arrays", () => {
+    const output = structuredSurfaceToPolyData({
+      sourceType: "RectilinearGrid",
+      numberOfPoints: 4,
+      points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]),
+      polys: new Uint32Array([4, 0, 1, 3, 2]),
+      lines: new Uint32Array(),
+      verts: new Uint32Array(),
+      pointArrays: [{
+        name: "temperature", numberOfComponents: 1, values: new Float64Array([1, 2, 3, 4]),
+      }],
+      cellArrays: [{ name: "region", numberOfComponents: 1, values: new Float64Array([7]) }],
+      sourceCellCount: 1,
+      primitiveCount: 1,
+    });
+    expect(output.getNumberOfPoints()).toBe(4);
+    expect(Array.from(output.getPolys().getData())).toEqual([4, 0, 1, 3, 2]);
+    expect(output.getPointData().getArrayByName("temperature")?.getRange()).toEqual([1, 4]);
+    expect(output.getCellData().getArrayByName("region")?.getRange()).toEqual([7, 7]);
+    output.delete();
   });
 });

@@ -11,6 +11,8 @@
  * definitions) contribute their once-referenced (boundary) faces; 2D cells
  * pass through; lines/vertices are carried into the PolyData lines/verts.
  */
+import { parseVtkXmlDocument, readVtkDataArray } from "./vtkXml";
+
 export interface VtuArray {
   name: string;
   numberOfComponents: number;
@@ -34,16 +36,6 @@ export interface VtuSurface {
   polyCount: number;
 }
 
-type TypedArray =
-  | Float32Array | Float64Array
-  | Int8Array | Int16Array | Int32Array
-  | Uint8Array | Uint16Array | Uint32Array;
-
-const VTK_TYPE_BYTES: Record<string, number> = {
-  Int8: 1, UInt8: 1, Int16: 2, UInt16: 2, Int32: 4, UInt32: 4,
-  Int64: 8, UInt64: 8, Float32: 4, Float64: 8,
-};
-
 // VTK linear cell face tables (point orderings from VTK's cell definitions).
 const CELL_FACES: Record<number, number[][]> = {
   10: [[0, 1, 3], [1, 2, 3], [2, 0, 3], [0, 2, 1]], // tetra
@@ -57,206 +49,13 @@ const CELL_2D = new Set([5, 8, 9, 7]); // triangle, pixel, quad, polygon
 const CELL_LINE = new Set([3, 4]); // line, polyline
 const CELL_VERTEX = new Set([1, 2]); // vertex, polyvertex
 
-function indexOfSequence(bytes: Uint8Array, text: string, from = 0): number {
-  const target = Array.from(text, (character) => character.charCodeAt(0));
-  outer: for (let index = from; index <= bytes.length - target.length; index += 1) {
-    for (let offset = 0; offset < target.length; offset += 1) {
-      if (bytes[index + offset] !== target[offset]) continue outer;
-    }
-    return index;
-  }
-  return -1;
-}
-
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64.replace(/\s+/g, ""));
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-async function inflate(bytes: Uint8Array): Promise<Uint8Array> {
-  if (typeof DecompressionStream === "undefined") {
-    throw new Error("zlib-compressed VTU requires DecompressionStream support");
-  }
-  const stream = new Blob([bytes as BlobPart]).stream()
-    .pipeThrough(new DecompressionStream("deflate"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-function readHeaderInts(bytes: Uint8Array, count: number, headerType: string): number[] {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const values: number[] = [];
-  for (let index = 0; index < count; index += 1) {
-    values.push(
-      headerType === "UInt64"
-        ? Number(view.getBigUint64(index * 8, true))
-        : view.getUint32(index * 4, true),
-    );
-  }
-  return values;
-}
-
-/** Decode one storage blob: [header][payload], zlib multi-block when compressed. */
-async function decodeBlock(
-  bytes: Uint8Array,
-  headerType: string,
-  compressed: boolean,
-): Promise<Uint8Array> {
-  const headerBytes = VTK_TYPE_BYTES[headerType];
-  if (!compressed) {
-    const [byteCount] = readHeaderInts(bytes, 1, headerType);
-    return bytes.subarray(headerBytes, headerBytes + byteCount);
-  }
-  const [blockCount] = readHeaderInts(bytes, 1, headerType);
-  const header = readHeaderInts(bytes, 3 + blockCount, headerType);
-  const [, blockSize, lastBlockSize] = header;
-  const compressedSizes = header.slice(3);
-  let cursor = headerBytes * (3 + blockCount);
-  const output = new Uint8Array(
-    blockSize * (blockCount - 1) + (lastBlockSize || blockSize),
-  );
-  let written = 0;
-  for (let index = 0; index < blockCount; index += 1) {
-    const chunk = await inflate(bytes.subarray(cursor, cursor + compressedSizes[index]));
-    output.set(chunk, written);
-    written += chunk.length;
-    cursor += compressedSizes[index];
-  }
-  return output.subarray(0, written);
-}
-
-/** Base64 inline content with compression stores header and payload as two
- * separately encoded streams; without compression it is a single stream. */
-async function decodeInline(
-  text: string,
-  headerType: string,
-  compressed: boolean,
-): Promise<Uint8Array> {
-  const cleaned = text.replace(/\s+/g, "");
-  if (!compressed) return decodeBlock(base64ToBytes(cleaned), headerType, false);
-  const headerBytes = VTK_TYPE_BYTES[headerType];
-  const firstChunkChars = 4 * Math.ceil(headerBytes / 3);
-  const [blockCount] = readHeaderInts(
-    base64ToBytes(cleaned.slice(0, firstChunkChars)), 1, headerType,
-  );
-  const fullHeaderChars = 4 * Math.ceil((headerBytes * (3 + blockCount)) / 3);
-  const header = base64ToBytes(cleaned.slice(0, fullHeaderChars));
-  const payload = base64ToBytes(cleaned.slice(fullHeaderChars));
-  const joined = new Uint8Array(header.length + payload.length);
-  joined.set(header, 0);
-  joined.set(payload, header.length);
-  return decodeBlock(joined, headerType, true);
-}
-
-function bytesToTyped(bytes: Uint8Array, type: string): TypedArray {
-  // Copy to an aligned buffer: subarray offsets are not guaranteed aligned.
-  const copy = bytes.slice();
-  switch (type) {
-    case "Float32": return new Float32Array(copy.buffer);
-    case "Float64": return new Float64Array(copy.buffer);
-    case "Int8": return new Int8Array(copy.buffer);
-    case "UInt8": return copy;
-    case "Int16": return new Int16Array(copy.buffer);
-    case "UInt16": return new Uint16Array(copy.buffer);
-    case "Int32": return new Int32Array(copy.buffer);
-    case "UInt32": return new Uint32Array(copy.buffer);
-    case "Int64": {
-      const big = new BigInt64Array(copy.buffer);
-      const values = new Float64Array(big.length);
-      for (let index = 0; index < big.length; index += 1) values[index] = Number(big[index]);
-      return values;
-    }
-    case "UInt64": {
-      const big = new BigUint64Array(copy.buffer);
-      const values = new Float64Array(big.length);
-      for (let index = 0; index < big.length; index += 1) values[index] = Number(big[index]);
-      return values;
-    }
-    default:
-      throw new Error(`unsupported VTU data type ${type}`);
-  }
-}
-
-interface ParserContext {
-  headerType: string;
-  compressed: boolean;
-  appended: Uint8Array | null;
-}
-
-async function readDataArray(element: Element, context: ParserContext): Promise<Float64Array> {
-  const type = element.getAttribute("type") ?? "Float64";
-  const format = element.getAttribute("format") ?? "ascii";
-  if (format === "ascii") {
-    const text = element.textContent ?? "";
-    const parts = text.trim().split(/\s+/).filter(Boolean);
-    const values = new Float64Array(parts.length);
-    for (let index = 0; index < parts.length; index += 1) values[index] = Number(parts[index]);
-    return values;
-  }
-  let raw: Uint8Array;
-  if (format === "binary") {
-    raw = await decodeInline(element.textContent ?? "", context.headerType, context.compressed);
-  } else if (format === "appended") {
-    if (!context.appended) {
-      throw new Error("VTU references appended data but none is present");
-    }
-    const offset = Number(element.getAttribute("offset") ?? "0");
-    raw = await decodeBlock(
-      context.appended.subarray(offset), context.headerType, context.compressed,
-    );
-  } else {
-    throw new Error(`unsupported VTU DataArray format "${format}"`);
-  }
-  const typed = bytesToTyped(raw, type);
-  return typed instanceof Float64Array ? typed : Float64Array.from(typed);
-}
-
 function faceKey(ids: number[]): string {
   return [...ids].sort((a, b) => a - b).join(",");
 }
 
 /** Parse a VTU document and extract its renderable surface. */
 export async function parseVtuSurface(buffer: ArrayBuffer): Promise<VtuSurface> {
-  const bytes = new Uint8Array(buffer);
-  let appended: Uint8Array | null = null;
-  let xmlText: string;
-  const appendedTag = indexOfSequence(bytes, "<AppendedData");
-  if (appendedTag >= 0) {
-    const window = new TextDecoder().decode(
-      bytes.subarray(appendedTag, Math.min(appendedTag + 200, bytes.length)),
-    );
-    const encoding = /encoding="([^"]+)"/.exec(window)?.[1] ?? "raw";
-    if (encoding !== "raw") {
-      throw new Error("base64-encoded AppendedData is not supported; use raw or inline binary");
-    }
-    const underscore = indexOfSequence(bytes, "_", appendedTag);
-    if (underscore < 0) throw new Error("malformed AppendedData section");
-    appended = bytes.subarray(underscore + 1);
-    xmlText = `${new TextDecoder().decode(bytes.subarray(0, appendedTag))}</VTKFile>`;
-  } else {
-    xmlText = new TextDecoder().decode(bytes);
-  }
-
-  const document = new DOMParser().parseFromString(xmlText, "application/xml");
-  const vtkFile = document.querySelector("VTKFile");
-  if (!vtkFile || vtkFile.getAttribute("type") !== "UnstructuredGrid") {
-    throw new Error("not a VTU UnstructuredGrid file");
-  }
-  if ((vtkFile.getAttribute("byte_order") ?? "LittleEndian") !== "LittleEndian") {
-    throw new Error("big-endian VTU files are not supported");
-  }
-  const compressor = vtkFile.getAttribute("compressor") ?? "";
-  if (compressor && compressor !== "vtkZLibDataCompressor") {
-    throw new Error(`unsupported VTU compressor ${compressor}`);
-  }
-  const context: ParserContext = {
-    headerType: vtkFile.getAttribute("header_type") ?? "UInt32",
-    compressed: !!compressor,
-    appended,
-  };
+  const { document, context } = parseVtkXmlDocument(buffer, "UnstructuredGrid");
 
   const pieces = Array.from(document.querySelectorAll("UnstructuredGrid > Piece"));
   if (pieces.length === 0) throw new Error("VTU has no Piece elements");
@@ -279,12 +78,12 @@ export async function parseVtuSurface(buffer: ArrayBuffer): Promise<VtuSurface> 
     const numberOfPoints = Number(piece.getAttribute("NumberOfPoints") ?? "0");
     const pointsElement = piece.querySelector("Points > DataArray");
     if (!pointsElement) throw new Error("VTU Piece has no Points DataArray");
-    pointChunks.push(await readDataArray(pointsElement, context));
+    pointChunks.push(await readVtkDataArray(pointsElement, context));
 
     const cellArrays = new Map<string, Float64Array>();
     for (const arrayElement of Array.from(piece.querySelectorAll("Cells > DataArray"))) {
       const name = arrayElement.getAttribute("Name") ?? "";
-      cellArrays.set(name, await readDataArray(arrayElement, context));
+      cellArrays.set(name, await readVtkDataArray(arrayElement, context));
     }
     const connectivity = cellArrays.get("connectivity");
     const offsets = cellArrays.get("offsets");
@@ -298,7 +97,7 @@ export async function parseVtuSurface(buffer: ArrayBuffer): Promise<VtuSurface> 
       const name = arrayElement.getAttribute("Name") ?? "";
       const numberOfComponents = Number(arrayElement.getAttribute("NumberOfComponents") ?? "1");
       const entry = pointArrayChunks.get(name) ?? { numberOfComponents, chunks: [] };
-      entry.chunks.push(await readDataArray(arrayElement, context));
+      entry.chunks.push(await readVtkDataArray(arrayElement, context));
       pointArrayChunks.set(name, entry);
     }
     const pieceCellData = { arrays: new Map<string, Float64Array>(), components: new Map<string, number>() };
@@ -307,7 +106,7 @@ export async function parseVtuSurface(buffer: ArrayBuffer): Promise<VtuSurface> 
       pieceCellData.components.set(
         name, Number(arrayElement.getAttribute("NumberOfComponents") ?? "1"),
       );
-      pieceCellData.arrays.set(name, await readDataArray(arrayElement, context));
+      pieceCellData.arrays.set(name, await readVtkDataArray(arrayElement, context));
     }
     cellDataPerPiece.push(pieceCellData);
 

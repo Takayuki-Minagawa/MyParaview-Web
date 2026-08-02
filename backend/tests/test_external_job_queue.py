@@ -104,6 +104,27 @@ def test_rq_worker_embeds_scheduler_for_delayed_retries(monkeypatch):
     assert calls == [{"burst": True, "with_scheduler": True}]
 
 
+def test_rq_workhorse_replaces_inherited_sqlalchemy_pool(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    class RecordingEngine:
+        def dispose(self, *, close):
+            calls.append(("dispose", close))
+
+    monkeypatch.setattr(rq_worker, "_IMPORT_PID", 100)
+    monkeypatch.setattr(rq_worker.os, "getpid", lambda: 200)
+    monkeypatch.setattr(rq_worker, "engine", RecordingEngine())
+    monkeypatch.setattr(
+        rq_worker,
+        "run_persisted_job",
+        lambda job_id: calls.append(("run", job_id)),
+    )
+
+    rq_worker.execute_job("job-1")
+
+    assert calls == [("dispose", False), ("run", "job-1")]
+
+
 def test_duplicate_rq_id_is_treated_as_already_submitted():
     job_id = _job()
 
@@ -147,6 +168,23 @@ def test_rq_enqueue_failure_fails_job_instead_of_fake_queued_success():
         assert job is not None
         assert job.status == "failed"
         assert "external job queue unavailable" in job.log
+
+
+def test_rq_enqueue_failure_does_not_overwrite_a_committed_cancel():
+    job_id = _job(status="canceled")
+
+    def unavailable():
+        raise ConnectionError("redis offline")
+
+    manager = RQJobManager(queue_provider=unavailable)
+    with pytest.raises(JobQueueUnavailable, match="external job queue unavailable"):
+        manager.submit(job_id, lambda _ctx: {})
+
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        assert job is not None
+        assert job.status == "canceled"
+        assert "external job queue unavailable" not in job.log
 
 
 def test_job_api_returns_503_when_configured_queue_cannot_accept_work(

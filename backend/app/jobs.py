@@ -10,24 +10,107 @@ restarts without changing the public jobs API.
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import logging
 import threading
 import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from contextlib import contextmanager, nullcontext
+from typing import Any, Iterator
 
-from sqlalchemy import select, update
+from sqlalchemy import event, select, text
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import SessionLocal
+from .db import SessionLocal, engine
 from .models import Artifact, Dataset, Job
 from .storage import store
 
 logger = logging.getLogger(__name__)
 
 _ACTIVE_STATUSES = ("queued", "running")
+_PENDING_OBJECT_DELETES = "pvweb_pending_object_deletes"
+_IN_PROCESS_EXECUTION_LOCKS = tuple(threading.Lock() for _ in range(128))
+
+
+@event.listens_for(Session, "after_commit")
+def _delete_committed_objects(session: Session) -> None:
+    """Apply object-store compensation only after its DB transaction commits."""
+
+    object_keys = session.info.pop(_PENDING_OBJECT_DELETES, set())
+    for object_key in object_keys:
+        try:
+            store.delete(object_key)
+        except Exception:  # noqa: BLE001 - DB commit is already durable
+            logger.exception("could not delete canceled artifact object %s", object_key)
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_rolled_back_object_deletes(session: Session) -> None:
+    """Never apply an irreversible object delete for a rolled-back DB change."""
+
+    session.info.pop(_PENDING_OBJECT_DELETES, None)
+
+
+def _delete_object_after_commit(session: Session, object_key: str) -> None:
+    pending = session.info.setdefault(_PENDING_OBJECT_DELETES, set())
+    pending.add(object_key)
+
+
+def stable_job_object_key(job_id: str, output_ext: str) -> str:
+    """Return the sole object key for one job/output-extension pair."""
+
+    if not output_ext.startswith(".") or not output_ext[1:].isalnum():
+        raise ValueError(f"invalid artifact output extension: {output_ext!r}")
+    digest = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+    return f"job-{digest}{output_ext.lower()}"
+
+
+@contextmanager
+def locked_job(session: Session, job_id: str) -> Iterator[Job | None]:
+    """Lock one job before a terminal/checkpoint decision.
+
+    PostgreSQL uses ``FOR UPDATE``. A fresh SQLite session upgrades to an
+    immediate transaction before reading so its otherwise ignored row-lock
+    clause cannot reintroduce the same TOCTOU race in local deployments.
+    """
+
+    if session.get_bind().dialect.name == "sqlite" and not session.in_transaction():
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    yield session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+
+
+def _job_object_suffixes(session: Session, job: Job) -> set[str]:
+    if job.kind in {"convert", "filter", "pipeline"}:
+        return {".vtp"}
+    if job.kind == "render":
+        return {".png"}
+    if job.kind == "stats":
+        return {".json"}
+    if job.kind == "movie":
+        output_format = str((job.params or {}).get("format", "zip")).lower()
+        return {f".{output_format}"} if output_format in {"zip", "mp4", "webm"} else set()
+    if job.kind == "export":
+        dataset = session.get(Dataset, job.target_id) if job.target_id else None
+        return ({dataset.ext} if dataset is not None else set()) | {".zip"}
+    return set()
+
+
+def _delete_job_artifacts(session: Session, job: Job) -> None:
+    """Delete every DB artifact for ``job`` and defer its object cleanup."""
+
+    artifacts = list(session.scalars(select(Artifact).where(Artifact.job_id == job.id)))
+    for artifact in artifacts:
+        session.delete(artifact)
+        _delete_object_after_commit(session, artifact.object_key)
+    # A workhorse can die after writing its stable object but before committing
+    # an Artifact row. Deleting every job-scoped candidate is safe because the
+    # hash namespace cannot overlap another job, and closes that final orphan
+    # window when cancel/failure wins.
+    for suffix in _job_object_suffixes(session, job):
+        _delete_object_after_commit(session, stable_job_object_key(job.id, suffix))
 
 
 class JobCancelled(Exception):
@@ -36,6 +119,64 @@ class JobCancelled(Exception):
 
 class JobQueueUnavailable(RuntimeError):
     """Raised when a configured external queue cannot accept a job."""
+
+
+@contextmanager
+def job_execution_lock(job_id: str) -> Iterator[None]:
+    """Serialize duplicate deliveries for one persisted job across processes.
+
+    PostgreSQL advisory locks are connection-scoped and therefore disappear if
+    a workhorse crashes. SQLite/local deployments use an OS ``flock`` under the
+    shared data root with the same crash-release property.
+    """
+
+    if engine.dialect.name == "postgresql":
+        with engine.connect() as connection:
+            try:
+                connection.execute(
+                    text("SELECT pg_advisory_lock(hashtextextended(:job_id, 0))"),
+                    {"job_id": job_id},
+                )
+                # The advisory lock is session-scoped, so end the implicit
+                # SELECT transaction immediately. Holding it open for a long
+                # ParaView job would otherwise leave an idle-in-transaction
+                # connection.
+                connection.commit()
+            except Exception:
+                # The server may have received the lock request even if the
+                # client observed an error. Never return that DBAPI session to
+                # the pool where its session-scoped lock could survive.
+                connection.invalidate()
+                raise
+            try:
+                yield
+            finally:
+                try:
+                    connection.execute(
+                        text("SELECT pg_advisory_unlock(hashtextextended(:job_id, 0))"),
+                        {"job_id": job_id},
+                    )
+                    connection.commit()
+                except Exception:  # noqa: BLE001 - never pool a locked connection
+                    try:
+                        connection.rollback()
+                    except Exception:  # noqa: BLE001 - invalidation is the fallback
+                        pass
+                    connection.invalidate()
+                    logger.exception("could not release execution lock for job %s", job_id)
+        return
+
+    lock_root = settings.data_root / "job-locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_name = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+    stripe = _IN_PROCESS_EXECUTION_LOCKS[int(lock_name[:8], 16) % len(_IN_PROCESS_EXECUTION_LOCKS)]
+    with stripe:
+        with (lock_root / f"{lock_name}.lock").open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def recover_interrupted_jobs(*, backend: str | None = None) -> int:
@@ -51,10 +192,17 @@ def recover_interrupted_jobs(*, backend: str | None = None) -> int:
         return 0
 
     with SessionLocal() as db:
-        interrupted = list(db.scalars(select(Job).where(Job.status.in_(_ACTIVE_STATUSES))))
-        for job in interrupted:
+        interrupted_ids = list(
+            db.scalars(select(Job.id).where(Job.status.in_(_ACTIVE_STATUSES)))
+        )
+    recovered = 0
+    for job_id in interrupted_ids:
+        with SessionLocal() as db, locked_job(db, job_id) as job:
+            if job is None or job.status not in _ACTIVE_STATUSES:
+                continue
             previous = job.status
             job.status = "failed"
+            job.result = None
             job.log = (job.log or "") + (
                 f"ERROR: {previous} in-process job was interrupted by service restart; "
                 "retry required\n"
@@ -65,10 +213,11 @@ def recover_interrupted_jobs(*, backend: str | None = None) -> int:
                     dataset.status = "registered"
                     dataset.error = None
                     db.add(dataset)
+            _delete_job_artifacts(db, job)
             db.add(job)
-        if interrupted:
             db.commit()
-        return len(interrupted)
+            recovered += 1
+    return recovered
 
 
 class JobContext:
@@ -111,65 +260,108 @@ class JobContext:
 JobBody = Callable[[JobContext], dict]
 
 
-def _cleanup_result(result: dict) -> None:
+def _cleanup_result(result: dict, *, job_id: str | None = None) -> None:
     artifact_id = result.get("artifact_id")
     if not artifact_id:
         return
     with SessionLocal() as db:
-        artifact = db.get(Artifact, artifact_id)
-        if artifact is None:
-            return
-        object_key = artifact.object_key
-        db.delete(artifact)
-        db.commit()
-    store.delete(object_key)
+        lock_context = locked_job(db, job_id) if job_id is not None else nullcontext(None)
+        with lock_context as job:
+            if job is not None and job.status in {*_ACTIVE_STATUSES, "succeeded"}:
+                # Active work may still publish this shared checkpoint, and a
+                # succeeded job already owns it. Only terminal losers may clean.
+                return
+            artifact = db.get(Artifact, artifact_id)
+            if artifact is None or (job_id is not None and artifact.job_id != job_id):
+                return
+            db.delete(artifact)
+            if (
+                job is not None
+                and isinstance(job.result, dict)
+                and job.result.get("artifact_id") == artifact_id
+            ):
+                job.result = None
+                db.add(job)
+            _delete_object_after_commit(db, artifact.object_key)
+            db.commit()
 
 
 def _claim_job(job_id: str) -> bool:
     """Claim queued work, accepting ``running`` for RQ crash recovery."""
 
     with SessionLocal() as db:
-        job = db.get(Job, job_id)
-        if job is None or job.status not in _ACTIVE_STATUSES:
-            return False
-        job.status = "running"
-        db.add(job)
-        db.commit()
-        return True
+        with locked_job(db, job_id) as job:
+            if job is None or job.status not in _ACTIVE_STATUSES:
+                return False
+            job.status = "running"
+            db.add(job)
+            db.commit()
+            return True
 
 
 def _publish_success(job_id: str, result: dict) -> bool:
-    """Publish success only if cancellation has not won the DB race."""
+    """Publish success only if cancellation has not won the DB race.
+
+    A duplicate delivery may observe success already published by another
+    workhorse. Treat the terminal winner as success regardless of supplemental
+    producer metadata so the loser never compensates away its artifact.
+    """
 
     with SessionLocal() as db:
-        published = db.execute(
-            update(Job)
-            .where(Job.id == job_id, Job.status.in_(_ACTIVE_STATUSES))
-            .values(status="succeeded", progress=1.0, result=result)
-        )
-        db.commit()
-        return published.rowcount == 1
+        with locked_job(db, job_id) as job:
+            if job is None:
+                return False
+            if job.status == "succeeded":
+                return True
+            if job.status not in _ACTIVE_STATUSES:
+                return False
+            job.status = "succeeded"
+            job.progress = 1.0
+            job.result = result
+            db.add(job)
+            db.commit()
+            return True
 
 
-def _publish_canceled(job_id: str) -> None:
+def _publish_canceled(job_id: str) -> bool:
     with SessionLocal() as db:
-        db.execute(
-            update(Job)
-            .where(Job.id == job_id, Job.status.in_(_ACTIVE_STATUSES))
-            .values(status="canceled")
-        )
-        db.commit()
+        with locked_job(db, job_id) as job:
+            if job is None:
+                return False
+            if job.status == "canceled":
+                return True
+            if job.status not in _ACTIVE_STATUSES:
+                return False
+            job.status = "canceled"
+            job.result = None
+            _delete_job_artifacts(db, job)
+            db.add(job)
+            db.commit()
+            return True
 
 
 def _publish_failure(job_id: str, exc: Exception, trace: str) -> None:
+    _fail_persisted_job(job_id, f"ERROR: {exc}\n{trace}\n")
+
+
+def fail_persisted_job(job_id: str, log_line: str) -> bool:
+    """Fail active work and compensate any artifact recovery checkpoint."""
+
+    return _fail_persisted_job(job_id, log_line.rstrip("\n") + "\n")
+
+
+def _fail_persisted_job(job_id: str, log_entry: str) -> bool:
     with SessionLocal() as db:
-        job = db.get(Job, job_id)
-        if job is None or job.status not in _ACTIVE_STATUSES:
-            return
-        job.status = "failed"
-        job.log = (job.log or "") + f"ERROR: {exc}\n{trace}\n"
-        db.add(job)
-        db.commit()
+        with locked_job(db, job_id) as job:
+            if job is None or job.status not in _ACTIVE_STATUSES:
+                return False
+            job.status = "failed"
+            job.result = None
+            job.log = (job.log or "") + log_entry
+            _delete_job_artifacts(db, job)
+            db.add(job)
+            db.commit()
+            return True
 
 
 def _run_job(
@@ -189,10 +381,10 @@ def _run_job(
         canceled = before_terminal() if before_terminal is not None else ctx.cancelled
         if canceled:
             _publish_canceled(job_id)
-            _cleanup_result(result)
+            _cleanup_result(result, job_id=job_id)
         elif not _publish_success(job_id, result):
             # A cross-process cancel committed after the body returned.
-            _cleanup_result(result)
+            _cleanup_result(result, job_id=job_id)
     except JobCancelled:
         _publish_canceled(job_id)
     except Exception as exc:  # noqa: BLE001 - persist all job failures
@@ -236,16 +428,19 @@ def _job_body_from_record(job: Job) -> JobBody:
 def run_persisted_job(job_id: str) -> None:
     """RQ entry contract: load, reconstruct and execute a persisted job."""
 
-    with SessionLocal() as db:
-        job = db.get(Job, job_id)
-        if job is None or job.status not in _ACTIVE_STATUSES:
-            return
-        try:
-            body = _job_body_from_record(job)
-        except Exception as exc:  # noqa: BLE001 - malformed records fail honestly
-            _publish_failure(job_id, exc, traceback.format_exc())
-            return
-    _run_job(job_id, body)
+    with job_execution_lock(job_id):
+        # Re-read only after acquiring the cross-process lease: a prior
+        # delivery may have completed while this one was waiting.
+        with SessionLocal() as db:
+            job = db.get(Job, job_id)
+            if job is None or job.status not in _ACTIVE_STATUSES:
+                return
+            try:
+                body = _job_body_from_record(job)
+            except Exception as exc:  # noqa: BLE001 - malformed records fail honestly
+                _publish_failure(job_id, exc, traceback.format_exc())
+                return
+        _run_job(job_id, body)
 
 
 class JobManager:
@@ -275,22 +470,28 @@ class JobManager:
             if event is None:
                 return False
             event.set()
-        self._mark_canceled(job_id, db=db)
-        return True
+        marked = self._mark_canceled(job_id, db=db)
+        if not marked:
+            # Success won the persisted race; do not let the transient event
+            # compensate away the already-published artifact.
+            event.clear()
+        return marked
 
     @staticmethod
     def _mark_canceled(job_id: str, *, db: Session | None) -> bool:
         def mark(session: Session, *, commit: bool) -> bool:
-            job = session.get(Job, job_id)
-            if job is None or job.status not in _ACTIVE_STATUSES:
-                return False
-            job.status = "canceled"
-            session.add(job)
-            if commit:
-                session.commit()
-            else:
-                session.flush()
-            return True
+            with locked_job(session, job_id) as job:
+                if job is None or job.status not in _ACTIVE_STATUSES:
+                    return False
+                job.status = "canceled"
+                job.result = None
+                _delete_job_artifacts(session, job)
+                session.add(job)
+                if commit:
+                    session.commit()
+                else:
+                    session.flush()
+                return True
 
         if db is not None:
             return mark(db, commit=False)
@@ -374,15 +575,10 @@ class RQJobManager:
             return
         except Exception as exc:  # noqa: BLE001 - normalize Redis/RQ failures
             logger.exception("failed to enqueue persisted job %s", job_id)
-            with SessionLocal() as db:
-                job = db.get(Job, job_id)
-                if job is not None and job.status in _ACTIVE_STATUSES:
-                    job.status = "failed"
-                    job.log = (job.log or "") + (
-                        "ERROR: external job queue unavailable; retry required\n"
-                    )
-                    db.add(job)
-                    db.commit()
+            fail_persisted_job(
+                job_id,
+                "ERROR: external job queue unavailable; retry required",
+            )
             raise JobQueueUnavailable("external job queue unavailable") from exc
 
     def reconcile_queued_jobs(self) -> int:

@@ -9,18 +9,24 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 
 from .config import settings
-from .db import SessionLocal, init_db
-from .jobs import RQJobManager, run_persisted_job
-from .models import Job
+from .db import engine, init_db
+from .jobs import RQJobManager, fail_persisted_job, run_persisted_job
 
 logger = logging.getLogger(__name__)
+_IMPORT_PID = os.getpid()
 
 
 def execute_job(job_id: str) -> None:
     """Stable import target serialized into RQ messages."""
 
+    if os.getpid() != _IMPORT_PID:
+        # RQ's default Worker forks a workhorse after the parent initialized
+        # and reconciled the database. Never reuse inherited pooled sockets in
+        # the child; close=False leaves the parent's live connections alone.
+        engine.dispose(close=False)
     run_persisted_job(job_id)
 
 
@@ -34,16 +40,10 @@ def handle_terminal_failure(rq_job, _connection, exc_type, _exc_value, _tracebac
         logger.error("RQ job %s has no persisted job id", rq_job.id)
         return
     job_id = args[0]
-    with SessionLocal() as db:
-        job = db.get(Job, job_id)
-        if job is None or job.status not in {"queued", "running"}:
-            return
-        job.status = "failed"
-        job.log = (job.log or "") + (
-            f"ERROR: RQ worker failed after all retries ({exc_type.__name__}); retry required\n"
-        )
-        db.add(job)
-        db.commit()
+    fail_persisted_job(
+        job_id,
+        f"ERROR: RQ worker failed after all retries ({exc_type.__name__}); retry required",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

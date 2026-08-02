@@ -55,16 +55,22 @@ PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db \
 - 検証専用Compose projectで`job-worker`を2 replica作成し、`docker inspect`で
   `/var/lib/pvweb`に異なるanonymous volume IDが割り当てられることを確認した。
   検証用container、network、volumeは確認後に削除した。
-- 実ffmpegで3 frame（322×242）のH.264 MP4とVP9 WebMをそれぞれ生成し、codec・frame数・
-  解像度を確認した。
+- ParaView 5.10.1の実`pvpython`でG10の3 filterを実行した。Cell Data to Point Dataはcell配列を
+  point配列へ変換し、Resample To Image `[4,4,4]`は8 points / 6 cells、Decimation 0.5は
+  224→112 cellsとなった。生成した3 VTPは別`pvpython` processから再読込できた。
+- 同じ実runtimeとXvfbによるoffscreen renderingで2 timestepのPVDを処理し、160×120 PNG、
+  H.264/yuv420p MP4、VP9/yuv420p WebMを生成した。両動画とも2 frameをdecode確認した。
+  実ffmpeg単体でも3 frame（322×242）の両codecを確認した。
+- 実ParaView 5.10の内蔵Python 3.8で見つかった`str.removeprefix`非互換を修正し、metadataが
+  PolyData、point/cell数、point/cell配列を返すことも再確認した。
 - backend 354 test、frontend 214 test、Python client 3 testがすべてPASS。最終coverageはbackendが
   line 84.57% / branch 67.69%（term総合81%）、frontendがline 51.54% / branch 45.98%だった。
   新規logicと外部capability未設定時の失敗境界を含む。
 
-この環境では`pvpython`が見つからなかったため、G10の実ParaView filterとG13のParaView frame
-renderを含むend-to-end manual testは未実施である。ffmpeg単体の実encode、fake
-`paraview.simple`を使うworker test、API validation、capability未設定時のfail-closed contractは
-確認済み。以下のG10/G13手順は`pvpython`と対象データを用意した環境で追加確認する。
+実runtime検証には`openfoam/openfoam11-paraview510:latest`のParaView 5.10.1を使用した。
+このimageはX11版でX serverを含まないため、repositoryをmountしないcontainerでXvfb packageを
+取得し、`--network none`の一時imageから`xvfb-run`と`--force-offscreen-rendering`で検証した。
+一時container/image/outputは終了後に削除した。以下は別の配布用runtimeでも再確認できる手順である。
 
 ## G11 container構成の検証
 

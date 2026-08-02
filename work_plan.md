@@ -201,7 +201,8 @@ backend/frontend coverageとDependabot設定までは完了した。G14のLICENS
 残る次アクションは次のとおり。
 
 1. **G14**: 利用者がMITまたはApache-2.0等のライセンスを選択後、正式な`LICENSE`を追加する。
-2. **外部runtime検証**: `pvpython`を利用できる環境でG10の3 filterとG13の
-   ParaView frame renderからffmpeg encodeまでを[全機能検証](./docs/verify-all-features.md)に沿って確認する。
-3. **未消化の大規模項目**: M0-Eの実測、M2のblock/set選択、M3のLOD/progressive rendering・
+2. **未消化の大規模項目**: M0-Eの実測、M2のblock/set選択、M3のLOD/progressive rendering・
    Kubernetes/HPC連携を、対象データと運用要件が確定した段階で進める。
+
+外部runtime検証はParaView 5.10.1の実`pvpython`で完了した。G10の3 filterと、G13のPVD frame render、
+H.264 MP4 / VP9 WebM encode・decodeを[全機能検証](./docs/verify-all-features.md)の記録へ反映している。

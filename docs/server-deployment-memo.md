@@ -203,7 +203,9 @@ release tagまたはcommit SHAへ固定する方針にします。
 また、stockのAPI imageに存在しない `/opt/paraview/bin/pvpython` 等を値だけ設定しません。
 ParaView/ffmpegを含む派生imageまたはread-only mountを構成し、container内で実行確認してから
 `PVWEB_PVPYTHON` / `PVWEB_FFMPEG` を設定します。trameも到達可能なbrokerとhost allowlistを
-用意してから設定します。
+用意してから設定します。X11版ParaViewでrender/movieを実行する場合は、`PVWEB_PVPYTHON`から
+起動するwrapperでXvfbと`--force-offscreen-rendering`を使用するか、EGL/OSMesa対応buildを
+採用してください。
 
 ## 永続データとバックアップ
 

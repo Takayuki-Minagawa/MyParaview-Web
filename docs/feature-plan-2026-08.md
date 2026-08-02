@@ -181,14 +181,17 @@
   forwarded Host/port/protoを保持するredirectとcleanupを確認した。
 - Redis/RQでworker停止中のqueued jobがAPI再起動を跨いで同じIDのまま保持され、worker再開後に
   成功すること、およびworker停止中にcancelした別jobが再開後も実行されないことを確認した。
-- 実ffmpegで3 frame（322×242）のH.264 MP4とVP9 WebMをそれぞれ生成し、codec・frame数・
-  解像度を確認した。
+- ParaView 5.10.1の実`pvpython`でCell Data to Point Data、Resample To Image、Decimationを実行し、
+  配列変換、sample数、50% cell削減、生成VTPの再読込を確認した。
+- 同じ実runtimeをXvfbでoffscreen実行し、2 timestepのPVDから160×120 PNG、2 frameの
+  H.264/yuv420p MP4とVP9/yuv420p WebMを生成・decode確認した。
+- 実ParaView 5.10の内蔵Python 3.8で見つかった`str.removeprefix`非互換も修正し、metadata経路を
+  実runtimeで再確認した。
 - backend 354 test、frontend 214 test、Python client 3 testがすべてPASS。最終coverageはbackendが
   line 84.57% / branch 67.69%（term総合81%）、frontendがline 51.54% / branch 45.98%だった。
   外部capability未設定、numeric上限、RQ enqueue/restart/cancelを含む失敗境界も確認した。
 
-このローカル環境には`pvpython`がないため、G10の実ParaView filterと、G13のParaView frame renderを
-含むend-to-end manual testは未実施である。ffmpeg単体の実encode、fake `paraview.simple`を使う
-worker testとAPI契約テストは通しているが、外部runtime環境での最終確認は
-[全機能検証](verify-all-features.md)の手順を使用する。
-また、PR作成後のCI結果はこの記録とは分けて確認する。
+実runtime検証には`openfoam/openfoam11-paraview510:latest`のParaView 5.10.1を使用した。
+X11版のため、一時Xvfb imageをネットワークなしで実行し、検証後にcontainer/image/outputを削除した。
+配布先ではEGL/OSMesa buildまたはXvfb wrapperなど、headless renderingを可能にする起動構成が必要である。
+PR作成後のCI結果はこの記録とは分けて確認する。

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { registerCustomColorMap } from "./colormap";
+import {
+  customColorMapDefinition,
+  hasColorMap,
+  registerCustomColorMap,
+} from "./colormap";
 import { clampSliceIndex, parseViewState } from "./viewState";
 
 const VALID = {
@@ -39,6 +43,80 @@ describe("parseViewState", () => {
       { position: 1, rgb: [1, 1, 1] },
     ]);
     expect(parseViewState({ ...VALID, color_map: id })?.color_map).toBe(id);
+  });
+
+  it("registers an embedded custom colormap before restoring a new session state", () => {
+    const definition = {
+      id: "custom:Reloadable:abc123" as const,
+      label: "Reloadable",
+      stops: [
+        { position: 0, rgb: [0, 0.1, 0.2] as [number, number, number] },
+        { position: 0.5, rgb: [0.4, 0.5, 0.6] as [number, number, number] },
+        { position: 1, rgb: [0.8, 0.9, 1] as [number, number, number] },
+      ],
+    };
+    expect(hasColorMap(definition.id)).toBe(false);
+
+    const state = {
+      ...VALID,
+      color_map: definition.id,
+      custom_color_map: definition,
+    };
+    expect(parseViewState(state)).toEqual(state);
+    expect(customColorMapDefinition(definition.id)).toEqual(definition);
+    // Legacy/bare references remain readable once the definition is registered.
+    expect(parseViewState({ ...VALID, color_map: definition.id })?.color_map)
+      .toBe(definition.id);
+  });
+
+  it("rejects mismatched, conflicting, or invalid embedded definitions without side effects", () => {
+    const definition = {
+      id: "custom:Portable:abc124" as const,
+      label: "Portable",
+      stops: [
+        { position: 0, rgb: [0, 0, 0] as [number, number, number] },
+        { position: 1, rgb: [1, 1, 1] as [number, number, number] },
+      ],
+    };
+    expect(parseViewState({
+      ...VALID,
+      color_map: "custom:Different:abc125",
+      custom_color_map: definition,
+    })).toBeNull();
+    expect(parseViewState({
+      ...VALID,
+      color_map: definition.id,
+      custom_color_map: {
+        ...definition,
+        stops: [{ position: 0, rgb: [0, 0, 0] }, { position: 1.1, rgb: [1, 1, 1] }],
+      },
+    })).toBeNull();
+    expect(parseViewState({
+      ...VALID,
+      opacity: 2,
+      color_map: definition.id,
+      custom_color_map: definition,
+    })).toBeNull();
+    expect(hasColorMap(definition.id)).toBe(false);
+
+    const conflictId = "custom:Conflict:abc126" as const;
+    registerCustomColorMap(conflictId, "Original", [
+      { position: 0, rgb: [0, 0, 0] },
+      { position: 1, rgb: [1, 1, 1] },
+    ]);
+    expect(parseViewState({
+      ...VALID,
+      color_map: conflictId,
+      custom_color_map: {
+        id: conflictId,
+        label: "Replacement",
+        stops: [
+          { position: 0, rgb: [0, 0, 0] },
+          { position: 1, rgb: [1, 0, 0] },
+        ],
+      },
+    })).toBeNull();
+    expect(customColorMapDefinition(conflictId)?.label).toBe("Original");
   });
 
   it("round-trips CSV and ImageData display controls", () => {

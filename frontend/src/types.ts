@@ -73,6 +73,18 @@ export type BuiltInColorMapName = (typeof COLOR_MAP_NAMES)[number];
 export type CustomColorMapName = `custom:${string}`;
 export type ColorMapName = BuiltInColorMapName | CustomColorMapName;
 
+export interface ColorMapStopDefinition {
+  position: number;
+  rgb: [number, number, number];
+}
+
+/** Self-contained definition stored with a ViewState for cross-session restore. */
+export interface CustomColorMapDefinition {
+  id: CustomColorMapName;
+  label: string;
+  stops: ColorMapStopDefinition[];
+}
+
 /** Client-creatable job kinds (POST /jobs). */
 export const JOB_KINDS = ["convert", "filter", "export", "render", "stats", "movie"] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
@@ -142,6 +154,8 @@ export interface ViewState {
   color_range: [number, number] | null;
   opacity: number;
   color_map: ColorMapName;
+  /** Present for imported presets so a saved view remains portable. */
+  custom_color_map?: CustomColorMapDefinition;
   legend_visible: boolean;
   camera: CameraState | null;
   table_coordinates?: TableCoordinates | null;

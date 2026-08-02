@@ -10,7 +10,13 @@ import type {
   VolumeOpacityPoint,
 } from "../types";
 import { REPRESENTATION_NAMES } from "../types";
-import { hasColorMap } from "./colormap";
+import {
+  customColorMapDefinition,
+  customColorMapDefinitionsEqual,
+  hasColorMap,
+  parseCustomColorMapDefinition,
+  registerCustomColorMap,
+} from "./colormap";
 
 const REPRESENTATIONS = new Set<Representation>(REPRESENTATION_NAMES);
 
@@ -24,7 +30,23 @@ export function parseViewState(value: unknown): ViewState | null {
   if (state.schema_version !== 1 || !REPRESENTATIONS.has(state.representation as Representation)) {
     return null;
   }
-  if (!hasColorMap(state.color_map)) return null;
+  if (typeof state.color_map !== "string") return null;
+  const embeddedWasProvided = state.custom_color_map !== undefined
+    && state.custom_color_map !== null;
+  const embeddedColorMap = embeddedWasProvided
+    ? parseCustomColorMapDefinition(state.custom_color_map)
+    : null;
+  if (embeddedWasProvided && !embeddedColorMap) return null;
+  const isCustomColorMap = state.color_map.startsWith("custom:");
+  if (embeddedColorMap) {
+    if (!isCustomColorMap || embeddedColorMap.id !== state.color_map) return null;
+    const registered = customColorMapDefinition(embeddedColorMap.id);
+    if (registered && !customColorMapDefinitionsEqual(registered, embeddedColorMap)) return null;
+  } else if (!hasColorMap(state.color_map)) {
+    // Backward compatibility: a legacy custom ViewState without an embedded
+    // definition remains valid while that preset is already registered.
+    return null;
+  }
   if (typeof state.opacity !== "number" || state.opacity < 0 || state.opacity > 1) return null;
   if (typeof state.legend_visible !== "boolean") return null;
 
@@ -118,6 +140,16 @@ export function parseViewState(value: unknown): ViewState | null {
     }));
   }
 
+  // Register only after every other ViewState field has passed validation, so
+  // an otherwise malformed saved view cannot mutate the browser session.
+  if (embeddedColorMap) {
+    registerCustomColorMap(
+      embeddedColorMap.id,
+      embeddedColorMap.label,
+      embeddedColorMap.stops,
+    );
+  }
+
   return {
     schema_version: 1,
     representation: state.representation as Representation,
@@ -125,6 +157,9 @@ export function parseViewState(value: unknown): ViewState | null {
     color_range: colorRange,
     opacity: state.opacity,
     color_map: state.color_map as ColorMapName,
+    ...(embeddedColorMap !== null
+      ? { custom_color_map: embeddedColorMap }
+      : {}),
     legend_visible: state.legend_visible,
     camera,
     ...(state.table_coordinates !== undefined ? { table_coordinates: tableCoordinates } : {}),

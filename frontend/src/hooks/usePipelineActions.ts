@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
 import type { Dataset, Job, Pipeline, ViewState } from "../types";
+import { customColorMapDefinition } from "../lib/colormap";
 import { parseViewState } from "../lib/viewState";
 import type { DisplayState } from "./useDisplayState";
 import type { ProjectScope, ScopeTicket } from "./useProjectScope";
@@ -32,6 +33,7 @@ export function usePipelineActions({
   const savePipeline = useCallback(async (name: string) => {
     const ticket = scope.capture();
     if (!ticket || !selectedDataset) return;
+    const customColorMap = customColorMapDefinition(display.colorMap);
     const state: ViewState = {
       schema_version: 1,
       representation: display.representation,
@@ -39,6 +41,7 @@ export function usePipelineActions({
       color_range: display.customColorRange,
       opacity: display.opacity,
       color_map: display.colorMap,
+      ...(customColorMap ? { custom_color_map: customColorMap } : {}),
       legend_visible: display.legendVisible,
       camera: display.cameraState,
       table_coordinates: display.tableCoordinates,

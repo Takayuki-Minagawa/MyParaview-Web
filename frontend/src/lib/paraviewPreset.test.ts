@@ -30,6 +30,30 @@ describe("ParaView colormap presets", () => {
     expect(preset.stops.map((stop) => stop.position)).toEqual([0, 0.5, 1]);
   });
 
+  it("gives long labels with the same visible prefix distinct portable IDs", () => {
+    const sharedPrefix = "x".repeat(80);
+    const colors = { IndexedColors: [0, 0, 0, 1, 1, 1] };
+    const first = parseParaViewColorMapPreset(JSON.stringify({
+      Name: `${sharedPrefix} first`,
+      ...colors,
+    }));
+    const second = parseParaViewColorMapPreset(JSON.stringify({
+      Name: `${sharedPrefix} second`,
+      ...colors,
+    }));
+
+    expect(first.id).not.toBe(second.id);
+  });
+
+  it("encodes a label whose old UTF-16 truncation split a surrogate pair", () => {
+    const preset = parseParaViewColorMapPreset(JSON.stringify({
+      Name: `${"a".repeat(79)}😀 tail`,
+      IndexedColors: [0, 0, 0, 1, 1, 1],
+    }));
+
+    expect(preset.id).toMatch(/^custom:[A-Za-z0-9_.!~*'()%-]+:[a-z0-9]{1,16}$/);
+  });
+
   it.each([
     ["not json", "valid JSON"],
     [JSON.stringify({ Name: "Missing colors" }), "IndexedColors"],

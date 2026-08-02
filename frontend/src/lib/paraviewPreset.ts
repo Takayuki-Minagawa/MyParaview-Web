@@ -1,17 +1,12 @@
-import type { CustomColorMapName } from "../types";
+import type { CustomColorMapDefinition, CustomColorMapName } from "../types";
 import {
+  MAX_CUSTOM_COLOR_MAP_STOPS,
   registerCustomColorMap,
   type ColorStop,
   type RGB,
 } from "./colormap";
 
-const MAX_PRESET_STOPS = 4096;
-
-export interface ImportedColorMapPreset {
-  id: CustomColorMapName;
-  label: string;
-  stops: ColorStop[];
-}
+export type ImportedColorMapPreset = CustomColorMapDefinition;
 
 function presetObject(value: unknown): Record<string, unknown> {
   if (Array.isArray(value)) {
@@ -45,8 +40,8 @@ function rgbPointStops(value: unknown): ColorStop[] {
   if (values.length < 8 || values.length % 4 !== 0) {
     throw new Error("RGBPoints must contain at least two x/r/g/b entries");
   }
-  if (values.length / 4 > MAX_PRESET_STOPS) {
-    throw new Error(`RGBPoints may contain at most ${MAX_PRESET_STOPS} entries`);
+  if (values.length / 4 > MAX_CUSTOM_COLOR_MAP_STOPS) {
+    throw new Error(`RGBPoints may contain at most ${MAX_CUSTOM_COLOR_MAP_STOPS} entries`);
   }
   const entries = Array.from({ length: values.length / 4 }, (_, index) => ({
     scalar: values[index * 4],
@@ -70,8 +65,8 @@ function indexedColorStops(value: unknown): ColorStop[] {
     throw new Error("IndexedColors must contain at least two RGB entries");
   }
   const count = values.length / 3;
-  if (count > MAX_PRESET_STOPS) {
-    throw new Error(`IndexedColors may contain at most ${MAX_PRESET_STOPS} entries`);
+  if (count > MAX_CUSTOM_COLOR_MAP_STOPS) {
+    throw new Error(`IndexedColors may contain at most ${MAX_CUSTOM_COLOR_MAP_STOPS} entries`);
   }
   return Array.from({ length: count }, (_, index) => ({
     position: index / (count - 1),
@@ -79,14 +74,58 @@ function indexedColorStops(value: unknown): ColorStop[] {
   }));
 }
 
-function presetId(label: string, stops: readonly ColorStop[]): CustomColorMapName {
-  const source = JSON.stringify(stops);
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function encodedIdPrefix(label: string): string {
+  const prefix = Array.from(label).slice(0, 80).join("");
+  return Array.from(new TextEncoder().encode(prefix), (byte) => {
+    const character = String.fromCharCode(byte);
+    return /^[A-Za-z0-9_.!~*'()-]$/.test(character)
+      ? character
+      : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  }).join("");
+}
+
+function fnv1a32(source: string): string {
   let hash = 0x811c9dc5;
   for (let index = 0; index < source.length; index += 1) {
     hash ^= source.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193);
   }
-  return `custom:${encodeURIComponent(label.slice(0, 80))}:${(hash >>> 0).toString(36)}`;
+  return (hash >>> 0).toString(36);
+}
+
+function fnv1a64(source: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= BigInt(source.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(36);
+}
+
+function presetId(label: string, stops: readonly ColorStop[]): CustomColorMapName {
+  // Preserve IDs produced by the original implementation for ordinary labels.
+  // Long labels need the full label in the hash because their visible prefix
+  // can be identical; malformed surrogate input also takes the safe path.
+  const legacyCompatible = label.length <= 80 && !hasUnpairedSurrogate(label);
+  const source = legacyCompatible
+    ? JSON.stringify(stops)
+    : JSON.stringify([label, stops]);
+  const hash = legacyCompatible ? fnv1a32(source) : fnv1a64(source);
+  return `custom:${encodedIdPrefix(label)}:${hash}`;
 }
 
 export function parseParaViewColorMapPreset(text: string): ImportedColorMapPreset {

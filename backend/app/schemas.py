@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -147,6 +147,45 @@ class VolumeOpacityPointState(BaseModel):
     alpha: float = Field(ge=0, le=1)
 
 
+UnitInterval = Annotated[float, Field(ge=0, le=1)]
+
+
+class ColorMapStopState(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+    position: UnitInterval
+    rgb: tuple[UnitInterval, UnitInterval, UnitInterval]
+
+
+class CustomColorMapDefinitionState(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+    id: str = Field(
+        min_length=1,
+        max_length=1024,
+        pattern="^custom:[A-Za-z0-9_.!~*'()%-]+:[a-z0-9]{1,16}$",
+    )
+    label: str = Field(min_length=1, max_length=200)
+    stops: list[ColorMapStopState] = Field(min_length=2, max_length=4096)
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def normalize_label(cls, label: Any) -> Any:
+        if not isinstance(label, str):
+            return label
+        normalized = label.strip()
+        if not normalized:
+            raise ValueError("custom colormap label must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_stop_order(self):
+        positions = [stop.position for stop in self.stops]
+        if positions[0] != 0 or positions[-1] != 1:
+            raise ValueError("custom colormap stops must start at 0 and end at 1")
+        if any(positions[index + 1] <= position for index, position in enumerate(positions[:-1])):
+            raise ValueError("custom colormap stop positions must be strictly increasing")
+        return self
+
+
 class ViewState(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
     schema_version: int = Field(default=1, ge=1, le=1)
@@ -162,6 +201,7 @@ class ViewState(BaseModel):
             "custom:[A-Za-z0-9_.!~*'()%-]+:[a-z0-9]{1,16})$"
         ),
     )
+    custom_color_map: Optional[CustomColorMapDefinitionState] = None
     legend_visible: bool
     camera: Optional[CameraState] = None
     table_coordinates: Optional[TableCoordinatesState] = None
@@ -176,9 +216,14 @@ class ViewState(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_color_range(self):
+    def validate_color_range_and_custom_map(self):
         if self.color_range is not None and self.color_range[0] >= self.color_range[1]:
             raise ValueError("color_range minimum must be less than maximum")
+        if self.custom_color_map is not None:
+            if not self.color_map.startswith("custom:"):
+                raise ValueError("custom_color_map requires a custom color_map id")
+            if self.custom_color_map.id != self.color_map:
+                raise ValueError("custom_color_map id must match color_map")
         return self
 
 
@@ -338,7 +383,7 @@ def validate_filter_params(params: dict[str, Any]) -> dict[str, Any]:
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
                 or not math.isfinite(number)
-                for value, number in zip(vector, converted)
+                for value, number in zip(vector, converted, strict=True)
             ):
                 raise ValueError(f"{name} must contain three finite numbers")
         if not any(float(value) != 0 for value in params["normal"]):

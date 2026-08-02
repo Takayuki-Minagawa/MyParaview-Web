@@ -828,6 +828,96 @@ def test_pipeline_view_state_validation_and_roundtrip(client, data_dir):
     assert custom.status_code == 201, custom.text
     assert custom.json()["nodes"][0]["params"]["view_state"] == custom_state
 
+    custom_definition = {
+        "id": "custom:Thermal%20Map:1z141z3",
+        "label": "Thermal Map",
+        "stops": [
+            {"position": 0.0, "rgb": [0.0, 0.1, 0.2]},
+            {"position": 0.5, "rgb": [0.4, 0.5, 0.6]},
+            {"position": 1.0, "rgb": [0.8, 0.9, 1.0]},
+        ],
+    }
+    portable_custom_state = {
+        **state,
+        "color_map": custom_definition["id"],
+        "custom_color_map": custom_definition,
+    }
+    portable_custom = client.post(
+        "/pipelines",
+        json={
+            "project_id": pid,
+            "name": "portable custom colormap view",
+            "nodes": [
+                {
+                    "node_type": "representation",
+                    "name": "portable custom view",
+                    "params": {"view_state": portable_custom_state},
+                }
+            ],
+        },
+    )
+    assert portable_custom.status_code == 201, portable_custom.text
+    assert portable_custom.json()["nodes"][0]["params"]["view_state"] == portable_custom_state
+
+    invalid_custom_definitions = [
+        {
+            **portable_custom_state,
+            "custom_color_map": {**custom_definition, "id": "custom:Other:abc123"},
+        },
+        {
+            **portable_custom_state,
+            "custom_color_map": {
+                **custom_definition,
+                "stops": [
+                    {"position": 0.0, "rgb": [0.0, 0.0, 0.0]},
+                    {"position": 1.1, "rgb": [1.0, 1.0, 1.0]},
+                ],
+            },
+        },
+        {
+            **portable_custom_state,
+            "custom_color_map": {
+                **custom_definition,
+                "stops": [
+                    {"position": 0.0, "rgb": [0.0, 0.0, 0.0]},
+                    {"position": 0.75, "rgb": [0.5, 0.5, 0.5]},
+                    {"position": 0.5, "rgb": [0.75, 0.75, 0.75]},
+                    {"position": 1.0, "rgb": [1.0, 1.0, 1.0]},
+                ],
+            },
+        },
+        {
+            **portable_custom_state,
+            "custom_color_map": {
+                **custom_definition,
+                "stops": [
+                    {"position": index / 4096, "rgb": [0.0, 0.0, 0.0]}
+                    for index in range(4097)
+                ],
+            },
+        },
+        {
+            **state,
+            "custom_color_map": custom_definition,
+        },
+    ]
+    for index, invalid_state in enumerate(invalid_custom_definitions):
+        rejected_custom = client.post(
+            "/pipelines",
+            json={
+                "project_id": pid,
+                "name": f"invalid custom colormap {index}",
+                "nodes": [
+                    {
+                        "node_type": "representation",
+                        "name": "bad custom view",
+                        "params": {"view_state": invalid_state},
+                    }
+                ],
+            },
+        )
+        assert rejected_custom.status_code == 422
+
     bad = {**state, "opacity": 1.5}
     rejected = client.post(
         "/pipelines",

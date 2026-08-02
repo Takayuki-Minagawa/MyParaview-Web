@@ -1,11 +1,16 @@
-import type { ColorMapName, CustomColorMapName } from "../types";
+import type {
+  ColorMapName,
+  ColorMapStopDefinition,
+  CustomColorMapDefinition,
+  CustomColorMapName,
+} from "../types";
 
 export type { ColorMapName };
 export type RGB = [number, number, number];
-export interface ColorStop {
-  position: number;
-  rgb: RGB;
-}
+export type ColorStop = ColorMapStopDefinition;
+
+export const MAX_CUSTOM_COLOR_MAP_STOPS = 4096;
+const CUSTOM_COLOR_MAP_ID = /^custom:[A-Za-z0-9_.!~*'()%-]+:[a-z0-9]{1,16}$/;
 
 const MAPS: Record<string, ColorStop[]> = {
   "cool-to-warm": [
@@ -42,6 +47,109 @@ const MAPS: Record<string, ColorStop[]> = {
 
 const CUSTOM_LABELS = new Map<CustomColorMapName, string>();
 
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
+function validatedStops(stops: readonly ColorStop[]): ColorStop[] {
+  if (stops.length < 2 || stops.length > MAX_CUSTOM_COLOR_MAP_STOPS) {
+    throw new Error(
+      `A colormap requires between 2 and ${MAX_CUSTOM_COLOR_MAP_STOPS} stops`,
+    );
+  }
+  const copied = stops.map((stop) => {
+    if (
+      !Number.isFinite(stop.position)
+      || stop.position < 0
+      || stop.position > 1
+      || !Array.isArray(stop.rgb)
+      || stop.rgb.length !== 3
+      || stop.rgb.some((channel) => (
+        !Number.isFinite(channel) || channel < 0 || channel > 1
+      ))
+    ) {
+      throw new Error("Colormap positions and RGB channels must be finite values from 0 to 1");
+    }
+    return {
+      position: stop.position,
+      rgb: [...stop.rgb] as RGB,
+    };
+  });
+  if (copied[0].position !== 0 || copied[copied.length - 1].position !== 1) {
+    throw new Error("A colormap must start at position 0 and end at position 1");
+  }
+  if (copied.some((stop, index) => index > 0 && stop.position <= copied[index - 1].position)) {
+    throw new Error("Colormap stop positions must be strictly increasing");
+  }
+  return copied;
+}
+
+/** Parse an untrusted embedded definition without mutating the registry. */
+export function parseCustomColorMapDefinition(
+  value: unknown,
+): CustomColorMapDefinition | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const definition = value as Record<string, unknown>;
+  if (
+    !hasOnlyKeys(definition, ["id", "label", "stops"])
+    || typeof definition.id !== "string"
+    || definition.id.length > 1024
+    || !CUSTOM_COLOR_MAP_ID.test(definition.id)
+    || typeof definition.label !== "string"
+  ) return null;
+  const label = definition.label.trim();
+  if (!label || label.length > 200 || !Array.isArray(definition.stops)) return null;
+  if (definition.stops.some((stop) => (
+    !stop
+    || typeof stop !== "object"
+    || Array.isArray(stop)
+    || !hasOnlyKeys(stop as Record<string, unknown>, ["position", "rgb"])
+  ))) return null;
+  try {
+    const stops = validatedStops(definition.stops as ColorStop[]);
+    return {
+      id: definition.id as CustomColorMapName,
+      label,
+      stops,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function customColorMapDefinition(
+  id: ColorMapName,
+): CustomColorMapDefinition | null {
+  if (!id.startsWith("custom:") || !Object.prototype.hasOwnProperty.call(MAPS, id)) return null;
+  const customId = id as CustomColorMapName;
+  const label = CUSTOM_LABELS.get(customId);
+  if (!label) return null;
+  return {
+    id: customId,
+    label,
+    stops: MAPS[id].map((stop) => ({
+      position: stop.position,
+      rgb: [...stop.rgb] as RGB,
+    })),
+  };
+}
+
+export function customColorMapDefinitionsEqual(
+  left: CustomColorMapDefinition,
+  right: CustomColorMapDefinition,
+): boolean {
+  return left.id === right.id
+    && left.label === right.label
+    && left.stops.length === right.stops.length
+    && left.stops.every((stop, index) => (
+      stop.position === right.stops[index]?.position
+      && stop.rgb.every((channel, channelIndex) => (
+        channel === right.stops[index]?.rgb[channelIndex]
+      ))
+    ));
+}
+
 function registeredStops(name: ColorMapName): ColorStop[] {
   const stops = MAPS[name];
   if (!stops) throw new Error(`Unknown colormap: ${name}`);
@@ -57,12 +165,12 @@ export function registerCustomColorMap(
   label: string,
   stops: readonly ColorStop[],
 ): void {
-  if (stops.length < 2) throw new Error("A colormap requires at least two stops");
-  MAPS[id] = stops.map((stop) => ({
-    position: stop.position,
-    rgb: [...stop.rgb] as RGB,
-  }));
-  CUSTOM_LABELS.set(id, label);
+  const normalizedLabel = label.trim();
+  if (!normalizedLabel || normalizedLabel.length > 200) {
+    throw new Error("A custom colormap label must contain 1 to 200 characters");
+  }
+  MAPS[id] = validatedStops(stops);
+  CUSTOM_LABELS.set(id, normalizedLabel);
 }
 
 export function registeredCustomColorMaps(): Array<{

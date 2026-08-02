@@ -155,6 +155,11 @@ body {
   background: var(--viewer-toolbar-bg);
 }
 .viewer-toolbar button { padding: 4px 7px; }
+.viewer-plane-toolbar { top: 54px; }
+.viewer-toolbar button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 
 input, select, button {
   background: var(--panel-2);

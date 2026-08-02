@@ -34,6 +34,11 @@ import {
   buildUnstructuredScene,
 } from "../lib/viewer/scenes";
 import { createScreenshotBlob } from "../lib/viewer/screenshot";
+import {
+  createClientPlaneController,
+  type ClientPlaneController,
+  type ClientPlaneSettings,
+} from "../lib/viewer/planeTool";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Volume";
@@ -89,7 +94,16 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
   const messages = useMessages();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const ctx = useRef<Scene | null>(null);
+  const planeControllerRef = useRef<ClientPlaneController | null>(null);
   const [status, setStatus] = useState("");
+  const [planeSettings, setPlaneSettings] = useState<ClientPlaneSettings>({
+    enabled: false,
+    mode: "clip",
+    axis: "X",
+    inverted: false,
+  });
+  const planeSettingsRef = useRef(planeSettings);
+  planeSettingsRef.current = planeSettings;
   const rangeCallbackRef = useRef(onColorRangeResolved);
   rangeCallbackRef.current = onColorRangeResolved;
   const loadCallbackRef = useRef(onLoadComplete);
@@ -126,6 +140,9 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     !!tableCoordinates && new Set(Object.values(tableCoordinates)).size === 3
   );
   const renderable = !!url && supported && tableReady;
+  const planeToolAvailable = renderable && (
+    datasetType === "PolyData" || datasetType === "UnstructuredGrid"
+  );
 
   useImperativeHandle(ref, () => ({
     screenshot: () => {
@@ -215,6 +232,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
       glyphSource: null, pointGlyph: false,
       lut: null, opacityFunction: null, cameraSubscription: null, emitCamera: () => {},
     };
+    let planeController: ClientPlaneController | null = null;
     scene.emitCamera = () => cameraCallbackRef.current(readCamera(scene));
     ctx.current = scene;
     const interactor = renderWindow.getInteractor();
@@ -238,6 +256,11 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
         applyGeometryColor(scene, display.colorBy, resolvedRange, display.colorMap);
         scene.prop.getProperty().setOpacity(display.opacity);
         scene.renderer.addActor(scene.prop);
+        if (datasetType === "PolyData" || datasetType === "UnstructuredGrid") {
+          planeController = createClientPlaneController(scene);
+          planeControllerRef.current = planeController;
+          planeController?.apply(planeSettingsRef.current);
+        }
       } else {
         if (scene.kind === "slice") {
           scene.mapper?.setSlicingMode(vtkImageMapper.SlicingMode[SLICE_MODE[display.sliceAxis]]);
@@ -303,6 +326,8 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
       try {
         resizeObserver.disconnect();
         scene.cameraSubscription?.unsubscribe?.();
+        planeController?.delete();
+        if (planeControllerRef.current === planeController) planeControllerRef.current = null;
         orientationWidget.setEnabled(false);
         if (scene.prop) {
           if (scene.kind === "volume") scene.renderer.removeVolume(scene.prop);
@@ -333,6 +358,10 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     url, datasetType, renderable, imageMode,
     tableCoordinates?.x, tableCoordinates?.y, tableCoordinates?.z,
   ]);
+
+  useEffect(() => {
+    planeControllerRef.current?.apply(planeSettings);
+  }, [planeSettings]);
 
   useEffect(() => {
     const scene = ctx.current;
@@ -397,6 +426,50 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
           <button onClick={() => applyCameraPreset(ctx.current, "top")}>{messages.viewer.top}</button>
           <button onClick={() => applyCameraPreset(ctx.current, "bottom")}>{messages.viewer.bottom}</button>
           <button onClick={() => applyCameraPreset(ctx.current, "isometric")}>{messages.viewer.isometric}</button>
+        </div>
+      )}
+      {planeToolAvailable && (
+        <div className="viewer-toolbar viewer-plane-toolbar" aria-label={messages.viewer.planeTools}>
+          {(["clip", "slice"] as const).map((mode) => (
+            <button
+              key={mode}
+              aria-pressed={planeSettings.enabled && planeSettings.mode === mode}
+              onClick={() => setPlaneSettings((current) => ({
+                ...current,
+                enabled: current.mode !== mode || !current.enabled,
+                mode,
+              }))}
+            >
+              {mode === "clip" ? messages.viewer.clientClip : messages.viewer.clientSlice}
+            </button>
+          ))}
+          {(["X", "Y", "Z"] as const).map((axis) => (
+            <button
+              key={axis}
+              aria-label={`${messages.viewer.planeNormal} ${axis}`}
+              aria-pressed={planeSettings.axis === axis}
+              disabled={!planeSettings.enabled}
+              onClick={() => setPlaneSettings((current) => ({ ...current, axis }))}
+            >
+              {axis}
+            </button>
+          ))}
+          <button
+            aria-pressed={planeSettings.inverted}
+            disabled={!planeSettings.enabled}
+            onClick={() => setPlaneSettings((current) => ({
+              ...current,
+              inverted: !current.inverted,
+            }))}
+          >
+            {messages.viewer.planeFlip}
+          </button>
+          <button
+            disabled={!planeSettings.enabled}
+            onClick={() => planeControllerRef.current?.reset()}
+          >
+            {messages.viewer.planeReset}
+          </button>
         </div>
       )}
       {!renderable && (

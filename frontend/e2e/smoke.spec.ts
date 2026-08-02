@@ -28,6 +28,15 @@ test("upload -> display -> save/restore view state -> stats artifact", async ({ 
 
   // The viewer considers the dataset renderable: standard-view toolbar shows.
   await expect(page.getByRole("button", { name: "Front" })).toBeVisible({ timeout: 20_000 });
+  // Client-side plane tools operate on the already loaded VTP without a job.
+  const clipButton = page.getByRole("button", { name: "Clip", exact: true });
+  await clipButton.click();
+  await expect(clipButton).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Plane normal Y" }).click();
+  await expect(page.getByRole("button", { name: "Plane normal Y" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Flip", exact: true }).click();
+  await page.getByRole("button", { name: "Reset plane" }).click();
   // No error banner appeared during the flow.
   await expect(page.locator(".error-banner")).toHaveCount(0);
 

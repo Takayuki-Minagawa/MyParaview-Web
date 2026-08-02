@@ -117,6 +117,10 @@ def test_movie_defaults_keep_legacy_zip_and_strip_client_executable():
             "dimensions values must be between 2 and 512",
         ),
         (
+            {"filter": "resample", "dimensions": [512, 512, 65]},
+            "dimensions product must not exceed 16777216 samples",
+        ),
+        (
             {"filter": "decimate"},
             "target_reduction must be a finite number",
         ),
@@ -148,6 +152,10 @@ def test_invalid_new_filter_params_return_422(client, params, message):
         (
             {"filter": "RESAMPLE", "dimensions": ["16", 24.0, 32]},
             {"filter": "resample", "dimensions": [16, 24, 32]},
+        ),
+        (
+            {"filter": "resample", "dimensions": [256, 256, 256]},
+            {"filter": "resample", "dimensions": [256, 256, 256]},
         ),
         (
             {"filter": "DECIMATE", "target_reduction": 0.5},

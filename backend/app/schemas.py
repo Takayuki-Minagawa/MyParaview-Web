@@ -251,6 +251,7 @@ FilterName = Literal[
     "decimate",
 ]
 JobKind = Literal["convert", "filter", "export", "render", "stats", "movie"]
+MAX_RESAMPLE_SAMPLE_COUNT = 16_777_216
 
 
 def _integer_value(value: Any, name: str) -> int:
@@ -300,6 +301,12 @@ def validate_filter_params(params: dict[str, Any]) -> dict[str, Any]:
         ]
         if any(value < 2 or value > 512 for value in normalized_dimensions):
             raise ValueError("dimensions values must be between 2 and 512")
+        sample_count = math.prod(normalized_dimensions)
+        if sample_count > MAX_RESAMPLE_SAMPLE_COUNT:
+            raise ValueError(
+                "dimensions product must not exceed "
+                f"{MAX_RESAMPLE_SAMPLE_COUNT} samples"
+            )
         return {
             **params,
             "filter": operation,

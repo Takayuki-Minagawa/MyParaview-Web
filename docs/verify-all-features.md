@@ -45,6 +45,9 @@ PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db \
   legacy dataset挿入、0008→0009 upgrade、空tagsのbackfill、JSON tagのcase-insensitive検索を
   `scripts.verify_postgres_tags`で確認した。確認用container/network/volumeは終了後に削除した。
 - full-stack image build、Compose起動、health endpoint smokeと停止・cleanupを確認した。
+- 検証専用Compose projectで`job-worker`を2 replica作成し、`docker inspect`で
+  `/var/lib/pvweb`に異なるanonymous volume IDが割り当てられることを確認した。
+  検証用container、network、volumeは確認後に削除した。
 - 実ffmpegで3 frame（322×242）のH.264 MP4とVP9 WebMをそれぞれ生成し、codec・frame数・
   解像度を確認した。
 - backend/frontendの単体・契約テストで、新規logicと外部capability未設定時の失敗境界を確認した。
@@ -65,6 +68,53 @@ docker compose --env-file .env.production.example \
   -f infra/docker-compose.yml --profile full-stack config --quiet
 docker compose --env-file .env.production.example \
   -f infra/docker-compose.yml --profile full-stack build
+```
+
+展開後の構成で、APIとjob-workerが同じ永続object store設定を使いながら、
+`/var/lib/pvweb`はsource未指定のanonymous volumeであることも確認する。これにより
+Compose/Engineがcontainerごとに固有volumeを割り当て、scaleしたreplica間でも共有されない。
+
+```bash
+docker compose --env-file .env.production.example \
+  -f infra/docker-compose.yml --profile full-stack config --format json \
+  > /tmp/pvweb-compose.json
+python3 - <<'PY'
+import json
+
+with open("/tmp/pvweb-compose.json") as source:
+    config = json.load(source)
+
+services = config["services"]
+cache_source = lambda service: next(
+    mount
+    for mount in services[service]["volumes"]
+    if mount["target"] == "/var/lib/pvweb"
+)
+for service in ("api", "job-worker"):
+    cache = cache_source(service)
+    assert cache["type"] == "volume"
+    assert "source" not in cache
+for key in ("PVWEB_S3_BUCKET", "PVWEB_S3_ENDPOINT_URL"):
+    assert services["api"]["environment"][key] == services["job-worker"]["environment"][key]
+PY
+```
+
+実containerでscale時の分離を確認する場合は、検証専用project名でworkerを2個createし、
+それぞれの`/var/lib/pvweb`に異なるanonymous volume名が割り当てられることを
+`docker inspect`で確認する。確認後は検証用projectを`down -v`で削除する。
+
+```bash
+docker compose -p pvweb-cache-verify -f infra/docker-compose.yml \
+  --profile full-stack up --no-build --no-deps --no-start \
+  --scale job-worker=2 job-worker
+for container in $(docker compose -p pvweb-cache-verify \
+  -f infra/docker-compose.yml --profile full-stack ps -q job-worker); do
+  docker inspect --format \
+    '{{range .Mounts}}{{if eq .Destination "/var/lib/pvweb"}}{{.Name}}{{end}}{{end}}' \
+    "$container"
+done
+docker compose -p pvweb-cache-verify -f infra/docker-compose.yml \
+  --profile full-stack down -v --remove-orphans
 ```
 
 loopbackでE2E相当の確認を行う場合は、production用OIDC placeholderを使わず、

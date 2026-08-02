@@ -103,6 +103,9 @@ PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 ./.venv/bin/uvicorn app.main
 MinIO bucketは`minio-init`が作成します。S3 objectはimmutable key + local read-through
 cacheでVTK reader/FileResponseへ渡されます。cacheは
 `PVWEB_S3_CACHE_MAX_BYTES`（既定5 GiB）と`PVWEB_S3_CACHE_TTL_SECONDS`（既定24時間）で制限されます。
+full-stack ComposeではMinIO/S3のobject本体だけを共有し、process-localなlease/lockを安全に保つため、
+APIとjob-workerのread-through cacheにはsource未指定のanonymous volumeを使います。scale時も
+各containerが固有volumeを持つため、同一serviceのreplica間でもcacheを共有しません。
 `PVWEB_S3_PRESIGNED_DOWNLOADS=1`を設定すると、dataset/artifactのダウンロードは
 API経由のストリーミングではなく期限付きpresigned URLへの307リダイレクトになります。
 

@@ -76,12 +76,12 @@ web / nginx (HTTP, React配信, /api proxy)
 | サービス | 役割 | 永続化 |
 |---|---|---|
 | `web` | React配信、`/api` proxy（HTTP） | 不要 |
-| `api` | FastAPI、認証、ファイル・ジョブ管理 | cacheのみ |
+| `api` | FastAPI、認証、ファイル・ジョブ管理 | container専用anonymous cacheのみ |
 | `migration` | API起動前にAlembicを1回実行 | 不要 |
 | `postgres` | project、metadata、job、権限など | 必須volume |
 | `minio` | upload、export、artifact本体 | 必須volume |
 | `redis` | 永続job queue（AOF） | 必須volume |
-| `job-worker` | DB jobを取得して実行するRQ worker | 不要 |
+| `job-worker` | DB jobを取得して実行するRQ worker | container専用anonymous cacheのみ |
 | `worker` | ParaView変換・filter | 任意 |
 | `trame-broker` | remote rendering session | 任意 |
 
@@ -203,7 +203,13 @@ ParaView/ffmpegを含む派生imageまたはread-only mountを構成し、contai
 - PostgreSQL: project、user、権限、dataset metadata、pipeline、job、artifact record
 - MinIO/S3: uploadしたdataset、bundle member、export、screenshot、変換結果
 - Redis: queued RQ message。DBのjob recordと同じ復旧点でbackupする
-- API cache: 再生成できるためbackup対象外
+- API / job-worker cache: containerごとのanonymous volume。再生成できるためbackup対象外
+
+S3/MinIOのobject本体は両serviceで共有しますが、read-through cacheは共有しません。
+cacheのlease、download lock、起動時の一時file cleanupはprocess-localに管理されるため、
+APIとjob-workerで同じcache directoryをmountすると、相手processが使用中のfileを削除する
+可能性があります。Composeではsource未指定のanonymous volumeをmountし、同一serviceを
+水平scaleした場合も各replicaのcacheを分離してこの競合を防ぎます。
 
 APIとjob-workerは起動時にDBの`queued` jobをRedisへ再投入します。RQ job idはDB job idから
 一意に決まり、複数replicaが同時起動してもRedis側のatomic unique enqueueで重複を防ぎます。

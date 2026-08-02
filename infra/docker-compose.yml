@@ -120,7 +120,11 @@ services:
     build: *api-build
     environment: *api-environment
     volumes:
-      - api-cache:/var/lib/pvweb
+      # S3ObjectStore cache leases and fill locks are process-local. Keep this
+      # anonymous volume private to each API replica so another process cannot
+      # evict a leased file or remove an in-progress .part file.
+      - type: volume
+        target: /var/lib/pvweb
     depends_on:
       migration:
         condition: service_completed_successfully
@@ -147,7 +151,10 @@ services:
     command: ["python", "-m", "app.rq_worker"]
     environment: *api-environment
     volumes:
-      - api-cache:/var/lib/pvweb
+      # Persistent objects remain shared through MinIO/S3; only this
+      # process-local read-through cache is anonymous and replica-local.
+      - type: volume
+        target: /var/lib/pvweb
     depends_on:
       migration:
         condition: service_completed_successfully
@@ -188,4 +195,3 @@ volumes:
   postgres-data:
   minio-data:
   redis-data:
-  api-cache:

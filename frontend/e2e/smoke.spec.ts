@@ -18,10 +18,14 @@ test("upload -> display -> save/restore view state -> stats artifact", async ({ 
   const projectName = `e2e-${Date.now()}`;
   await page.getByPlaceholder("New project name").fill(projectName);
   await page.getByRole("button", { name: "Create", exact: true }).click();
-  await expect(page.locator("select").first()).toHaveValue(/.+/);
+  await expect(
+    page.locator(".panel-left select").first().locator("option:checked"),
+  ).toHaveText(projectName);
 
   // Upload the VTP fixture; ingest runs and the row flips to Ready.
-  await page.locator('input[type="file"]').first().setInputFiles(VTP_FIXTURE);
+  const upload = page.locator('input[type="file"]').first();
+  await expect(upload).toBeEnabled();
+  await upload.setInputFiles(VTP_FIXTURE);
   const datasetRow = page.locator(".dataset-select-button").filter({ hasText: "sample_surface.vtp" });
   await expect(datasetRow).toBeVisible({ timeout: 20_000 });
   await expect(datasetRow.getByText("Ready")).toBeVisible({ timeout: 20_000 });

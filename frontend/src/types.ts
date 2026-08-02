@@ -69,7 +69,9 @@ export const COLOR_MAP_NAMES = [
   "plasma",
   "turbo",
 ] as const;
-export type ColorMapName = (typeof COLOR_MAP_NAMES)[number];
+export type BuiltInColorMapName = (typeof COLOR_MAP_NAMES)[number];
+export type CustomColorMapName = `custom:${string}`;
+export type ColorMapName = BuiltInColorMapName | CustomColorMapName;
 
 /** Client-creatable job kinds (POST /jobs). */
 export const JOB_KINDS = ["convert", "filter", "export", "render", "stats", "movie"] as const;

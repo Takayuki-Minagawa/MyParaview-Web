@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { registerCustomColorMap } from "./colormap";
 import { clampSliceIndex, parseViewState } from "./viewState";
 
 const VALID = {
@@ -28,6 +29,16 @@ describe("parseViewState", () => {
     expect(parseViewState({ ...VALID, color_by: { name: "x", association: "field" } })).toBeNull();
     expect(parseViewState({ ...VALID, color_range: [10, 0] })).toBeNull();
     expect(parseViewState({ ...VALID, color_range: [1, 1] })).toBeNull();
+    expect(parseViewState({ ...VALID, color_map: "custom:not-registered" })).toBeNull();
+  });
+
+  it("restores a custom colormap while its imported preset is registered", () => {
+    const id = "custom:test:view-state" as const;
+    registerCustomColorMap(id, "Test", [
+      { position: 0, rgb: [0, 0, 0] },
+      { position: 1, rgb: [1, 1, 1] },
+    ]);
+    expect(parseViewState({ ...VALID, color_map: id })?.color_map).toBe(id);
   });
 
   it("round-trips CSV and ImageData display controls", () => {

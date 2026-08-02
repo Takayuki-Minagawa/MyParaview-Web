@@ -1,5 +1,11 @@
 import { memo, useEffect, useRef, useState } from "react";
-import type { AssistProposal, ColorMapName, Dataset, ScalarSelection } from "../../types";
+import type {
+  AssistProposal,
+  BuiltInColorMapName,
+  ColorMapName,
+  Dataset,
+  ScalarSelection,
+} from "../../types";
 import { COLOR_MAP_NAMES } from "../../types";
 import { api } from "../../api";
 import type { Job } from "../../types";
@@ -78,8 +84,8 @@ export const AssistantSection = memo(function AssistantSection({
       color?.name &&
       (color.association === "point" || color.association === "cell")
     ) onColorBy(color as ScalarSelection);
-    if (COLOR_MAP_NAMES.includes(map as ColorMapName)) {
-      onColorMap(map as ColorMapName);
+    if (COLOR_MAP_NAMES.includes(map as BuiltInColorMapName)) {
+      onColorMap(map as BuiltInColorMapName);
     }
     setAssistantProposal(null);
   };

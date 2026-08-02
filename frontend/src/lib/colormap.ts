@@ -1,4 +1,4 @@
-import type { ColorMapName } from "../types";
+import type { ColorMapName, CustomColorMapName } from "../types";
 
 export type { ColorMapName };
 export type RGB = [number, number, number];
@@ -7,7 +7,7 @@ export interface ColorStop {
   rgb: RGB;
 }
 
-const MAPS: Record<ColorMapName, ColorStop[]> = {
+const MAPS: Record<string, ColorStop[]> = {
   "cool-to-warm": [
     { position: 0, rgb: [0.23, 0.3, 0.75] },
     { position: 0.5, rgb: [0.87, 0.87, 0.87] },
@@ -40,12 +40,44 @@ const MAPS: Record<ColorMapName, ColorStop[]> = {
   ],
 };
 
+const CUSTOM_LABELS = new Map<CustomColorMapName, string>();
+
+function registeredStops(name: ColorMapName): ColorStop[] {
+  const stops = MAPS[name];
+  if (!stops) throw new Error(`Unknown colormap: ${name}`);
+  return stops;
+}
+
+export function hasColorMap(name: unknown): name is ColorMapName {
+  return typeof name === "string" && Object.prototype.hasOwnProperty.call(MAPS, name);
+}
+
+export function registerCustomColorMap(
+  id: CustomColorMapName,
+  label: string,
+  stops: readonly ColorStop[],
+): void {
+  if (stops.length < 2) throw new Error("A colormap requires at least two stops");
+  MAPS[id] = stops.map((stop) => ({
+    position: stop.position,
+    rgb: [...stop.rgb] as RGB,
+  }));
+  CUSTOM_LABELS.set(id, label);
+}
+
+export function registeredCustomColorMaps(): Array<{
+  id: CustomColorMapName;
+  label: string;
+}> {
+  return Array.from(CUSTOM_LABELS, ([id, label]) => ({ id, label }));
+}
+
 export function colorMapStops(name: ColorMapName): ColorStop[] {
-  return MAPS[name].map((stop) => ({ ...stop, rgb: [...stop.rgb] as RGB }));
+  return registeredStops(name).map((stop) => ({ ...stop, rgb: [...stop.rgb] as RGB }));
 }
 
 export function colorMapCssGradient(name: ColorMapName): string {
-  const stops = MAPS[name].map(({ position, rgb }) => {
+  const stops = registeredStops(name).map(({ position, rgb }) => {
     const channel = rgb.map((value) => Math.round(value * 255)).join(", ");
     return `rgb(${channel}) ${Math.round(position * 100)}%`;
   });
@@ -55,7 +87,7 @@ export function colorMapCssGradient(name: ColorMapName): string {
 /** Sample any registered colormap using piecewise-linear interpolation. */
 export function sampleColorMap(name: ColorMapName, t: number): RGB {
   const x = Math.max(0, Math.min(1, t));
-  const stops = MAPS[name];
+  const stops = registeredStops(name);
   const rightIndex = stops.findIndex((stop) => stop.position >= x);
   if (rightIndex <= 0) return [...stops[0].rgb] as RGB;
   const right = stops[rightIndex];

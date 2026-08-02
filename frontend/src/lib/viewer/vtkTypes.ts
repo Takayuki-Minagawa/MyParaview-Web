@@ -20,8 +20,10 @@ export interface VtkObject {
 }
 
 export interface VtkDataArrayLike {
+  getName?: () => string;
   getNumberOfComponents?: () => number;
   getRange?: (component?: number) => number[] | undefined;
+  getTuple?: (tupleId: number) => ArrayLike<number>;
 }
 
 export interface VtkAttributes {

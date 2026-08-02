@@ -39,6 +39,11 @@ import {
   type ClientPlaneController,
   type ClientPlaneSettings,
 } from "../lib/viewer/planeTool";
+import {
+  createProbeController,
+  type ProbeController,
+  type ProbeResult,
+} from "../lib/viewer/probe";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Volume";
@@ -95,7 +100,12 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
   const containerRef = useRef<HTMLDivElement | null>(null);
   const ctx = useRef<Scene | null>(null);
   const planeControllerRef = useRef<ClientPlaneController | null>(null);
+  const probeControllerRef = useRef<ProbeController | null>(null);
   const [status, setStatus] = useState("");
+  const [probeEnabled, setProbeEnabled] = useState(false);
+  const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
+  const probeEnabledRef = useRef(probeEnabled);
+  probeEnabledRef.current = probeEnabled;
   const [planeSettings, setPlaneSettings] = useState<ClientPlaneSettings>({
     enabled: false,
     mode: "clip",
@@ -233,6 +243,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
       lut: null, opacityFunction: null, cameraSubscription: null, emitCamera: () => {},
     };
     let planeController: ClientPlaneController | null = null;
+    let probeController: ProbeController | null = null;
     scene.emitCamera = () => cameraCallbackRef.current(readCamera(scene));
     ctx.current = scene;
     const interactor = renderWindow.getInteractor();
@@ -260,6 +271,16 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
           planeController = createClientPlaneController(scene);
           planeControllerRef.current = planeController;
           planeController?.apply(planeSettingsRef.current);
+          if (scene.output) {
+            probeController = createProbeController(
+              scene.renderer,
+              interactor,
+              scene.output,
+              setProbeResult,
+            );
+            probeControllerRef.current = probeController;
+            probeController?.setEnabled(probeEnabledRef.current);
+          }
         }
       } else {
         if (scene.kind === "slice") {
@@ -326,6 +347,8 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
       try {
         resizeObserver.disconnect();
         scene.cameraSubscription?.unsubscribe?.();
+        probeController?.delete();
+        if (probeControllerRef.current === probeController) probeControllerRef.current = null;
         planeController?.delete();
         if (planeControllerRef.current === planeController) planeControllerRef.current = null;
         orientationWidget.setEnabled(false);
@@ -362,6 +385,11 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
   useEffect(() => {
     planeControllerRef.current?.apply(planeSettings);
   }, [planeSettings]);
+
+  useEffect(() => {
+    probeControllerRef.current?.setEnabled(probeEnabled);
+    if (!probeEnabled) setProbeResult(null);
+  }, [probeEnabled]);
 
   useEffect(() => {
     const scene = ctx.current;
@@ -430,15 +458,30 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
       )}
       {planeToolAvailable && (
         <div className="viewer-toolbar viewer-plane-toolbar" aria-label={messages.viewer.planeTools}>
+          <button
+            aria-pressed={probeEnabled}
+            onClick={() => {
+              const next = !probeEnabled;
+              setProbeEnabled(next);
+              if (next) {
+                setPlaneSettings((current) => ({ ...current, enabled: false }));
+              }
+            }}
+          >
+            {messages.viewer.probe}
+          </button>
           {(["clip", "slice"] as const).map((mode) => (
             <button
               key={mode}
               aria-pressed={planeSettings.enabled && planeSettings.mode === mode}
-              onClick={() => setPlaneSettings((current) => ({
-                ...current,
-                enabled: current.mode !== mode || !current.enabled,
-                mode,
-              }))}
+              onClick={() => {
+                setProbeEnabled(false);
+                setPlaneSettings((current) => ({
+                  ...current,
+                  enabled: current.mode !== mode || !current.enabled,
+                  mode,
+                }));
+              }}
             >
               {mode === "clip" ? messages.viewer.clientClip : messages.viewer.clientSlice}
             </button>
@@ -470,6 +513,46 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
           >
             {messages.viewer.planeReset}
           </button>
+        </div>
+      )}
+      {probeEnabled && probeResult && (
+        <div
+          className="probe-tooltip"
+          role="status"
+          style={{
+            left: probeResult.displayPosition[0] + 12,
+            bottom: probeResult.displayPosition[1] + 12,
+          }}
+        >
+          <button
+            className="probe-close"
+            aria-label={messages.common.close}
+            onClick={() => setProbeResult(null)}
+          >
+            ×
+          </button>
+          {probeResult.worldPosition && (
+            <div>
+              <strong>{messages.viewer.probePosition}</strong>{" "}
+              {probeResult.worldPosition.map((value) => Number(value).toPrecision(6)).join(", ")}
+            </div>
+          )}
+          <div>
+            {messages.viewer.probePoint}: {probeResult.pointId ?? "—"}
+            {" · "}{messages.viewer.probeCell}: {probeResult.cellId ?? "—"}
+          </div>
+          {probeResult.values.length ? (
+            <dl>
+              {probeResult.values.map((entry) => (
+                <div key={`${entry.association}:${entry.name}`}>
+                  <dt>{entry.association} · {entry.name}</dt>
+                  <dd>{entry.value.toPrecision(7)}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <div>{messages.viewer.probeNoScalars}</div>
+          )}
         </div>
       )}
       {!renderable && (

@@ -37,6 +37,10 @@ test("upload -> display -> save/restore view state -> stats artifact", async ({ 
     .toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Flip", exact: true }).click();
   await page.getByRole("button", { name: "Reset plane" }).click();
+  const probeButton = page.getByRole("button", { name: "Probe", exact: true });
+  await probeButton.click();
+  await expect(probeButton).toHaveAttribute("aria-pressed", "true");
+  await expect(clipButton).toHaveAttribute("aria-pressed", "false");
   // No error banner appeared during the flow.
   await expect(page.locator(".error-banner")).toHaveCount(0);
 

@@ -24,9 +24,9 @@ PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db \
   .venv/bin/alembic -c alembic.ini upgrade head --sql >/tmp/pvweb.sql
 ```
 
-PostgreSQL 16で0009のdowngrade/upgradeと実検索まで確認する場合は、必ず破棄可能な
-検証専用databaseを使う。このscriptは0009→0008→0009のmigrationと検証rowの挿入を行うため、
-開発・本番databaseへ向けて実行しない。
+PostgreSQL 16でタグmigration、削除outbox migration、実検索まで確認する場合は、必ず破棄可能な
+検証専用databaseを使う。このscriptはhead（0010）→0008→head（0010）のmigrationと
+検証rowの挿入を行うため、開発・本番databaseへ向けて実行しない。
 
 ```bash
 cd backend
@@ -40,17 +40,26 @@ PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db \
 
 - Playwright全4 scenario（browser smoke、2-up比較、対話ツールVTP、対話ツールVTU）が
   4/4 PASS。clip平面drag前後のcanvas変化、Probeのcell scalar値、正の距離readout、2 canvas、
-  secondary view解放後のcontext slot再利用を確認した。
-- 一時PostgreSQL 16 containerでfresh databaseをheadへmigrationした後、0009→0008 downgrade、
-  legacy dataset挿入、0008→0009 upgrade、空tagsのbackfill、JSON tagのcase-insensitive検索を
-  `scripts.verify_postgres_tags`で確認した。確認用container/network/volumeは終了後に削除した。
-- full-stack image build、Compose起動、health endpoint smokeと停止・cleanupを確認した。
+  primary canvasのdragに追従するsecondary camera、比較表示を10回再生成した後のcontext slot再利用を
+  確認した。
+- 一時PostgreSQL 16 containerでfresh databaseをheadへmigrationした後、0010→0008 downgrade、
+  legacy dataset挿入、0008→0010 upgrade、空tagsのbackfill、JSON tagのcase-insensitive検索、
+  `object_deletion_outbox`の作成とjobへの外部キーを持たないことを`scripts.verify_postgres_tags`で
+  確認した。さらに12件のterminal jobを並列drainし、PostgreSQL advisory lock下で12/12件が
+  一度ずつACKされることを確認した。確認用container/network/volumeは終了後に削除した。
+- full-stack image buildとCompose起動を行い、`/healthz`、`/api/health`、`/api/capabilities`、
+  `/api/docs`から`/api/openapi.json`への参照、外部Host/portを保持したslash redirectを確認した。
+- Redis/RQ構成でworker停止中に作成したqueued jobがAPI再起動後も同じID・状態で残り、worker再開後に
+  成功することを確認した。別のqueued jobはworker再開前にcancelし、再開後も実行されず
+  `canceled`のままArtifactを作らないことを確認した。
 - 検証専用Compose projectで`job-worker`を2 replica作成し、`docker inspect`で
   `/var/lib/pvweb`に異なるanonymous volume IDが割り当てられることを確認した。
   検証用container、network、volumeは確認後に削除した。
 - 実ffmpegで3 frame（322×242）のH.264 MP4とVP9 WebMをそれぞれ生成し、codec・frame数・
   解像度を確認した。
-- backend/frontendの単体・契約テストで、新規logicと外部capability未設定時の失敗境界を確認した。
+- backend 354 test、frontend 214 test、Python client 3 testがすべてPASS。最終coverageはbackendが
+  line 84.57% / branch 67.69%（term総合81%）、frontendがline 51.54% / branch 45.98%だった。
+  新規logicと外部capability未設定時の失敗境界を含む。
 
 この環境では`pvpython`が見つからなかったため、G10の実ParaView filterとG13のParaView frame
 renderを含むend-to-end manual testは未実施である。ffmpeg単体の実encode、fake
@@ -122,11 +131,14 @@ loopbackでE2E相当の確認を行う場合は、production用OIDC placeholder�
 
 ```bash
 PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 \
+PVWEB_WEB_BIND_ADDRESS=127.0.0.1 POSTGRES_BIND_ADDRESS=127.0.0.1 \
+MINIO_BIND_ADDRESS=127.0.0.1 \
   docker compose -f infra/docker-compose.yml --profile full-stack up --build -d
 docker compose -f infra/docker-compose.yml --profile full-stack ps
 curl --fail http://localhost:8080/healthz
 curl --fail http://localhost:8080/api/health
 curl --fail http://localhost:8080/api/capabilities
+curl --fail http://localhost:8080/api/docs | grep '/api/openapi.json'
 ```
 
 ブラウザでproject作成、VTP upload、表示、download、project削除まで確認する。
@@ -177,7 +189,7 @@ docker compose -f infra/docker-compose.yml --profile full-stack down
 3. viewerにはタグ編集controlが出ず、APIで更新しても403になることを確認する。editorの更新が
    監査ログに記録されることも確認する。
 4. PostgreSQLを使う場合は上記`python -m scripts.verify_postgres_tags`を実行し、0009の
-   legacy row backfillとJSON array検索を確認する。
+   legacy row backfillとJSON array検索、および0010の削除outbox tableを確認する。
 
 ## G6 custom colormap manual test
 
@@ -287,9 +299,18 @@ secondaryだけを生成・`delete()`・lease解放する。
 
 ## G12 external job queue restart/cancel test
 
-1. `docker compose -f infra/docker-compose.yml --profile full-stack up -d` で
-   `redis`、`job-worker`、`api`が起動し、`GET /capabilities`の`job_queue`が`rq`になることを
-   確認する。
+copy/paste時にdev認証や既定credentialをLANへ公開しないよう、検証構成は明示的に
+loopbackへbindして起動する。
+
+```bash
+PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 \
+PVWEB_WEB_BIND_ADDRESS=127.0.0.1 POSTGRES_BIND_ADDRESS=127.0.0.1 \
+MINIO_BIND_ADDRESS=127.0.0.1 \
+  docker compose -f infra/docker-compose.yml --profile full-stack up --build -d
+```
+
+1. 上記構成で`redis`、`job-worker`、`api`が起動し、`GET /capabilities`の`job_queue`が`rq`に
+   なることを確認する。
 2. 大きなdatasetのingestまたは長時間filter jobを作成し、statusが`queued`または`running`の間に
    `docker compose -f infra/docker-compose.yml restart api`を実行する。API復帰後もjobが
    `failed`へ強制遷移せず、同じjob idで`running`からterminal stateへ進むことを確認する。
@@ -300,6 +321,9 @@ secondaryだけを生成・`delete()`・lease解放する。
    `failed`（偽のqueued/succeededではない）になることを確認する。
 5. local fallbackは`PVWEB_JOB_QUEUE_BACKEND=local`で起動し、API再起動前のactive jobが従来通り
    `failed`と`retry required`ログへ遷移することを確認する。
+6. object storeを一時的に停止してproject/jobを削除し、DB transactionは成功して削除対象が
+   `object_deletion_outbox`へ残ることを確認する。object store復帰後、APIの周期drainまたはworkerの
+   startup drainで対象objectとoutbox rowが削除されることを確認する。
 
 ## G14 repository maintenance verification
 

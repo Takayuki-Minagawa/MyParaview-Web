@@ -48,7 +48,7 @@ capability不足を明示します。
 
 ## ローカル起動
 
-Python 3.9+、Node.js 20+を使用します。
+Python 3.11+、Node.js 22.12+を使用します。
 
 ```bash
 cd backend
@@ -73,11 +73,11 @@ npm run dev
 
 `backend/Dockerfile`、`frontend/Dockerfile`と`full-stack` Compose profileで、migration、
 API、Redis/RQ worker、nginx配信フロント、PostgreSQL、MinIOをまとめて起動できます。
-本番相当の起動前に`.env.production.example`を複製し、OIDCやsecretのplaceholderを実値へ
-置き換えてください。
+本番相当の起動前に`.env.production.example`を`.env.production`へ複製し、OIDCやsecretの
+placeholderを実値へ置き換えてください。
 
 ```bash
-docker compose --env-file .env.production.example \
+docker compose --env-file .env.production \
   -f infra/docker-compose.yml --profile full-stack up --build -d
 docker compose -f infra/docker-compose.yml --profile full-stack ps
 ```
@@ -157,6 +157,9 @@ PVWEB_JOB_QUEUE_NAME=pvweb
 
 APIと同じbackend image/environmentで`python -m app.rq_worker`を起動します。
 `full-stack` Compose profileではRedisとRQ workerも自動起動します。
+DB commit後のobject削除は永続outboxから再試行されます。APIの周期drainは
+`PVWEB_OBJECT_DELETE_INTERVAL_SECONDS`（既定30秒）と
+`PVWEB_OBJECT_DELETE_BATCH_SIZE`（既定100件）で上限を調整できます。
 
 ## ParaView / ffmpeg worker capability
 
@@ -222,10 +225,10 @@ request世代の一致を再確認してから、利用者の明示操作で適�
 ## テスト
 
 ```bash
-cd backend && .venv/bin/pytest -q && .venv/bin/ruff check --config ruff.toml .
-cd frontend && npm run typecheck && npm run lint && npm test -- --run && npm run build
-cd frontend && npm run e2e   # Playwright（初回は npx playwright install chromium）
-python3 -m pytest -q python
+(cd backend && .venv/bin/pytest -q && .venv/bin/ruff check --config ruff.toml .)
+(cd frontend && npm run typecheck && npm run lint && npm test && npm run build)
+(cd frontend && npm run e2e)  # Playwright（初回は npx playwright install chromium）
+backend/.venv/bin/python -m pytest -q python
 git diff --check
 ```
 

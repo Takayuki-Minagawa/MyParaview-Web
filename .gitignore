@@ -3,6 +3,7 @@ backend/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 backend/.pvweb-data/
 .pvweb-data/
 backend/coverage/
@@ -24,5 +25,9 @@ frontend/coverage/
 frontend/test-results/
 frontend/playwright-report/
 
-# Deployment secrets (the checked-in example is intentionally retained).
-.env.production
+# Deployment secrets (checked-in examples are intentionally retained).
+.env
+.env.*
+!.env.production.example
+!infra/.env.example
+infra/.env

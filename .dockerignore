@@ -17,6 +17,8 @@ backend/.pvweb-data
 **/__pycache__
 **/*.pyc
 **/.pytest_cache
+**/.ruff_cache
+**/.coverage
 backend/coverage
 frontend/coverage
 frontend/dist

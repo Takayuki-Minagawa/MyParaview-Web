@@ -35,8 +35,8 @@
 
 - **ブラウザ操作**: VTS/VTR直読、対話clip/slice、Probe、距離/角度計測、vector glyph、
   2画面比較、ParaView colormap preset、表示状態undo/redoを追加
-- **データ・サーバ解析**: datasetタグ/検索とAlembic 0009を追加し、サーバfilterを
-  Cell Data to Point Data / Resample To Image / Decimationを含む7種へ拡張
+- **データ・サーバ解析**: datasetタグ/検索とAlembic 0009、永続削除outboxのAlembic 0010を
+  追加し、サーバfilterをCell Data to Point Data / Resample To Image / Decimationを含む7種へ拡張
 - **運用**: backend/frontend containerとfull-stack Compose、Redis/RQ worker、
   PNG frame ZIPに加えてMP4/WebM exportを追加
 - **リポジトリ衛生**: pytest-cov / Vitest coverageとDependabot設定を追加。
@@ -81,7 +81,7 @@
 | ID | 機能 | 出典 | 価値 | 難易度 | 最初のスライス |
 |---:|---|---|---|---|---|
 | G11 | **アプリ本体のコンテナ化** | RI-3 | 中（運用） | 中 | backend / frontend（nginx静的配信）のDockerfileと、migration/API/RQ workerを含むfull-stack Compose profileを実装 |
-| G12 | **ジョブキューの外部化** | F6 | 中（運用） | 中〜高 | in-process local executorを開発用に維持し、Redis/RQの独立worker、再起動復旧、retry/cancel契約を追加 |
+| G12 | **ジョブキューの外部化** | F6 | 中（運用） | 中〜高 | in-process local executorを開発用に維持し、Redis/RQの独立worker、再起動復旧、retry/cancel契約、永続object削除outboxを追加 |
 | G13 | **animation/video export** | M3 | 中 | 中 | 後方互換のframe PNG ZIPを維持し、pv_worker + ffmpegでMP4/WebM生成を追加 |
 | G14 | **リポジトリ衛生** | 新規 | 中（保守） | 低 | pytest-cov / Vitest coverageとDependabotは完了。LICENSEは利用者のライセンス選択待ち |
 
@@ -165,7 +165,7 @@
 | G9 | 完了 | `vtkGlyph3DMapper`によるpoint vector表示を追加し、決定的samplingで矢印を最大2,000本に制限した |
 | G10 | 完了 | Cell Data to Point Data / Resample To Image / DecimationをAPI・UI・pvpython workerへ追加した。Resampleは1軸上限に加え総sample数も16,777,216以下へ制限した |
 | G11 | 完了 | backend/frontend Dockerfile、nginx API proxy、migration/API/RQ worker/Redisを含む`full-stack` Compose profileを追加した |
-| G12 | 完了 | local executorを維持しつつRedis/RQを追加した。永続job IDだけをenqueueし、再起動復旧、outbox再照合、retry、DB協調cancel、Redis障害時にjobをfailedへ戻す処理を実装した |
+| G12 | 完了 | local executorを維持しつつRedis/RQを追加した。永続job IDだけをenqueueし、再起動復旧、retry、DB協調cancel、Redis障害時の失敗復旧を実装した。Alembic 0010のobject削除outboxはproducerと同じjob leaseを跨いでdrainし、storage障害・process crash後も再試行する |
 | G13 | 完了 | 後方互換のPNG frame ZIPに加え、ffmpegによるMP4（H.264）とWebM（VP9）export、capability検出、入力上限を追加した |
 | G14 | 一部保留 | backend/frontend coverageとDependabot（pip/npm/GitHub Actions/Docker Compose）は完了。LICENSEは利用者のライセンス選択待ち |
 
@@ -173,14 +173,19 @@
 
 - Playwright全4 scenario（browser smoke、2-up比較、対話ツールVTP、対話ツールVTU）が
   4/4 PASS。clip平面drag前後のcanvas変化、Probeのcell scalar値、正の距離readout、
-  2 canvas生成、secondary解放後のcontext slot再利用を確認した。
-- PostgreSQL 16上でfresh migrationをheadまで適用し、0009→0008 downgrade、legacy dataset挿入、
-  0008→0009 upgrade、tags backfillと大文字小文字を区別しないJSON tag検索を確認した。
-- full-stack container imageのbuild、Compose起動、health endpoint smokeとcleanupを確認した。
+  primary canvasのdragによるcamera同期、比較表示10回後のcontext slot再利用を確認した。
+- PostgreSQL 16上でfresh migrationをheadまで適用し、0010→0008 downgrade、legacy dataset挿入、
+  0008→0010 upgrade、tags backfill、case-insensitive JSON tag検索、削除outbox schemaを確認した。
+  さらに12件を並列drainし、実PostgreSQL advisory lock下で12/12件がACKされることを確認した。
+- full-stack container imageのbuild、Compose起動、`/api` root path、health/capabilities/Swagger、
+  forwarded Host/port/protoを保持するredirectとcleanupを確認した。
+- Redis/RQでworker停止中のqueued jobがAPI再起動を跨いで同じIDのまま保持され、worker再開後に
+  成功すること、およびworker停止中にcancelした別jobが再開後も実行されないことを確認した。
 - 実ffmpegで3 frame（322×242）のH.264 MP4とVP9 WebMをそれぞれ生成し、codec・frame数・
   解像度を確認した。
-- backend/frontendの単体・契約テストは、新規ロジックと失敗境界（外部capability未設定、
-  numeric上限、RQ enqueue/restart/cancel）を含めて実行した。
+- backend 354 test、frontend 214 test、Python client 3 testがすべてPASS。最終coverageはbackendが
+  line 84.57% / branch 67.69%（term総合81%）、frontendがline 51.54% / branch 45.98%だった。
+  外部capability未設定、numeric上限、RQ enqueue/restart/cancelを含む失敗境界も確認した。
 
 このローカル環境には`pvpython`がないため、G10の実ParaView filterと、G13のParaView frame renderを
 含むend-to-end manual testは未実施である。ffmpeg単体の実encode、fake `paraview.simple`を使う

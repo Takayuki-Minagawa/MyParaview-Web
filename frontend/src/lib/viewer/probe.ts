@@ -1,3 +1,5 @@
+import vtkCellPicker from "@kitware/vtk.js/Rendering/Core/CellPicker";
+import vtkPointPicker from "@kitware/vtk.js/Rendering/Core/PointPicker";
 import type { VtkAttributes, VtkDataSet, VtkObject, VtkRenderer } from "./vtkTypes";
 
 interface InteractorPosition {
@@ -41,6 +43,21 @@ interface VtkSubscription {
   unsubscribe?: () => void;
 }
 
+interface ProbeRayPicker extends VtkObject {
+  getPickPosition: () => number[];
+  pick: (selection: [number, number, number], renderer: VtkRenderer) => unknown;
+  setTolerance?: (tolerance: number) => void;
+}
+
+interface ProbeCellPicker extends ProbeRayPicker {
+  getCellId: () => number;
+}
+
+interface ProbePointPicker extends ProbeRayPicker {
+  getPointId: () => number;
+  setUseCells?: (useCells: boolean) => void;
+}
+
 export interface ProbeScalarValue {
   association: "point" | "cell";
   name: string;
@@ -62,6 +79,7 @@ export interface ProbeController {
 
 const POINT_ASSOCIATION = 0;
 const CELL_ASSOCIATION = 1;
+const PICK_RADIUS = 2;
 
 export function scalarValuesAt(
   attributes: VtkAttributes | null | undefined,
@@ -118,26 +136,61 @@ export function createProbeController(
   let enabled = false;
   let deleted = false;
   let requestId = 0;
+  const cellPicker = vtkCellPicker.newInstance() as unknown as ProbeCellPicker;
+  const pointPicker = vtkPointPicker.newInstance() as unknown as ProbePointPicker;
+  cellPicker.setTolerance?.(0.001);
+  pointPicker.setTolerance?.(0.025);
+  pointPicker.setUseCells?.(true);
   const subscription = interactor.onLeftButtonPress((event) => {
     if (!enabled || deleted || !event.position) return;
     const displayPosition: [number, number] = [event.position.x, event.position.y];
     const currentRequest = ++requestId;
     const selector = view.createSelector();
     selector.setCaptureZValues(true);
+    const area: [number, number, number, number] = [
+      displayPosition[0] - PICK_RADIUS,
+      displayPosition[1] - PICK_RADIUS,
+      displayPosition[0] + PICK_RADIUS,
+      displayPosition[1] + PICK_RADIUS,
+    ];
 
     const pick = async () => {
       try {
         selector.setFieldAssociation(POINT_ASSOCIATION);
-        const pointNodes = await selector.selectAsync(
-          renderer, displayPosition[0], displayPosition[1], displayPosition[0], displayPosition[1],
-        );
+        const pointNodes = await selector.selectAsync(renderer, ...area);
         selector.setFieldAssociation(CELL_ASSOCIATION);
-        const cellNodes = await selector.selectAsync(
-          renderer, displayPosition[0], displayPosition[1], displayPosition[0], displayPosition[1],
-        );
+        const cellNodes = await selector.selectAsync(renderer, ...area);
         if (deleted || !enabled || currentRequest !== requestId) return;
-        const point = selectionHit(pointNodes);
-        const cell = selectionHit(cellNodes);
+        let point = selectionHit(pointNodes);
+        let cell = selectionHit(cellNodes);
+        // Hardware selection is fastest and preserves exact rendered IDs, but
+        // some headless/older WebGL drivers return an empty selection buffer.
+        // Ray pickers keep Probe functional in that capability gap.
+        if (point.id === null || cell.id === null) {
+          const selection: [number, number, number] = [
+            displayPosition[0], displayPosition[1], 0,
+          ];
+          if (point.id === null) {
+            pointPicker.pick(selection, renderer);
+            const pointId = pointPicker.getPointId();
+            if (pointId >= 0) {
+              point = {
+                id: pointId,
+                worldPosition: pointPicker.getPickPosition() as [number, number, number],
+              };
+            }
+          }
+          if (cell.id === null) {
+            cellPicker.pick(selection, renderer);
+            const cellId = cellPicker.getCellId();
+            if (cellId >= 0) {
+              cell = {
+                id: cellId,
+                worldPosition: cellPicker.getPickPosition() as [number, number, number],
+              };
+            }
+          }
+        }
         if (point.id === null && cell.id === null) {
           onResult(null);
           return;
@@ -169,6 +222,8 @@ export function createProbeController(
       enabled = false;
       requestId += 1;
       subscription.unsubscribe?.();
+      pointPicker.delete?.();
+      cellPicker.delete?.();
     },
   };
 }

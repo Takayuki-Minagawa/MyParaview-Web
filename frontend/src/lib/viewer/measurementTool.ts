@@ -22,7 +22,7 @@ interface VtkSubscription {
 interface MeasurementWidgetFactory extends VtkObject {
   getAngle?: () => number;
   getDistance?: () => number;
-  onWidgetChangeEvent: (callback: () => void) => VtkSubscription;
+  onWidgetChange: (callback: () => void) => VtkSubscription;
   placeWidget: (bounds: number[]) => void;
   setPickable: (pickable: boolean) => void;
   setVisibility: (visible: boolean) => void;
@@ -86,7 +86,9 @@ export function createMeasurementController(
     manager.addWidget(factory);
     factory.setVisibility(false);
     factory.setPickable(false);
-    subscription = factory.onWidgetChangeEvent(() => {
+    // vtk.js 36's generated runtime API is `onWidgetChange` even though the
+    // bundled AbstractWidgetFactory declaration still has the Event suffix.
+    subscription = factory.onWidgetChange(() => {
       if (!factory || !settings.enabled) return;
       const rawValue = mode === "distance"
         ? factory.getDistance?.() ?? 0

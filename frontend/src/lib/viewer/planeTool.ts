@@ -28,7 +28,7 @@ interface PlaneState {
 
 interface PlaneWidgetFactory extends VtkObject {
   getWidgetState: () => PlaneState;
-  onWidgetChangeEvent: (callback: () => void) => VtkSubscription;
+  onWidgetChange: (callback: () => void) => VtkSubscription;
   placeWidget: (bounds: number[]) => void;
   setDragable: (dragable: boolean) => void;
   setPickable: (pickable: boolean) => void;
@@ -139,7 +139,10 @@ export function createClientPlaneController(scene: Scene): ClientPlaneController
     cutter.modified();
     scene.renderWindow.render();
   };
-  const widgetSubscription = planeWidget.onWidgetChangeEvent(syncPipeline);
+  // vtk.js 36 exposes the macro event as `onWidgetChange` at runtime.  Its
+  // declaration file still calls it `onWidgetChangeEvent`, so keep the local
+  // runtime-facing interface explicit instead of trusting that stale type.
+  const widgetSubscription = planeWidget.onWidgetChange(syncPipeline);
 
   const apply = (next: ClientPlaneSettings) => {
     if (deleted) return;

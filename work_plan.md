@@ -30,15 +30,15 @@
 | ジョブ処理worker | `pvpython` / VTK / PyVista / meshio | — | M1で確定 |
 | メタデータDB | PostgreSQL | — | M1で確定 |
 | オブジェクトストレージ | S3互換 (MinIO開発 / S3本番) | — | M1で確定 |
-| ジョブキュー | Celery / RQ / Dramatiq | — | M1で確定 |
-| 認証 | OIDC (Keycloak等) | SAML | M1で確定 |
+| ジョブキュー | Redis / RQ（local executorも維持） | — | 確定（ADR-0001/0002） |
+| 認証 | OIDC Code + PKCE | SAML | 確定（ADR-0002） |
 
 > ライセンスは調査メモでBSD-3/Apache-2.0/MIT系に統一済み。`xeokit`(AGPL)は採用しない。採用直前にStar/最終push/ライセンスを再確認する運用を守る。
 
 **作業項目**
-- [ ] 上表の未確定項目(UIフレームワーク、キュー、認証基盤)を確定しADR(Architecture Decision Record)に記録する
-- [ ] リポジトリ初期化（monorepo構成: `frontend/` `backend/` `workers/` `infra/` `docs/`）
-- [ ] `git init` と CI雛形（lint / typecheck / test）を用意する
+- [x] 上表の未確定項目(UIフレームワーク、キュー、認証基盤)を確定しADR(Architecture Decision Record)に記録する
+- [x] リポジトリ初期化（monorepo構成: `frontend/` `backend/` `workers/` `infra/` `docs/`）
+- [x] `git init` と CI（lint / typecheck / test / E2E / PostgreSQL migration / coverage）を用意する
 
 ---
 
@@ -79,45 +79,50 @@
 
 **目的**: 認証付きで、アップロード→メタデータ抽出→表示→基本フィルタ→スクショまでの一連が動く最小製品。
 
-> **実装状況 (2026-07-10)**: M1コアに加え、追加機能候補17件の最小スライスを実装済み。
-> browser-directはVTP/CSV/VTI/PVD、production adapterはPostgreSQL/S3/OIDC/RBAC、
-> server capabilityはpvpython filter/external readerとtrame broker/WS proxyを実装した。
-> WebGPU/WASMは検出+WebGL fallback、ParaView/trameは外部runtimeを必要とする。
+> **実装状況 (2026-08-02)**: M1コアと追加機能候補17件に加え、
+> [2026-08追加計画](./docs/feature-plan-2026-08.md) のG1〜G13を実装済み。
+> browser-directはVTP/VTU/VTS/VTR/CSV/VTI/PVD、production adapterは
+> PostgreSQL/S3/OIDC/RBAC、Redis/RQとfull-stack containerに対応した。
+> server capabilityはpvpythonの7 filter/external reader/renderと、PNG ZIP / MP4 / WebM
+> movie export、trame broker/WS proxyを実装した。WebGPU/WASMは検出+WebGL fallback、
+> ParaView/trame/ffmpegは設定時だけ有効になる外部runtimeとして扱う。
 > 詳細は[機能対応表](./docs/implementation-status.md)と
 > [全機能検証](./docs/verify-all-features.md)を参照。
 
 ### M1-A: 基盤・バックエンド
-- [ ] FastAPIプロジェクト、PostgreSQLスキーマ、S3互換ストレージ、ジョブキューを結線
-- [ ] 認証（OIDC）、プロジェクト単位RBAC、監査ログ、署名付きアップロードURL
-- [ ] データモデル実装: `Project` / `Dataset` / `ArrayInfo` / `TimeStep` / `Pipeline` / `PipelineNode` / `Representation` / `Job` / `Artifact` / `Session`
+- [x] FastAPIプロジェクト、PostgreSQLスキーマ、S3互換ストレージ、local/RQジョブ実行を結線
+- [x] 認証（OIDC）、プロジェクト単位RBAC、監査ログ、認証付きupload/downloadを実装
+- [x] データモデル実装（`ArrayInfo` / `TimeStep` / `Representation`はDataset/PipelineのJSON stateとして保持）
 
 ### M1-B: データ取り込み
-- [ ] `POST /datasets`（アップロード登録・署名付きURL発行）
-- [ ] `POST /datasets/{id}/ingest`（メタデータ抽出ジョブ）→ M0-Dスクリプトをworker化
-- [ ] `GET /datasets/{id}/metadata`
-- [ ] セキュリティ: magic/header検査、ファイルサイズ/配列数/セル数のquota、zip爆弾対策
+- [x] `POST /datasets`とsource/bundle uploadを実装
+- [x] dataset ingest（メタデータ抽出job）をworker化
+- [x] dataset metadata APIを実装
+- [x] セキュリティ: magic/header検査、ファイルサイズ/配列数/セル数のquota、zip爆弾対策
 
 ### M1-C: パイプライン & ジョブ
-- [ ] `POST /pipelines` / `PATCH /pipelines/{id}`（`reader → filter → representation`のDAGを保存）
-- [ ] `POST /jobs` / `GET /jobs/{id}`（変換・フィルタ・レンダリング、進捗/ログ/結果、**キャンセル可能**に）
-- [ ] ジョブworkerとinteractive render sessionのプロセス分離
+- [x] `POST /pipelines` / `PATCH /pipelines/{id}`（`reader → filter → representation`のDAGを保存）
+- [x] `POST /jobs` / `GET /jobs/{id}`（変換・フィルタ・レンダリング、進捗/ログ/結果、**キャンセル可能**）
+- [x] Redis/RQ job workerとtrame interactive render brokerをAPIから分離
 
 ### M1-D: レンダリングセッション
-- [ ] `POST /sessions` / `WS /sessions/{id}`（trame/ParaView render session、カメラ・選択・更新）
-- [ ] `GET /artifacts/{id}`（変換`VTP/VTI`・画像配信）
-- [ ] インフラ: NGINX/IngressのWebSocket upgrade・長timeout・sticky session設定
+- [x] `POST /sessions` / `WS /sessions/{id}`（trame/ParaView render session、カメラ・選択・更新）
+- [x] `GET /artifacts/{id}`（変換`VTP/VTI`・画像配信）
+- [x] full-stack nginxにWebSocket upgrade、長timeout、SSE向けbuffer無効化を設定
 
 ### M1-E: フロントエンド（React + vtk.js）
-- [ ] レイアウト: データパネル / パイプラインツリー / 3Dビュー / プロパティパネル
-- [ ] 表示: surface / wireframe / points、scalar coloring、colormap・range・opacity、color legend
-- [ ] block表示切替、time slider、カメラ保存/復元、スクリーンショット
-- [ ] 基本フィルタUI: **Slice / Clip / Contour(Isosurface) / Threshold**
-- [ ] 小規模`VTP/VTI`はvtk.jsローカル描画、閾値超えはサーバレンダリングpreviewに自動フォールバック（M0-Eの閾値を使用）
+- [x] レイアウト: データパネル / パイプラインツリー / 3Dビュー / プロパティパネル
+- [x] 表示: surface / wireframe / points、scalar coloring、colormap・range・opacity、color legend
+- [ ] block/set表示切替
+- [x] time slider、カメラ保存/復元、スクリーンショット
+- [x] 基本フィルタUI: **Slice / Clip / Contour(Isosurface) / Threshold**
+- [x] 小規模`VTP/VTU/VTS/VTR/VTI`をvtk.jsでローカル描画
+- [ ] M0-Eの実測閾値を使い、閾値超えをサーバレンダリングpreviewへ自動フォールバック
 
 **M1 DoD**
-- [ ] 代表データ3種のうち小・中規模で end-to-end（アップロード→表示→フィルタ→スクショ）が動く
-- [ ] 進捗の見える化とジョブキャンセルが機能する
-- [ ] `docs/verify-m1.md`に手順と結果を記録（`/verify`相当の実操作確認）
+- [x] 小・中規模fixtureで end-to-end（アップロード→表示→対話操作→Artifact）が動く
+- [x] 進捗の見える化とジョブキャンセルが機能する
+- [x] [全機能検証](./docs/verify-all-features.md)に自動・手動の確認手順と実施結果を記録
 
 ---
 
@@ -125,10 +130,10 @@
 
 - [ ] `CGNS` / `Exodus` / `EnSight` の正式対応（サーバreader、補助に`seacas`/`ensight-reader`/`meshio`）
 - [ ] block/set選択UI
-- [ ] フィルタ追加: Cell Data to Point Data / Resample / Decimation
-- [ ] volume rendering（`vtkVolumeMapper`をUI統合）
+- [x] フィルタ追加: Cell Data to Point Data / Resample / Decimation
+- [x] volume rendering（`vtkVolumeMapper`をUI統合）
 - [x] vector glyph sampling
-- [ ] pipeline state の保存 / 共有（`glance`のscene export形式を参考に）
+- [x] pipeline state の保存 / 共有（ViewState + deep linkとして実装）
 - **DoD**: 大規模データ（M0-Aの1種）が読み込み・block選択・フィルタまで到達する
 
 ---
@@ -137,7 +142,7 @@
 
 - [ ] LOD / 間引き / 事前変換、progressive rendering（操作中は低解像度、停止時に高品質）
 - [ ] block単位キャッシュ、時系列の部分ロード
-- [ ] animation / video export
+- [x] animation / video export（PNG frame ZIP / MP4 H.264 / WebM VP9）
 - [ ] Kubernetes / HPC job連携、GPU render pool（EGL、CPU fallbackはOSMesa）
 - **DoD**: 大規模時系列データで実用的なインタラクション応答を維持できる
 
@@ -160,16 +165,16 @@ MVP〜M3の本線とは別トラックで、リスクを取らずに検証する
 
 ### 性能・UX
 - [ ] 大容量配列はJSON埋め込み禁止、binary artifactとして配信
-- [ ] 多ビュー時のWebGL context数を管理（共有render window / canvas管理）
+- [x] 多ビュー時のWebGL context数を管理（2-up比較でglobal context leaseを最大2に制限）
 - [ ] progressive UX（操作中LOD低下→停止時高品質）を横断ポリシー化
 
 ### セキュリティ・運用
-- [ ] worker はコンテナ分離、CPU/GPU/メモリ/時間制限
+- [x] APIとRQ job workerをコンテナ分離し、job timeout/cancelで子process treeを停止
 - [ ] 任意Python実行は不許可（programmable filter開放時は隔離環境必須）
 - [ ] 監視・ログ・コスト計測（同時セッション数とGPU/メモリの相関を継続測定）
 
 ### ドキュメント
-- [ ] ネイティブVTK形式（VTP/VTI/VTU/PVD/VTKHDF）と外部reader形式（CGNS/Exodus/EnSight/Xdmf）を**区別して**記述
+- [x] ネイティブVTK形式（VTP/VTI/VTU/VTS/VTR/PVD）と外部reader形式（CGNS/Exodus/EnSight/XDMF）を**区別して**記述
 - [ ] ADR、API仕様、DBスキーマ、運用Runbookを継続整備
 
 ---
@@ -187,10 +192,16 @@ MVP〜M3の本線とは別トラックで、リスクを取らずに検証する
 
 ---
 
-## 9. 最短の次アクション（今すぐ着手）
+## 9. 2026-08追加計画の完了状況と次アクション
 
-1. **M0-A**: 代表データ3種を集める（小`VTP/VTI` / 中`VTU/PVD` / 大`XDMF+HDF5`か`CGNS/Exodus/EnSight`）。
-2. **M0-B/C**: `trame + ParaView`のPoCと`vtk.js`単体デモを並行で立てる。
-3. **M0-D**: `pvpython`メタデータ抽出スクリプトを書き、DB用JSON schemaを固める。
-4. **M0-E**: メモリ/FPS/転送量/変換時間を計測し、ブラウザ直読の閾値を数値決定する。
-5. これらの結果を持って **M1のアーキテクチャ確定** に進む。
+[2026-08追加計画](./docs/feature-plan-2026-08.md) のG1〜G13は実装済みで、G14も
+backend/frontend coverageとDependabot設定までは完了した。G14のLICENSEだけは、権利者による
+ライセンス種別の選択が必要なため保留しており、選択前にこちらで許諾条件を決めない。
+
+残る次アクションは次のとおり。
+
+1. **G14**: 利用者がMITまたはApache-2.0等のライセンスを選択後、正式な`LICENSE`を追加する。
+2. **外部runtime検証**: `pvpython`を利用できる環境でG10の3 filterとG13の
+   ParaView frame renderからffmpeg encodeまでを[全機能検証](./docs/verify-all-features.md)に沿って確認する。
+3. **未消化の大規模項目**: M0-Eの実測、M2のblock/set選択、M3のLOD/progressive rendering・
+   Kubernetes/HPC連携を、対象データと運用要件が確定した段階で進める。

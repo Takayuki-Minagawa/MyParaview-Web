@@ -24,6 +24,36 @@ PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db \
   .venv/bin/alembic -c alembic.ini upgrade head --sql >/tmp/pvweb.sql
 ```
 
+PostgreSQL 16で0009のdowngrade/upgradeと実検索まで確認する場合は、必ず破棄可能な
+検証専用databaseを使う。このscriptは0009→0008→0009のmigrationと検証rowの挿入を行うため、
+開発・本番databaseへ向けて実行しない。
+
+```bash
+cd backend
+PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db \
+  .venv/bin/python -m scripts.verify_postgres_tags
+```
+
+## 2026-08-02 実施記録
+
+このブランチで実際に確認した範囲を、手順と区別して記録する。
+
+- Playwright全4 scenario（browser smoke、2-up比較、対話ツールVTP、対話ツールVTU）が
+  4/4 PASS。clip平面drag前後のcanvas変化、Probeのcell scalar値、正の距離readout、2 canvas、
+  secondary view解放後のcontext slot再利用を確認した。
+- 一時PostgreSQL 16 containerでfresh databaseをheadへmigrationした後、0009→0008 downgrade、
+  legacy dataset挿入、0008→0009 upgrade、空tagsのbackfill、JSON tagのcase-insensitive検索を
+  `scripts.verify_postgres_tags`で確認した。確認用container/network/volumeは終了後に削除した。
+- full-stack image build、Compose起動、health endpoint smokeと停止・cleanupを確認した。
+- 実ffmpegで3 frame（322×242）のH.264 MP4とVP9 WebMをそれぞれ生成し、codec・frame数・
+  解像度を確認した。
+- backend/frontendの単体・契約テストで、新規logicと外部capability未設定時の失敗境界を確認した。
+
+この環境では`pvpython`が見つからなかったため、G10の実ParaView filterとG13のParaView frame
+renderを含むend-to-end manual testは未実施である。ffmpeg単体の実encode、fake
+`paraview.simple`を使うworker test、API validation、capability未設定時のfail-closed contractは
+確認済み。以下のG10/G13手順は`pvpython`と対象データを用意した環境で追加確認する。
+
 ## G11 container構成の検証
 
 profileなしの従来構成とfull-stack構成を両方展開し、Composeの参照・環境変数・
@@ -72,6 +102,58 @@ docker compose -f infra/docker-compose.yml --profile full-stack down
 8. `?project=<id>&dataset=<id>`を開き、対象datasetが自動選択されることを確認。
 9. assistantに「temperature の等値面」を入力し、提案だけではjobが増えないことを確認。
 10. ParaView worker未設定時、server filter buttonが無効であることを確認。
+
+## G1〜G3 client interaction manual test
+
+1. scalarを含むVTPまたはVTUを表示し、**Clip**を有効にする。平面widgetをdragして切断面が
+   即時更新され、サーバjobが作られないことを確認する。**Slice**へ切り替え、平面上の断面だけに
+   変わることも確認する。
+2. **Probe**を有効にして形状をクリックし、座標、point/cell ID、point/cell scalar値がtooltipへ
+   表示されることを確認する。hardware selectorが値を返さない環境でもray picker fallbackで
+   point IDが維持されることを確認する。
+3. **距離**を選んで形状上の2点を指定し、正の距離が表示されることを確認する。
+   **角度**へ切り替えて3点を指定し、degree値が表示されることを確認する。
+4. reset、tool切替、dataset切替を繰り返し、古いwidget・tooltip・measurement readoutが残らず、
+   browser consoleにerrorが出ないことを確認する。
+
+自動E2EはVTP/VTU双方でClip、Probeの既知cell scalar、距離readoutを固定している。
+
+## G4 dataset tags/search manual test
+
+1. editor/adminでdatasetのタグ編集を開き、`thermal, Review, thermal`のような入力を保存する。
+   空白と重複が正規化され、tag chipが表示されることを確認する。
+2. dataset名の部分検索とタグの完全一致検索をそれぞれ実行し、両方を指定した場合は両条件に
+   一致するdatasetだけが表示されることを確認する。タグの大文字小文字は区別しない。
+3. viewerにはタグ編集controlが出ず、APIで更新しても403になることを確認する。editorの更新が
+   監査ログに記録されることも確認する。
+4. PostgreSQLを使う場合は上記`python -m scripts.verify_postgres_tags`を実行し、0009の
+   legacy row backfillとJSON array検索を確認する。
+
+## G6 custom colormap manual test
+
+1. Propertiesの **ParaView カラーマップ JSON を読み込む** から`RGBPoints`または
+   `IndexedColors`を含むpresetを選び、preset名がcolormap選択肢へ追加されることを確認する。
+2. presetを選び、surface/volumeと凡例が同じ色停止点へ更新されることを確認する。
+3. 壊れたJSON、非有限値、0〜1外のRGB、重複scalar位置、1 MB超のfileを読み込み、現在の
+   colormapを変えず明示errorになることを確認する。fileがserverへuploadされないことも確認する。
+
+## G7 display undo/redo manual test
+
+1. representation、scalar、range、opacity、colormap、camera、VTI/PVD状態を順に変更し、
+   **元に戻す** / **やり直す** または`Ctrl/⌘+Z` / `Ctrl/⌘+Shift+Z`で往復することを確認する。
+2. undo後に別の表示変更を行い、redo履歴が破棄されることを確認する。ViewState復元は1回のundoで
+   復元前の状態へ戻ることを確認する。
+3. input/select編集中はbrowser標準undoを優先すること、dataset/project切替後は過去のcameraや
+   scalar選択をundoできないことを確認する。
+
+## G8 VTS/VTR browser-direct manual test
+
+1. ascii / inline base64 / raw appended（little-endian、必要に応じzlib）のVTSとVTRをuploadし、
+   server変換jobなしで外表面が表示されることを確認する。
+2. point/cell scalar、surface/wireframe/points、client geometry export、G1〜G3の対話toolが
+   VTS/VTRでも動作することを確認する。
+3. unsupported compressor/endianness/encodingを読み込み、偽の表示を作らず既存のserver VTP変換へ
+   誘導するerrorになることを確認する。
 
 ## G9 vector glyph manual test
 
@@ -168,6 +250,17 @@ secondaryだけを生成・`delete()`・lease解放する。
    `failed`（偽のqueued/succeededではない）になることを確認する。
 5. local fallbackは`PVWEB_JOB_QUEUE_BACKEND=local`で起動し、API再起動前のactive jobが従来通り
    `failed`と`retry required`ログへ遷移することを確認する。
+
+## G14 repository maintenance verification
+
+1. READMEのcoverage commandを実行し、`backend/coverage/coverage.xml`、
+   `backend/coverage/html/`、`frontend/coverage/`が生成されることを確認する。
+2. CIのbackend/frontend jobでcoverage artifactがuploadされることを確認する。
+3. `.github/dependabot.yml`がpip、npm、GitHub Actions、Docker Composeを週次対象にしていることを
+   確認する。脆弱性PRが必要な場合はrepository settingsでDependabot alerts/security updatesも
+   有効化する。
+4. LICENSEは利用者がライセンス種別を選択するまで未完了とする。選択前にMIT/Apache-2.0等を
+   推測して追加せず、READMEの「未指定」と実体を一致させる。
 
 ## Security boundary test
 

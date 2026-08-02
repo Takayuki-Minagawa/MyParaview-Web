@@ -41,6 +41,11 @@ test("upload -> display -> save/restore view state -> stats artifact", async ({ 
   await probeButton.click();
   await expect(probeButton).toHaveAttribute("aria-pressed", "true");
   await expect(clipButton).toHaveAttribute("aria-pressed", "false");
+  const distanceButton = page.getByRole("button", { name: "Distance", exact: true });
+  await distanceButton.click();
+  await expect(distanceButton).toHaveAttribute("aria-pressed", "true");
+  await expect(probeButton).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByText("Click two points to measure distance.")).toBeVisible();
   // No error banner appeared during the flow.
   await expect(page.locator(".error-banner")).toHaveCount(0);
 

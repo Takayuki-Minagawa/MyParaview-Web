@@ -44,6 +44,12 @@ import {
   type ProbeController,
   type ProbeResult,
 } from "../lib/viewer/probe";
+import {
+  createMeasurementController,
+  type MeasurementController,
+  type MeasurementResult,
+  type MeasurementSettings,
+} from "../lib/viewer/measurementTool";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Volume";
@@ -101,11 +107,19 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
   const ctx = useRef<Scene | null>(null);
   const planeControllerRef = useRef<ClientPlaneController | null>(null);
   const probeControllerRef = useRef<ProbeController | null>(null);
+  const measurementControllerRef = useRef<MeasurementController | null>(null);
   const [status, setStatus] = useState("");
   const [probeEnabled, setProbeEnabled] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
   const probeEnabledRef = useRef(probeEnabled);
   probeEnabledRef.current = probeEnabled;
+  const [measurementSettings, setMeasurementSettings] = useState<MeasurementSettings>({
+    enabled: false,
+    mode: "distance",
+  });
+  const [measurementResult, setMeasurementResult] = useState<MeasurementResult | null>(null);
+  const measurementSettingsRef = useRef(measurementSettings);
+  measurementSettingsRef.current = measurementSettings;
   const [planeSettings, setPlaneSettings] = useState<ClientPlaneSettings>({
     enabled: false,
     mode: "clip",
@@ -244,6 +258,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     };
     let planeController: ClientPlaneController | null = null;
     let probeController: ProbeController | null = null;
+    let measurementController: MeasurementController | null = null;
     scene.emitCamera = () => cameraCallbackRef.current(readCamera(scene));
     ctx.current = scene;
     const interactor = renderWindow.getInteractor();
@@ -280,6 +295,13 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
             );
             probeControllerRef.current = probeController;
             probeController?.setEnabled(probeEnabledRef.current);
+            measurementController = createMeasurementController(
+              scene.renderer,
+              scene.output.getBounds(),
+              setMeasurementResult,
+            );
+            measurementControllerRef.current = measurementController;
+            measurementController.apply(measurementSettingsRef.current);
           }
         }
       } else {
@@ -347,6 +369,10 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
       try {
         resizeObserver.disconnect();
         scene.cameraSubscription?.unsubscribe?.();
+        measurementController?.delete();
+        if (measurementControllerRef.current === measurementController) {
+          measurementControllerRef.current = null;
+        }
         probeController?.delete();
         if (probeControllerRef.current === probeController) probeControllerRef.current = null;
         planeController?.delete();
@@ -390,6 +416,11 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     probeControllerRef.current?.setEnabled(probeEnabled);
     if (!probeEnabled) setProbeResult(null);
   }, [probeEnabled]);
+
+  useEffect(() => {
+    measurementControllerRef.current?.apply(measurementSettings);
+    if (!measurementSettings.enabled) setMeasurementResult(null);
+  }, [measurementSettings]);
 
   useEffect(() => {
     const scene = ctx.current;
@@ -465,6 +496,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
               setProbeEnabled(next);
               if (next) {
                 setPlaneSettings((current) => ({ ...current, enabled: false }));
+                setMeasurementSettings((current) => ({ ...current, enabled: false }));
               }
             }}
           >
@@ -476,6 +508,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
               aria-pressed={planeSettings.enabled && planeSettings.mode === mode}
               onClick={() => {
                 setProbeEnabled(false);
+                setMeasurementSettings((current) => ({ ...current, enabled: false }));
                 setPlaneSettings((current) => ({
                   ...current,
                   enabled: current.mode !== mode || !current.enabled,
@@ -486,6 +519,28 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
               {mode === "clip" ? messages.viewer.clientClip : messages.viewer.clientSlice}
             </button>
           ))}
+          {(["distance", "angle"] as const).map((mode) => (
+            <button
+              key={mode}
+              aria-pressed={measurementSettings.enabled && measurementSettings.mode === mode}
+              onClick={() => {
+                setProbeEnabled(false);
+                setPlaneSettings((current) => ({ ...current, enabled: false }));
+                setMeasurementSettings((current) => ({
+                  enabled: current.mode !== mode || !current.enabled,
+                  mode,
+                }));
+              }}
+            >
+              {mode === "distance" ? messages.viewer.measureDistance : messages.viewer.measureAngle}
+            </button>
+          ))}
+          <button
+            disabled={!measurementSettings.enabled}
+            onClick={() => measurementControllerRef.current?.reset()}
+          >
+            {messages.viewer.measureReset}
+          </button>
           {(["X", "Y", "Z"] as const).map((axis) => (
             <button
               key={axis}
@@ -553,6 +608,17 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
           ) : (
             <div>{messages.viewer.probeNoScalars}</div>
           )}
+        </div>
+      )}
+      {measurementSettings.enabled && (
+        <div className="measurement-readout" role="status">
+          {measurementResult
+            ? measurementResult.mode === "distance"
+              ? `${messages.viewer.distance}: ${measurementResult.value.toPrecision(7)}`
+              : `${messages.viewer.angle}: ${measurementResult.value.toPrecision(6)}°`
+            : measurementSettings.mode === "distance"
+              ? messages.viewer.distanceHint
+              : messages.viewer.angleHint}
         </div>
       )}
       {!renderable && (

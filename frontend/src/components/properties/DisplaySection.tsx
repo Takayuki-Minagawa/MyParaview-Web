@@ -12,6 +12,10 @@ interface Props {
   onOpacity: (opacity: number) => void;
   axesVisible: boolean;
   onAxesVisible: (visible: boolean) => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
   onScreenshot: () => void;
   onResetCamera: () => void;
 }
@@ -24,6 +28,10 @@ export const DisplaySection = memo(function DisplaySection({
   onOpacity,
   axesVisible,
   onAxesVisible,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
   onScreenshot,
   onResetCamera,
 }: Props) {
@@ -67,6 +75,25 @@ export const DisplaySection = memo(function DisplaySection({
         />
         {messages.properties.axesVisible}
       </label>
+
+      <div className="row actions" aria-label={messages.properties.displayHistory}>
+        <button
+          type="button"
+          disabled={!canUndo}
+          onClick={onUndo}
+          title={`${messages.properties.undoDisplay} (${messages.properties.undoShortcut})`}
+        >
+          {messages.properties.undoDisplay}
+        </button>
+        <button
+          type="button"
+          disabled={!canRedo}
+          onClick={onRedo}
+          title={`${messages.properties.redoDisplay} (${messages.properties.redoShortcut})`}
+        >
+          {messages.properties.redoDisplay}
+        </button>
+      </div>
 
       <div className="row actions">
         <button onClick={onResetCamera}>{messages.properties.resetCamera}</button>

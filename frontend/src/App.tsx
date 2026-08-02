@@ -22,6 +22,7 @@ import type { Language, ThemeMode } from "./i18n";
 import { MessagesProvider, useMessages } from "./i18n-context";
 import { useProjectScope } from "./hooks/useProjectScope";
 import { useDisplayState } from "./hooks/useDisplayState";
+import { useDisplayHistoryShortcuts } from "./hooks/useDisplayHistoryShortcuts";
 import { useJobPolling } from "./hooks/useJobPolling";
 import { useProjectResources } from "./hooks/useProjectResources";
 import { useRemoteSession } from "./hooks/useRemoteSession";
@@ -83,6 +84,12 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   const [serverCapabilities, setServerCapabilities] = useState<ServerCapabilities | null>(null);
   const browserCapabilities = useMemo(() => detectBrowserCapabilities(), []);
   const display = useDisplayState();
+  useDisplayHistoryShortcuts({
+    canUndo: display.canUndo,
+    canRedo: display.canRedo,
+    undo: display.undo,
+    redo: display.redo,
+  });
   const scope = useProjectScope();
 
   // ---- error banners: multiple concurrent failures no longer clobber each other

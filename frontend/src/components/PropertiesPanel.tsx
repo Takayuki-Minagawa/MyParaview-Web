@@ -119,6 +119,10 @@ export const PropertiesPanel = memo(function PropertiesPanel({
         onOpacity={display.setOpacity}
         axesVisible={display.axesVisible}
         onAxesVisible={display.setAxesVisible}
+        canUndo={display.canUndo}
+        canRedo={display.canRedo}
+        onUndo={display.undo}
+        onRedo={display.redo}
         onScreenshot={view.onScreenshot}
         onResetCamera={view.onResetCamera}
       />

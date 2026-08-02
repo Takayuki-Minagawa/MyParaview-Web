@@ -3,7 +3,6 @@ import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
 import type { Dataset, Job, Pipeline, ViewState } from "../types";
 import { parseViewState } from "../lib/viewState";
-import { DEFAULT_VOLUME_OPACITY_POINTS } from "../lib/imageData";
 import type { DisplayState } from "./useDisplayState";
 import type { ProjectScope, ScopeTicket } from "./useProjectScope";
 
@@ -81,23 +80,7 @@ export function usePipelineActions({
     }
     const dataset = await selectDataset(input.dataset_id);
     if (!dataset || !ticket.stillCurrent()) return;
-    display.setRepresentation(state.representation);
-    display.setColorByState(state.color_by);
-    display.setCustomColorRange(state.color_range);
-    display.setRuntimeColorRange(null);
-    display.setOpacity(state.opacity);
-    display.setColorMap(state.color_map);
-    display.setLegendVisible(state.legend_visible);
-    display.setCameraState(state.camera);
-    display.setTableCoordinates(state.table_coordinates ?? null);
-    display.setImageMode(state.image_mode ?? "slice");
-    display.setSliceAxis(state.slice_axis ?? "Z");
-    display.setSliceIndex(state.slice_index ?? 0);
-    display.setTimestepIndex(state.timestep_index ?? 0);
-    display.setVolumeOpacityPoints(
-      state.volume_opacity_points ?? DEFAULT_VOLUME_OPACITY_POINTS,
-    );
-    display.setPlaying(false);
+    display.restoreViewState(state);
   }, [scope, onError, unreadableText, selectDataset, display]);
 
   const deletePipeline = useCallback((pipeline: Pipeline) => {

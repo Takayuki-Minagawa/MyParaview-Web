@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -49,6 +50,7 @@ app = FastAPI(
     title="ParaView-like Web App API",
     version="0.2.0",
     summary="Hybrid scientific visualization, pipelines, jobs, and production adapters.",
+    root_path=settings.root_path,
     lifespan=lifespan,
 )
 
@@ -64,6 +66,44 @@ app.add_middleware(
 
 
 _AUDIT_RESOURCE_TYPES = ("dataset", "pipeline", "job", "artifact", "project")
+
+
+def _prefix_same_origin_redirect(request: Request, response: Response) -> None:
+    """Keep Starlette slash redirects inside a stripped reverse-proxy prefix.
+
+    Starlette's automatic slash redirect builds ``Location`` from ``scope.path``
+    and does not include ``scope.root_path``. Only rewrite relative or same-origin
+    redirects; presigned S3 and identity-provider redirects must stay untouched.
+    """
+
+    root_path = str(request.scope.get("root_path") or "")
+    location = response.headers.get("location")
+    if not root_path or not location or not 300 <= response.status_code < 400:
+        return
+    parsed = urlsplit(location)
+    if not parsed.path.startswith("/"):
+        return
+    if parsed.path == root_path or parsed.path.startswith(f"{root_path}/"):
+        return
+    request_path = str(request.scope.get("path") or "")
+    is_slash_redirect = (
+        request_path.endswith("/") and parsed.path == request_path.rstrip("/")
+    ) or (
+        not request_path.endswith("/") and parsed.path == f"{request_path}/"
+    )
+    if not is_slash_redirect:
+        return
+    request_host = request.headers.get("host", "").lower()
+    is_relative = not parsed.scheme and not parsed.netloc
+    is_same_origin = (
+        parsed.scheme.lower() == request.url.scheme.lower()
+        and parsed.netloc.lower() == request_host
+    )
+    if not (is_relative or is_same_origin):
+        return
+    response.headers["location"] = urlunsplit(
+        parsed._replace(path=f"{root_path}{parsed.path}")
+    )
 
 
 def _resolve_audit_project_id(
@@ -129,6 +169,7 @@ def _persist_audit_event(
 @app.middleware("http")
 async def record_audit_event(request: Request, call_next):
     response = await call_next(request)
+    _prefix_same_origin_redirect(request, response)
     path = request.url.path
     is_timestep_frame = (
         request.method == "GET" and "/timesteps/" in path and path.endswith("/download")

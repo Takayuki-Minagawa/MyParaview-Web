@@ -93,3 +93,21 @@ def test_empty_optional_envs_normalize_to_none(monkeypatch):
     assert parsed.s3_endpoint_url is None
     assert parsed.oidc_issuer is None
     assert parsed.trame_broker_url is None
+
+
+def test_root_path_defaults_and_accepts_nested_prefix(monkeypatch):
+    monkeypatch.delenv("PVWEB_ROOT_PATH", raising=False)
+    assert Settings().root_path == ""
+
+    monkeypatch.setenv("PVWEB_ROOT_PATH", " /services/pvweb ")
+    assert Settings().root_path == "/services/pvweb"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["api", "/api/", "//api", "/api//v1", "/api/../admin", "/api?debug=1", "/api path"],
+)
+def test_root_path_rejects_ambiguous_values(monkeypatch, value):
+    monkeypatch.setenv("PVWEB_ROOT_PATH", value)
+    with pytest.raises(ValueError, match="PVWEB_ROOT_PATH"):
+        Settings()

@@ -11,6 +11,18 @@ class Settings:
     def __init__(self) -> None:
         # Root for the local object store and SQLite db. Overridable for tests.
         self.data_root = Path(os.environ.get("PVWEB_DATA_ROOT", ".pvweb-data")).resolve()
+        self.root_path = os.environ.get("PVWEB_ROOT_PATH", "").strip()
+        root_path_segments = self.root_path.split("/")[1:]
+        if self.root_path and (
+            len(self.root_path) > 256
+            or not self.root_path.startswith("/")
+            or self.root_path.endswith("/")
+            or any(segment in {"", ".", ".."} for segment in root_path_segments)
+            or any(character.isspace() or character in "?#\\" for character in self.root_path)
+        ):
+            raise ValueError(
+                "PVWEB_ROOT_PATH must be empty or an absolute URL path without a trailing slash"
+            )
         self.database_url = os.environ.get(
             "PVWEB_DATABASE_URL", f"sqlite:///{self.data_root / 'pvweb.db'}"
         )

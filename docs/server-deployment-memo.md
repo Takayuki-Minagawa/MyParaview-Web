@@ -141,13 +141,22 @@ OIDC login、upload、表示、download、project削除を確認します。`web
 MinIOのpublish先を `127.0.0.1` に限定しています。
 
 loopback上の手動確認に限り、OIDCの代わりに明示的なdev認証を使えます。
+nginxは外部の`/api`をAPI container内の`/`へstripするため、Composeでは
+`PVWEB_ROOT_PATH=/api`を渡します。これによりSwagger/OpenAPI URLとredirect先にも
+公開prefixが保持され、同じ値がfrontend buildの`VITE_API_BASE`にも渡されます。別prefixで
+公開する場合は`PVWEB_ROOT_PATH`に加え、`frontend/nginx.conf`の`location`と
+`X-Forwarded-Prefix`を揃えて変更します。`proxy_pass`末尾の`/`によるprefix stripは維持し、
+web imageを再buildします。
 
 ```bash
 PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 \
+PVWEB_WEB_BIND_ADDRESS=127.0.0.1 POSTGRES_BIND_ADDRESS=127.0.0.1 \
+MINIO_BIND_ADDRESS=127.0.0.1 \
   docker compose -f infra/docker-compose.yml --profile full-stack up --build -d
 curl --fail http://localhost:8080/healthz
 curl --fail http://localhost:8080/api/health
 curl --fail http://localhost:8080/api/capabilities
+curl --fail http://localhost:8080/api/docs | grep '/api/openapi.json'
 ```
 
 このdev認証を外部interfaceへ公開しないでください。

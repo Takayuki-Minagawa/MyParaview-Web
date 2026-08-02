@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 
+from app.jobs import RQJobManager
+from app.jobs import manager as default_manager
 from conftest import wait_for_job
 
 
@@ -83,6 +85,30 @@ def test_apply_filter_proposal_launches_job(client, data_dir):
 
     second = client.post(f"/assist/proposals/{proposal['id']}/apply")
     assert second.status_code == 409
+
+
+def test_apply_filter_proposal_can_retry_after_queue_outage(
+    client, data_dir, monkeypatch
+):
+    _, dataset_id = _setup(client, data_dir, "assist-queue-outage")
+    proposal = _propose(client, dataset_id, "slice")
+
+    def unavailable():
+        raise ConnectionError("redis offline")
+
+    monkeypatch.setattr(
+        "app.routers.assist.manager",
+        RQJobManager(queue_provider=unavailable),
+    )
+    unavailable_response = client.post(f"/assist/proposals/{proposal['id']}/apply")
+    assert unavailable_response.status_code == 503
+    record = _record(client, dataset_id, proposal["id"])
+    assert record["status"] == "proposed"
+    assert record["applied_job_id"] is None
+
+    monkeypatch.setattr("app.routers.assist.manager", default_manager)
+    retry = client.post(f"/assist/proposals/{proposal['id']}/apply")
+    assert retry.status_code == 200, retry.text
 
 
 def test_dismiss_proposal_and_repeat_conflicts(client, data_dir):

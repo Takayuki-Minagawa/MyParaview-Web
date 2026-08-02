@@ -5,11 +5,13 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rq.exceptions import DuplicateJobError
 from sqlalchemy import select
 
+from app import rq_worker
 from app.config import Settings
 from app.db import SessionLocal, init_db
 from app.jobs import (
@@ -70,6 +72,36 @@ def test_rq_submission_contains_only_stable_persisted_job_id():
     assert options["on_failure"].name == "app.rq_worker.handle_terminal_failure"
     assert options["unique"] is True
     assert "closure" not in repr(queue.calls)
+
+
+def test_rq_worker_embeds_scheduler_for_delayed_retries(monkeypatch):
+    calls: list[dict] = []
+
+    class Connection:
+        def ping(self):
+            return True
+
+    queue = SimpleNamespace(connection=Connection())
+
+    class RecordingWorker:
+        def __init__(self, queues, *, connection):
+            assert queues == [queue]
+            assert connection is queue.connection
+
+        def work(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(rq_worker, "settings", SimpleNamespace(
+        job_queue_backend="rq",
+        job_queue_name="analysis",
+    ))
+    monkeypatch.setattr(rq_worker, "init_db", lambda: None)
+    monkeypatch.setattr(rq_worker.RQJobManager, "_default_queue", lambda: queue)
+    monkeypatch.setattr(rq_worker.RQJobManager, "reconcile_queued_jobs", lambda self: 0)
+    monkeypatch.setattr("rq.Worker", RecordingWorker)
+
+    assert rq_worker.main(["--burst"]) == 0
+    assert calls == [{"burst": True, "with_scheduler": True}]
 
 
 def test_duplicate_rq_id_is_treated_as_already_submitted():

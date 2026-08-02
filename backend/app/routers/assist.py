@@ -270,6 +270,19 @@ def apply_proposal(
     try:
         manager.submit(job.id, run_dataset_operation(record.dataset_id, "filter", params))
     except JobQueueUnavailable as exc:
+        # The queue manager keeps the failed Job as audit evidence. Restore
+        # only this proposal so a transient Redis outage does not consume the
+        # user's confirmed action irreversibly.
+        with locked_project(db, project_id, principal, "editor"):
+            current = db.get(AssistProposal, proposal_id)
+            if (
+                current is not None
+                and current.status == "applied"
+                and current.applied_job_id == job.id
+            ):
+                current.status = "proposed"
+                current.applied_job_id = None
+                db.add(current)
         raise HTTPException(503, str(exc)) from exc
     return job
 

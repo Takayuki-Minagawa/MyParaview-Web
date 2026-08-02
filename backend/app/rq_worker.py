@@ -67,7 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("re-enqueued %d persisted jobs before worker startup", reconciled)
     logger.info("starting RQ worker queue=%s", settings.job_queue_name)
     worker = Worker([queue], connection=queue.connection)
-    worker.work(burst=args.burst, with_scheduler=False)
+    # Delayed Retry intervals are placed in RQ's ScheduledJobRegistry.  Run
+    # the embedded scheduler so crashed jobs are actually moved back to the
+    # queue instead of remaining scheduled forever.
+    worker.work(burst=args.burst, with_scheduler=True)
     return 0
 
 

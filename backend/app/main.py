@@ -7,8 +7,9 @@ Wires the M1 API surface (work_plan 7.2):
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request, Response
@@ -19,12 +20,38 @@ from starlette.concurrency import run_in_threadpool
 from .access import artifact_project_id
 from .config import settings
 from .db import SessionLocal, init_db
-from .jobs import JobQueueUnavailable, manager, recover_interrupted_jobs
+from .jobs import (
+    JobQueueUnavailable,
+    drain_object_deletions,
+    manager,
+    recover_interrupted_jobs,
+)
 from .models import Artifact, AuditEvent, Dataset, Job, Pipeline, RenderSession
 from .routers import artifacts, assist, datasets, jobs, pipelines, projects, sessions
 from .worker import ffmpeg_available
 
 logger = logging.getLogger(__name__)
+
+
+async def _drain_object_deletions_periodically(
+    *,
+    interval_seconds: float,
+    batch_size: int,
+) -> None:
+    """Retry one bounded outbox batch immediately and then once per interval."""
+
+    while True:
+        try:
+            deleted = await asyncio.to_thread(
+                drain_object_deletions,
+                batch_size=batch_size,
+            )
+        except Exception:  # noqa: BLE001 - the next interval is the retry
+            logger.exception("periodic object-deletion drain failed")
+        else:
+            if deleted:
+                logger.info("acknowledged %d pending object deletions", deleted)
+        await asyncio.sleep(interval_seconds)
 
 
 @asynccontextmanager
@@ -39,11 +66,25 @@ async def lifespan(_app: FastAPI):
             if reconciled:
                 logger.info("re-enqueued %d persisted jobs after API restart", reconciled)
     else:
-        recovered = recover_interrupted_jobs()
+        # The periodic task below handles durable cleanup without delaying API
+        # readiness on an unavailable object store.
+        recovered = recover_interrupted_jobs(drain_objects=False)
         if recovered:
             logger.warning("marked %d interrupted in-process jobs as failed", recovered)
     logger.info("job queue backend=%s", settings.job_queue_backend)
-    yield
+    drainer = asyncio.create_task(
+        _drain_object_deletions_periodically(
+            interval_seconds=settings.object_delete_interval_seconds,
+            batch_size=settings.object_delete_batch_size,
+        ),
+        name="object-deletion-outbox",
+    )
+    try:
+        yield
+    finally:
+        drainer.cancel()
+        with suppress(asyncio.CancelledError):
+            await drainer
 
 
 app = FastAPI(

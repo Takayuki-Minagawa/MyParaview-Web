@@ -111,3 +111,32 @@ def test_root_path_rejects_ambiguous_values(monkeypatch, value):
     monkeypatch.setenv("PVWEB_ROOT_PATH", value)
     with pytest.raises(ValueError, match="PVWEB_ROOT_PATH"):
         Settings()
+
+
+def test_object_delete_drainer_defaults_and_env(monkeypatch):
+    monkeypatch.delenv("PVWEB_OBJECT_DELETE_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("PVWEB_OBJECT_DELETE_BATCH_SIZE", raising=False)
+    defaults = Settings()
+    assert defaults.object_delete_interval_seconds == 30
+    assert defaults.object_delete_batch_size == 100
+
+    monkeypatch.setenv("PVWEB_OBJECT_DELETE_INTERVAL_SECONDS", "45")
+    monkeypatch.setenv("PVWEB_OBJECT_DELETE_BATCH_SIZE", "250")
+    configured = Settings()
+    assert configured.object_delete_interval_seconds == 45
+    assert configured.object_delete_batch_size == 250
+
+
+@pytest.mark.parametrize(
+    ("env_var", "value"),
+    [
+        ("PVWEB_OBJECT_DELETE_INTERVAL_SECONDS", "0"),
+        ("PVWEB_OBJECT_DELETE_INTERVAL_SECONDS", "86401"),
+        ("PVWEB_OBJECT_DELETE_BATCH_SIZE", "0"),
+        ("PVWEB_OBJECT_DELETE_BATCH_SIZE", "1001"),
+    ],
+)
+def test_object_delete_drainer_rejects_unsafe_limits(monkeypatch, env_var, value):
+    monkeypatch.setenv(env_var, value)
+    with pytest.raises(ValueError, match="PVWEB_OBJECT_DELETE"):
+        Settings()

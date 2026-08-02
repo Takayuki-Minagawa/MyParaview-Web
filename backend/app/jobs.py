@@ -18,14 +18,15 @@ import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
-from sqlalchemy import event, select, text
+from sqlalchemy import delete, event, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import SessionLocal, engine
-from .models import Artifact, Dataset, Job
+from .models import Artifact, Dataset, Job, ObjectDeletionOutbox
 from .storage import store
 
 logger = logging.getLogger(__name__)
@@ -33,18 +34,19 @@ logger = logging.getLogger(__name__)
 _ACTIVE_STATUSES = ("queued", "running")
 _PENDING_OBJECT_DELETES = "pvweb_pending_object_deletes"
 _IN_PROCESS_EXECUTION_LOCKS = tuple(threading.Lock() for _ in range(128))
+_EXECUTION_LOCK_STATE = threading.local()
 
 
 @event.listens_for(Session, "after_commit")
-def _delete_committed_objects(session: Session) -> None:
-    """Apply object-store compensation only after its DB transaction commits."""
+def _clear_committed_object_delete_deduplication(session: Session) -> None:
+    """Release transaction-local state without opening a nested DB connection.
 
-    object_keys = session.info.pop(_PENDING_OBJECT_DELETES, set())
-    for object_key in object_keys:
-        try:
-            store.delete(object_key)
-        except Exception:  # noqa: BLE001 - DB commit is already durable
-            logger.exception("could not delete canceled artifact object %s", object_key)
+    SQLAlchemy keeps the committing Session's connection checked out until
+    this hook returns. External deletion therefore runs only from the periodic,
+    startup, or worker-finally drains after the original Session is released.
+    """
+
+    session.info.pop(_PENDING_OBJECT_DELETES, None)
 
 
 @event.listens_for(Session, "after_rollback")
@@ -54,9 +56,31 @@ def _discard_rolled_back_object_deletes(session: Session) -> None:
     session.info.pop(_PENDING_OBJECT_DELETES, None)
 
 
-def _delete_object_after_commit(session: Session, object_key: str) -> None:
-    pending = session.info.setdefault(_PENDING_OBJECT_DELETES, set())
-    pending.add(object_key)
+def enqueue_object_deletion(
+    session: Session,
+    object_key: str,
+    *,
+    job_id: str | None = None,
+) -> None:
+    """Persist deletion intent in the caller's DB transaction.
+
+    ``session.info`` only deduplicates requests inside the current transaction.
+    The outbox row is the source of truth across process crashes and
+    object-store errors.
+    """
+
+    pending: dict[str, tuple[str | None, ObjectDeletionOutbox]] = session.info.setdefault(
+        _PENDING_OBJECT_DELETES, {}
+    )
+    if object_key in pending:
+        previous_job_id, entry = pending[object_key]
+        if previous_job_id is None and job_id is not None:
+            entry.job_id = job_id
+            pending[object_key] = (job_id, entry)
+        return
+    entry = ObjectDeletionOutbox(object_key=object_key, job_id=job_id)
+    session.add(entry)
+    pending[object_key] = (job_id, entry)
 
 
 def stable_job_object_key(job_id: str, output_ext: str) -> str:
@@ -104,13 +128,30 @@ def _delete_job_artifacts(session: Session, job: Job) -> None:
     artifacts = list(session.scalars(select(Artifact).where(Artifact.job_id == job.id)))
     for artifact in artifacts:
         session.delete(artifact)
-        _delete_object_after_commit(session, artifact.object_key)
+        enqueue_object_deletion(session, artifact.object_key, job_id=job.id)
     # A workhorse can die after writing its stable object but before committing
     # an Artifact row. Deleting every job-scoped candidate is safe because the
     # hash namespace cannot overlap another job, and closes that final orphan
     # window when cancel/failure wins.
     for suffix in _job_object_suffixes(session, job):
-        _delete_object_after_commit(session, stable_job_object_key(job.id, suffix))
+        enqueue_object_deletion(
+            session,
+            stable_job_object_key(job.id, suffix),
+            job_id=job.id,
+        )
+
+
+def _reset_interrupted_ingest(session: Session, job: Job) -> None:
+    """Release an ingest reservation when its job terminates prematurely."""
+
+    if job.kind != "ingest" or not job.target_id:
+        return
+    dataset = session.get(Dataset, job.target_id)
+    if dataset is None or dataset.status != "ingesting":
+        return
+    dataset.status = "registered"
+    dataset.error = None
+    session.add(dataset)
 
 
 class JobCancelled(Exception):
@@ -122,21 +163,42 @@ class JobQueueUnavailable(RuntimeError):
 
 
 @contextmanager
-def job_execution_lock(job_id: str) -> Iterator[None]:
+def _record_execution_lock(job_id: str) -> Iterator[None]:
+    held_job_ids: set[str] = getattr(_EXECUTION_LOCK_STATE, "job_ids", set())
+    if not hasattr(_EXECUTION_LOCK_STATE, "job_ids"):
+        _EXECUTION_LOCK_STATE.job_ids = held_job_ids
+    held_job_ids.add(job_id)
+    try:
+        yield
+    finally:
+        held_job_ids.discard(job_id)
+
+
+def _execution_lock_is_held(job_id: str | None) -> bool:
+    if job_id is None:
+        return False
+    return job_id in getattr(_EXECUTION_LOCK_STATE, "job_ids", set())
+
+
+@contextmanager
+def job_execution_lock(job_id: str, *, blocking: bool = True) -> Iterator[bool]:
     """Serialize duplicate deliveries for one persisted job across processes.
 
     PostgreSQL advisory locks are connection-scoped and therefore disappear if
     a workhorse crashes. SQLite/local deployments use an OS ``flock`` under the
-    shared data root with the same crash-release property.
+    shared data root with the same crash-release property. Nonblocking callers
+    receive ``False`` instead of waiting for an active producer.
     """
 
     if engine.dialect.name == "postgresql":
         with engine.connect() as connection:
             try:
-                connection.execute(
-                    text("SELECT pg_advisory_lock(hashtextextended(:job_id, 0))"),
+                lock_function = "pg_advisory_lock" if blocking else "pg_try_advisory_lock"
+                result = connection.execute(
+                    text(f"SELECT {lock_function}(hashtextextended(:job_id, 0))"),
                     {"job_id": job_id},
                 )
+                acquired = True if blocking else bool(result.scalar())
                 # The advisory lock is session-scoped, so end the implicit
                 # SELECT transaction immediately. Holding it open for a long
                 # ParaView job would otherwise leave an idle-in-transaction
@@ -148,38 +210,198 @@ def job_execution_lock(job_id: str) -> Iterator[None]:
                 # the pool where its session-scoped lock could survive.
                 connection.invalidate()
                 raise
-            try:
-                yield
-            finally:
+            if acquired:
                 try:
-                    connection.execute(
-                        text("SELECT pg_advisory_unlock(hashtextextended(:job_id, 0))"),
-                        {"job_id": job_id},
-                    )
-                    connection.commit()
-                except Exception:  # noqa: BLE001 - never pool a locked connection
+                    with _record_execution_lock(job_id):
+                        yield True
+                finally:
                     try:
-                        connection.rollback()
-                    except Exception:  # noqa: BLE001 - invalidation is the fallback
-                        pass
-                    connection.invalidate()
-                    logger.exception("could not release execution lock for job %s", job_id)
+                        connection.execute(
+                            text("SELECT pg_advisory_unlock(hashtextextended(:job_id, 0))"),
+                            {"job_id": job_id},
+                        )
+                        connection.commit()
+                    except Exception:  # noqa: BLE001 - never pool a locked connection
+                        try:
+                            connection.rollback()
+                        except Exception:  # noqa: BLE001 - invalidation is the fallback
+                            pass
+                        connection.invalidate()
+                        logger.exception("could not release execution lock for job %s", job_id)
+        if not acquired:
+            # Yield only after the unsuccessful advisory-lock connection has
+            # returned to the pool. The caller may open a Session to defer its
+            # outbox row and must not need a second connection concurrently.
+            yield False
         return
 
     lock_root = settings.data_root / "job-locks"
     lock_root.mkdir(parents=True, exist_ok=True)
     lock_name = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
     stripe = _IN_PROCESS_EXECUTION_LOCKS[int(lock_name[:8], 16) % len(_IN_PROCESS_EXECUTION_LOCKS)]
-    with stripe:
+    stripe_acquired = stripe.acquire(blocking=blocking)
+    if not stripe_acquired:
+        yield False
+        return
+    file_lock_acquired = False
+    try:
         with (lock_root / f"{lock_name}.lock").open("a+b") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
             try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(lock_file.fileno(), flags)
+            except BlockingIOError:
+                pass
+            else:
+                file_lock_acquired = True
+                try:
+                    with _record_execution_lock(job_id):
+                        yield True
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        stripe.release()
+    if not file_lock_acquired:
+        yield False
 
 
-def recover_interrupted_jobs(*, backend: str | None = None) -> int:
+def drain_object_deletions(
+    *,
+    job_id: str | None = None,
+    object_keys: set[str] | None = None,
+    batch_size: int | None = None,
+) -> int:
+    """Apply durable deletion intents at least once, then acknowledge them.
+
+    Job-scoped rows first cross the same execution lease as their producer.
+    Once that barrier is acquired, every earlier writer has stopped and the
+    terminal job contract prevents a later delivery from writing. The lease is
+    released before DB/object-store I/O so each drain uses at most one pooled
+    connection at a time. External delete still happens before the outbox ACK;
+    a crash between those steps safely repeats an idempotent delete.
+    """
+
+    selected_batch_size = (
+        settings.object_delete_batch_size if batch_size is None else batch_size
+    )
+    if selected_batch_size <= 0:
+        raise ValueError("object deletion batch size must be positive")
+
+    try:
+        with SessionLocal() as db:
+            stmt = select(
+                ObjectDeletionOutbox.id,
+                ObjectDeletionOutbox.object_key,
+                ObjectDeletionOutbox.job_id,
+            ).outerjoin(Job, ObjectDeletionOutbox.job_id == Job.id)
+            stmt = stmt.where(
+                or_(
+                    ObjectDeletionOutbox.job_id.is_(None),
+                    Job.id.is_(None),
+                    Job.status.not_in(_ACTIVE_STATUSES),
+                )
+            ).order_by(ObjectDeletionOutbox.created_at, ObjectDeletionOutbox.id)
+            if job_id is not None:
+                stmt = stmt.where(ObjectDeletionOutbox.job_id == job_id)
+            if object_keys is not None:
+                if not object_keys:
+                    return 0
+                stmt = stmt.where(ObjectDeletionOutbox.object_key.in_(object_keys))
+            entries = list(db.execute(stmt.limit(selected_batch_size)))
+    except Exception:  # noqa: BLE001 - job execution must not be masked by cleanup
+        logger.exception("could not read object-deletion outbox")
+        return 0
+
+    acknowledged = 0
+    for entry_id, _object_key, entry_job_id in entries:
+        lock_context = (
+            job_execution_lock(entry_job_id, blocking=False)
+            if entry_job_id is not None
+            else nullcontext(True)
+        )
+        try:
+            with lock_context as acquired:
+                pass
+            if not acquired:
+                _defer_object_deletion(entry_id)
+                continue
+            # Re-read after crossing and releasing the execution barrier:
+            # another replica may have ACKed the stale snapshot, while a job
+            # manually returned to an active state must not be cleaned.
+            with SessionLocal() as db:
+                entry = db.get(ObjectDeletionOutbox, entry_id)
+                if entry is None:
+                    continue
+                if entry.job_id is not None:
+                    job = db.get(Job, entry.job_id)
+                    if job is not None and job.status in _ACTIVE_STATUSES:
+                        continue
+                object_key = entry.object_key
+            try:
+                deletion_complete = store.delete(object_key)
+            except Exception:  # noqa: BLE001 - the durable row is the retry
+                logger.exception("could not delete outbox object %s", object_key)
+                _defer_object_deletion(entry_id)
+                # A shared S3 endpoint outage would otherwise multiply one
+                # client timeout by every row in the startup/periodic batch.
+                # Rotation lets the next interval start with later work.
+                break
+            if not deletion_complete:
+                # Local stores defer removal while a download/path lease is
+                # active. Keep the row so a later periodic pass can ACK it.
+                _defer_object_deletion(entry_id)
+                continue
+            with SessionLocal() as db:
+                db.execute(
+                    delete(ObjectDeletionOutbox).where(
+                        ObjectDeletionOutbox.id == entry_id
+                    )
+                )
+                db.commit()
+            acknowledged += 1
+        except Exception:  # noqa: BLE001 - leave the durable row for retry
+            logger.exception("could not process object-deletion outbox row %s", entry_id)
+            _defer_object_deletion(entry_id)
+            break
+    return acknowledged
+
+
+def _defer_object_deletion(entry_id: str) -> None:
+    """Move one failed/busy row behind older work to prevent starvation."""
+
+    try:
+        with SessionLocal() as db:
+            db.execute(
+                update(ObjectDeletionOutbox)
+                .where(ObjectDeletionOutbox.id == entry_id)
+                .values(created_at=datetime.now(timezone.utc))
+            )
+            db.commit()
+    except Exception:  # noqa: BLE001 - the original durable row remains
+        logger.exception("could not defer object-deletion outbox row %s", entry_id)
+
+
+def _drain_after_session_release(
+    *,
+    job_id: str | None = None,
+    object_keys: set[str] | None = None,
+) -> int:
+    """Drain unless this thread still owns the producer execution lease.
+
+    Terminal publication often runs inside ``job_execution_lock``. The outer
+    local/RQ ``finally`` drains immediately after releasing that lease, avoiding
+    nested advisory-lock and connection-pool acquisition here.
+    """
+
+    if _execution_lock_is_held(job_id):
+        return 0
+    return drain_object_deletions(job_id=job_id, object_keys=object_keys)
+
+
+def recover_interrupted_jobs(
+    *,
+    backend: str | None = None,
+    drain_objects: bool = True,
+) -> int:
     """Recover active jobs according to the configured execution backend.
 
     Local thread-pool work disappears with the API process, so its active rows
@@ -197,6 +419,7 @@ def recover_interrupted_jobs(*, backend: str | None = None) -> int:
         )
     recovered = 0
     for job_id in interrupted_ids:
+        recovered_job = False
         with SessionLocal() as db, locked_job(db, job_id) as job:
             if job is None or job.status not in _ACTIVE_STATUSES:
                 continue
@@ -207,16 +430,14 @@ def recover_interrupted_jobs(*, backend: str | None = None) -> int:
                 f"ERROR: {previous} in-process job was interrupted by service restart; "
                 "retry required\n"
             )
-            if job.kind == "ingest" and job.target_id:
-                dataset = db.get(Dataset, job.target_id)
-                if dataset is not None and dataset.status == "ingesting":
-                    dataset.status = "registered"
-                    dataset.error = None
-                    db.add(dataset)
+            _reset_interrupted_ingest(db, job)
             _delete_job_artifacts(db, job)
             db.add(job)
             db.commit()
             recovered += 1
+            recovered_job = True
+        if recovered_job and drain_objects:
+            _drain_after_session_release(job_id=job_id)
     return recovered
 
 
@@ -264,6 +485,8 @@ def _cleanup_result(result: dict, *, job_id: str | None = None) -> None:
     artifact_id = result.get("artifact_id")
     if not artifact_id:
         return
+    queued_object_key: str | None = None
+    queued_job_id: str | None = None
     with SessionLocal() as db:
         lock_context = locked_job(db, job_id) if job_id is not None else nullcontext(None)
         with lock_context as job:
@@ -282,8 +505,19 @@ def _cleanup_result(result: dict, *, job_id: str | None = None) -> None:
             ):
                 job.result = None
                 db.add(job)
-            _delete_object_after_commit(db, artifact.object_key)
+            enqueue_object_deletion(
+                db,
+                artifact.object_key,
+                job_id=job_id or artifact.job_id,
+            )
+            queued_object_key = artifact.object_key
+            queued_job_id = job_id or artifact.job_id
             db.commit()
+    if queued_object_key is not None:
+        _drain_after_session_release(
+            job_id=queued_job_id,
+            object_keys={queued_object_key},
+        )
 
 
 def _claim_job(job_id: str) -> bool:
@@ -324,20 +558,26 @@ def _publish_success(job_id: str, result: dict) -> bool:
 
 
 def _publish_canceled(job_id: str) -> bool:
+    canceled = False
     with SessionLocal() as db:
         with locked_job(db, job_id) as job:
             if job is None:
                 return False
             if job.status == "canceled":
-                return True
-            if job.status not in _ACTIVE_STATUSES:
+                canceled = True
+            elif job.status not in _ACTIVE_STATUSES:
                 return False
-            job.status = "canceled"
-            job.result = None
-            _delete_job_artifacts(db, job)
-            db.add(job)
-            db.commit()
-            return True
+            else:
+                job.status = "canceled"
+                job.result = None
+                _reset_interrupted_ingest(db, job)
+                _delete_job_artifacts(db, job)
+                db.add(job)
+                db.commit()
+                canceled = True
+    if canceled:
+        _drain_after_session_release(job_id=job_id)
+    return canceled
 
 
 def _publish_failure(job_id: str, exc: Exception, trace: str) -> None:
@@ -351,6 +591,7 @@ def fail_persisted_job(job_id: str, log_line: str) -> bool:
 
 
 def _fail_persisted_job(job_id: str, log_entry: str) -> bool:
+    failed = False
     with SessionLocal() as db:
         with locked_job(db, job_id) as job:
             if job is None or job.status not in _ACTIVE_STATUSES:
@@ -358,10 +599,14 @@ def _fail_persisted_job(job_id: str, log_entry: str) -> bool:
             job.status = "failed"
             job.result = None
             job.log = (job.log or "") + log_entry
+            _reset_interrupted_ingest(db, job)
             _delete_job_artifacts(db, job)
             db.add(job)
             db.commit()
-            return True
+            failed = True
+    if failed:
+        _drain_after_session_release(job_id=job_id)
+    return failed
 
 
 def _run_job(
@@ -428,19 +673,24 @@ def _job_body_from_record(job: Job) -> JobBody:
 def run_persisted_job(job_id: str) -> None:
     """RQ entry contract: load, reconstruct and execute a persisted job."""
 
-    with job_execution_lock(job_id):
-        # Re-read only after acquiring the cross-process lease: a prior
-        # delivery may have completed while this one was waiting.
-        with SessionLocal() as db:
-            job = db.get(Job, job_id)
-            if job is None or job.status not in _ACTIVE_STATUSES:
-                return
-            try:
-                body = _job_body_from_record(job)
-            except Exception as exc:  # noqa: BLE001 - malformed records fail honestly
-                _publish_failure(job_id, exc, traceback.format_exc())
-                return
-        _run_job(job_id, body)
+    try:
+        with job_execution_lock(job_id):
+            # Re-read only after acquiring the cross-process lease: a prior
+            # delivery may have completed while this one was waiting.
+            with SessionLocal() as db:
+                job = db.get(Job, job_id)
+                if job is None or job.status not in _ACTIVE_STATUSES:
+                    return
+                try:
+                    body = _job_body_from_record(job)
+                except Exception as exc:  # noqa: BLE001 - malformed records fail honestly
+                    _publish_failure(job_id, exc, traceback.format_exc())
+                    return
+            _run_job(job_id, body)
+    finally:
+        # Reacquire nonblocking after the producer lease is released. Terminal
+        # cleanup that lost the earlier race can now safely delete late bytes.
+        drain_object_deletions(job_id=job_id)
 
 
 class JobManager:
@@ -485,6 +735,7 @@ class JobManager:
                     return False
                 job.status = "canceled"
                 job.result = None
+                _reset_interrupted_ingest(session, job)
                 _delete_job_artifacts(session, job)
                 session.add(job)
                 if commit:
@@ -496,7 +747,10 @@ class JobManager:
         if db is not None:
             return mark(db, commit=False)
         with SessionLocal() as session:
-            return mark(session, commit=True)
+            marked = mark(session, commit=True)
+        if marked:
+            _drain_after_session_release(job_id=job_id)
+        return marked
 
     def _run(self, job_id: str, body: JobBody, event: threading.Event) -> None:
         def before_terminal() -> bool:
@@ -506,8 +760,10 @@ class JobManager:
                 return event.is_set()
 
         try:
-            _run_job(job_id, body, event, before_terminal=before_terminal)
+            with job_execution_lock(job_id):
+                _run_job(job_id, body, event, before_terminal=before_terminal)
         finally:
+            drain_object_deletions(job_id=job_id)
             with self._lock:
                 self._cancels.pop(job_id, None)
 

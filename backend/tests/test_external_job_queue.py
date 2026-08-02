@@ -20,7 +20,7 @@ from app.jobs import (
     RQJobManager,
     recover_interrupted_jobs,
 )
-from app.models import Job
+from app.models import Dataset, Job, Project
 from app.rq_worker import handle_terminal_failure
 from conftest import wait_for_job
 
@@ -41,6 +41,35 @@ def _job(*, kind: str = "export", status: str = "queued", target_id: str = "data
         db.add(job)
         db.commit()
         return job.id
+
+
+def _ingest_job(*, status: str = "running") -> tuple[str, str]:
+    init_db()
+    with SessionLocal() as db:
+        project = Project(name=f"rq-ingest-{uuid.uuid4().hex[:8]}")
+        db.add(project)
+        db.flush()
+        dataset = Dataset(
+            project_id=project.id,
+            filename="source.vtp",
+            ext=".vtp",
+            size_bytes=0,
+            object_key="rq-ingest-source.vtp",
+            status="ingesting",
+            error="stale error",
+        )
+        db.add(dataset)
+        db.flush()
+        job = Job(
+            project_id=project.id,
+            kind="ingest",
+            status=status,
+            target_id=dataset.id,
+            params={},
+        )
+        db.add(job)
+        db.commit()
+        return job.id, dataset.id
 
 
 def test_settings_validate_external_queue_contract(monkeypatch):
@@ -76,6 +105,7 @@ def test_rq_submission_contains_only_stable_persisted_job_id():
 
 def test_rq_worker_embeds_scheduler_for_delayed_retries(monkeypatch):
     calls: list[dict] = []
+    startup: list[str] = []
 
     class Connection:
         def ping(self):
@@ -96,24 +126,35 @@ def test_rq_worker_embeds_scheduler_for_delayed_retries(monkeypatch):
         job_queue_name="analysis",
     ))
     monkeypatch.setattr(rq_worker, "init_db", lambda: None)
+    monkeypatch.setattr(
+        rq_worker,
+        "drain_object_deletions",
+        lambda: startup.append("drain") or 0,
+    )
     monkeypatch.setattr(rq_worker.RQJobManager, "_default_queue", lambda: queue)
     monkeypatch.setattr(rq_worker.RQJobManager, "reconcile_queued_jobs", lambda self: 0)
     monkeypatch.setattr("rq.Worker", RecordingWorker)
 
     assert rq_worker.main(["--burst"]) == 0
+    assert startup == ["drain"]
     assert calls == [{"burst": True, "with_scheduler": True}]
 
 
-def test_rq_workhorse_replaces_inherited_sqlalchemy_pool(monkeypatch):
+def test_rq_workhorse_replaces_inherited_process_local_clients(monkeypatch):
     calls: list[tuple[str, object]] = []
 
     class RecordingEngine:
         def dispose(self, *, close):
             calls.append(("dispose", close))
 
+    class RecordingStore:
+        def reset_after_fork(self):
+            calls.append(("store", "reset"))
+
     monkeypatch.setattr(rq_worker, "_IMPORT_PID", 100)
     monkeypatch.setattr(rq_worker.os, "getpid", lambda: 200)
     monkeypatch.setattr(rq_worker, "engine", RecordingEngine())
+    monkeypatch.setattr(rq_worker, "store", RecordingStore())
     monkeypatch.setattr(
         rq_worker,
         "run_persisted_job",
@@ -122,7 +163,11 @@ def test_rq_workhorse_replaces_inherited_sqlalchemy_pool(monkeypatch):
 
     rq_worker.execute_job("job-1")
 
-    assert calls == [("dispose", False), ("run", "job-1")]
+    assert calls == [
+        ("dispose", False),
+        ("store", "reset"),
+        ("run", "job-1"),
+    ]
 
 
 def test_duplicate_rq_id_is_treated_as_already_submitted():
@@ -261,6 +306,41 @@ def test_rq_terminal_failure_is_persisted_only_after_retries_are_exhausted():
         job = db.get(Job, job_id)
         assert job is not None and job.status == "failed"
         assert "after all retries" in job.log
+
+
+def test_rq_terminal_ingest_failure_releases_dataset_reservation():
+    job_id, dataset_id = _ingest_job()
+
+    class QueueRecord:
+        id = f"pvweb-{job_id}"
+        args = (job_id,)
+        retries_left = 0
+
+    handle_terminal_failure(QueueRecord(), None, RuntimeError, RuntimeError(), None)
+
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        dataset = db.get(Dataset, dataset_id)
+        assert job is not None and job.status == "failed"
+        assert dataset is not None and dataset.status == "registered"
+        assert dataset.error is None
+
+
+def test_rq_ingest_cancel_releases_dataset_reservation():
+    job_id, dataset_id = _ingest_job()
+
+    def unavailable():
+        raise ConnectionError("redis unavailable during best-effort removal")
+
+    manager = RQJobManager(queue_provider=unavailable)
+    assert manager.cancel(job_id) is True
+
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        dataset = db.get(Dataset, dataset_id)
+        assert job is not None and job.status == "canceled"
+        assert dataset is not None and dataset.status == "registered"
+        assert dataset.error is None
 
 
 def test_rq_job_survives_api_restart_and_worker_reconstructs_body(client, data_dir):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from alembic import command
-from sqlalchemy import create_engine, exists, func, select, text
+from sqlalchemy import create_engine, exists, func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -87,7 +87,10 @@ def main() -> None:
         with engine.connect() as connection:
             assert connection.execute(
                 text("select version_num from alembic_version")
-            ).scalar_one() == "0009"
+            ).scalar_one() == "0010"
+        inspector = inspect(engine)
+        assert "object_deletion_outbox" in inspector.get_table_names()
+        assert inspector.get_foreign_keys("object_deletion_outbox") == []
     finally:
         # Leave the database at head even if an assertion above fails, making
         # local reruns and CI diagnostics predictable.

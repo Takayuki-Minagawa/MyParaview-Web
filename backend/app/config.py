@@ -89,6 +89,18 @@ class Settings:
             <= 0
         ):
             raise ValueError("job queue timeout, TTL, and retry values must be positive")
+        self.object_delete_interval_seconds = float(
+            os.environ.get("PVWEB_OBJECT_DELETE_INTERVAL_SECONDS", "30")
+        )
+        self.object_delete_batch_size = int(
+            os.environ.get("PVWEB_OBJECT_DELETE_BATCH_SIZE", "100")
+        )
+        if not 1 <= self.object_delete_interval_seconds <= 86400:
+            raise ValueError(
+                "PVWEB_OBJECT_DELETE_INTERVAL_SECONDS must be between 1 and 86400"
+            )
+        if not 1 <= self.object_delete_batch_size <= 1000:
+            raise ValueError("PVWEB_OBJECT_DELETE_BATCH_SIZE must be between 1 and 1000")
         self.trame_broker_url = os.environ.get("PVWEB_TRAME_BROKER_URL") or None
         self.trame_broker_token = os.environ.get("PVWEB_TRAME_BROKER_TOKEN") or None
         configured_ws_hosts = os.environ.get("PVWEB_TRAME_ALLOWED_WS_HOSTS", "")

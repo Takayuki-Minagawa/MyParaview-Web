@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import io
-import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
@@ -14,6 +13,7 @@ from ..auth import Principal, get_principal, require_project_role
 from ..broker import try_delete_remote
 from ..config import settings
 from ..db import get_db
+from ..jobs import drain_object_deletions, enqueue_object_deletion
 from ..models import Artifact, AuditEvent, Dataset, DatasetFile, Job, Project, ProjectMember, User
 from ..pipeline_lifecycle import detach_pipeline_inputs
 from ..project_locks import locked_project
@@ -24,10 +24,8 @@ from ..schemas import (
     ProjectMemberOut,
     ProjectOut,
 )
-from ..storage import store
 
 router = APIRouter(prefix="/projects", tags=["projects"])
-logger = logging.getLogger(__name__)
 
 
 @router.post("", response_model=ProjectOut, status_code=201)
@@ -113,17 +111,15 @@ def delete_project(
                 db.scalars(select(Artifact.object_key).where(or_(*artifact_filter)))
             )
         detach_pipeline_inputs(db, project_id=project_id)
+        for object_key in object_keys:
+            enqueue_object_deletion(db, object_key)
         db.delete(project)
     # The project and its local session records are already deleted. Keep
-    # external cleanup best-effort so an unavailable broker does not hold a
-    # database write lock or misreport the committed delete.
+    # broker cleanup best-effort so its outage cannot misreport the committed
+    # delete. Object cleanup is durable in the transaction-backed outbox.
+    drain_object_deletions(object_keys=set(object_keys))
     for remote_session_id in remote_session_ids:
         try_delete_remote(remote_session_id)
-    for object_key in object_keys:
-        try:
-            store.delete(object_key)
-        except Exception:  # noqa: BLE001 - DB deletion already committed
-            logger.exception("failed to delete object %s for project %s", object_key, project_id)
 
 
 @router.get("/{project_id}/members", response_model=list[ProjectMemberOut])

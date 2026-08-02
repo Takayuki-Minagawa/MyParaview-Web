@@ -13,7 +13,13 @@ import os
 
 from .config import settings
 from .db import engine, init_db
-from .jobs import RQJobManager, fail_persisted_job, run_persisted_job
+from .jobs import (
+    RQJobManager,
+    drain_object_deletions,
+    fail_persisted_job,
+    run_persisted_job,
+)
+from .storage import store
 
 logger = logging.getLogger(__name__)
 _IMPORT_PID = os.getpid()
@@ -25,8 +31,9 @@ def execute_job(job_id: str) -> None:
     if os.getpid() != _IMPORT_PID:
         # RQ's default Worker forks a workhorse after the parent initialized
         # and reconciled the database. Never reuse inherited pooled sockets in
-        # the child; close=False leaves the parent's live connections alone.
+        # the child; close=False leaves the parent's live DB connections alone.
         engine.dispose(close=False)
+        store.reset_after_fork()
     run_persisted_job(job_id)
 
 
@@ -60,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
     from rq import Worker
 
     init_db()
+    deleted = drain_object_deletions()
+    if deleted:
+        logger.info("acknowledged %d pending object deletions before worker startup", deleted)
     queue = RQJobManager._default_queue()
     queue.connection.ping()
     reconciled = RQJobManager(queue_provider=lambda: queue).reconcile_queued_jobs()

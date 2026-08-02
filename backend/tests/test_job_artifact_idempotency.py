@@ -15,11 +15,12 @@ from app.jobs import (
     _cleanup_result,
     _publish_success,
     _run_job,
+    drain_object_deletions,
     fail_persisted_job,
     run_persisted_job,
     stable_job_object_key,
 )
-from app.models import Artifact, Dataset, Job, Project
+from app.models import Artifact, Dataset, Job, ObjectDeletionOutbox, Project
 from app.services import (
     _ArtifactSpec,
     _run_artifact_job,
@@ -201,12 +202,159 @@ def test_cancel_rollback_preserves_checkpoint_object():
     with SessionLocal() as db:
         restored = db.get(Job, job_id)
         artifact = db.get(Artifact, staged["artifact_id"])
+        pending_delete = db.scalar(
+            select(ObjectDeletionOutbox).where(
+                ObjectDeletionOutbox.object_key == object_key
+            )
+        )
         assert restored is not None
         assert restored.status == "running"
         assert restored.result == staged
         assert artifact is not None
         assert artifact.object_key == object_key
+        assert pending_delete is None
     assert store.exists(object_key)
+
+
+def test_delete_failure_keeps_durable_intent_for_startup_retry(monkeypatch):
+    job_id, dataset_id, _source_key = _records("movie")
+    produced_keys: list[str] = []
+    _body(dataset_id, "movie", produced_keys)(JobContext(job_id))
+    object_key = produced_keys[0]
+    real_delete = store.delete
+
+    def unavailable(_object_key: str) -> None:
+        raise OSError("object store unavailable")
+
+    monkeypatch.setattr(store, "delete", unavailable)
+    assert JobManager._mark_canceled(job_id, db=None) is True
+
+    with SessionLocal() as db:
+        canceled = db.get(Job, job_id)
+        pending_keys = set(
+            db.scalars(
+                select(ObjectDeletionOutbox.object_key).where(
+                    ObjectDeletionOutbox.job_id == job_id
+                )
+            )
+        )
+        assert canceled is not None and canceled.status == "canceled"
+        assert object_key in pending_keys
+        assert db.scalar(select(Artifact).where(Artifact.job_id == job_id)) is None
+    assert store.exists(object_key)
+
+    # A new API/worker process calls the same drain after init_db(). The DB row
+    # survives the earlier exception and is acknowledged only after deletion.
+    monkeypatch.setattr(store, "delete", real_delete)
+    assert drain_object_deletions(job_id=job_id) >= 1
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(ObjectDeletionOutbox).where(
+                ObjectDeletionOutbox.job_id == job_id
+            )
+        ) is None
+    assert not store.exists(object_key)
+
+
+def test_repeated_delete_after_ack_crash_is_idempotent():
+    init_db()
+    object_key = store.new_key(".bin")
+    store.save_bytes(object_key, b"delete-me")
+    with SessionLocal() as db:
+        pending = ObjectDeletionOutbox(object_key=object_key)
+        db.add(pending)
+        db.commit()
+        pending_id = pending.id
+
+    # Simulate a process dying after the external delete but before the DB ACK.
+    store.delete(object_key)
+    assert not store.exists(object_key)
+    assert drain_object_deletions(object_keys={object_key}) >= 1
+    with SessionLocal() as db:
+        assert db.get(ObjectDeletionOutbox, pending_id) is None
+
+
+def test_rq_cancel_defers_delete_until_late_writer_crashes(monkeypatch):
+    job_id, _dataset_id, _source_key = _records("export")
+    producer_started = threading.Event()
+    release_producer = threading.Event()
+    crashes: list[BaseException] = []
+    object_key = stable_job_object_key(job_id, ".vtp")
+
+    def late_crashing_producer(
+        _ctx, _kind, _params, _source, _plan, produced_key, _source_path
+    ):
+        assert produced_key == object_key
+        producer_started.set()
+        assert release_producer.wait(3)
+        store.save_bytes(produced_key, b"late bytes")
+        raise SystemExit("workhorse crashed after object write")
+
+    monkeypatch.setattr("app.services._produce_object", late_crashing_producer)
+
+    def execute() -> None:
+        try:
+            run_persisted_job(job_id)
+        except BaseException as exc:  # noqa: BLE001 - simulate an RQ workhorse crash
+            crashes.append(exc)
+
+    worker = threading.Thread(target=execute)
+    worker.start()
+    assert producer_started.wait(2)
+    assert JobManager._mark_canceled(job_id, db=None) is True
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(ObjectDeletionOutbox).where(
+                ObjectDeletionOutbox.object_key == object_key
+            )
+        ) is not None
+    assert not store.exists(object_key)
+
+    release_producer.set()
+    worker.join(3)
+    assert not worker.is_alive()
+    assert len(crashes) == 1 and isinstance(crashes[0], SystemExit)
+    assert not store.exists(object_key)
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(ObjectDeletionOutbox).where(
+                ObjectDeletionOutbox.job_id == job_id
+            )
+        ) is None
+
+
+def test_local_cancel_uses_same_lease_for_late_writer_cleanup():
+    job_id, _dataset_id, _source_key = _records("export")
+    producer_started = threading.Event()
+    release_producer = threading.Event()
+    object_key = stable_job_object_key(job_id, ".vtp")
+    manager = JobManager(max_workers=1)
+
+    def late_crashing_body(_ctx: JobContext) -> dict:
+        producer_started.set()
+        assert release_producer.wait(3)
+        store.save_bytes(object_key, b"late local bytes")
+        raise SystemExit("local worker crashed after object write")
+
+    manager.submit(job_id, late_crashing_body)
+    assert producer_started.wait(2)
+    assert manager.cancel(job_id) is True
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(ObjectDeletionOutbox).where(
+                ObjectDeletionOutbox.object_key == object_key
+            )
+        ) is not None
+
+    release_producer.set()
+    manager.shutdown()
+    assert not store.exists(object_key)
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(ObjectDeletionOutbox).where(
+                ObjectDeletionOutbox.job_id == job_id
+            )
+        ) is None
 
 
 def test_losing_duplicate_never_deletes_successful_artifact():
@@ -420,6 +568,49 @@ def test_postgres_advisory_lock_commits_before_body_and_after_unlock(monkeypatch
     assert events == ["lock", "commit", "body", "unlock", "commit"]
 
 
+def test_failed_postgres_try_lock_releases_connection_before_caller(monkeypatch):
+    released = False
+
+    class Result:
+        @staticmethod
+        def scalar():
+            return False
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc_value, _traceback):
+            nonlocal released
+            released = True
+            return False
+
+        @staticmethod
+        def execute(_statement, _params):
+            return Result()
+
+        @staticmethod
+        def commit():
+            return None
+
+        @staticmethod
+        def invalidate():
+            return None
+
+    class Engine:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+
+        @staticmethod
+        def connect():
+            return Connection()
+
+    monkeypatch.setattr(jobs_module, "engine", Engine())
+
+    with jobs_module.job_execution_lock("job-1", blocking=False) as acquired:
+        assert acquired is False
+        assert released is True
+
+
 def test_terminal_failure_lock_excludes_late_checkpoint(monkeypatch):
     job_id, dataset_id, _source_key = _records("export")
     with SessionLocal() as db:
@@ -514,6 +705,31 @@ def test_terminal_rq_failure_cleans_a_checkpoint_fail_closed():
         assert failed.result is None
         assert "retries exhausted" in failed.log
         assert db.scalar(select(Artifact).where(Artifact.job_id == job_id)) is None
+    assert not store.exists(object_key)
+
+
+def test_terminal_cleanup_waits_for_execution_lease_release():
+    job_id, dataset_id, _source_key = _records("pipeline")
+    produced_keys: list[str] = []
+    _body(
+        dataset_id,
+        "pipeline",
+        produced_keys,
+        extra={"pipeline_id": "pipeline-1"},
+    )(JobContext(job_id))
+    object_key = produced_keys[0]
+
+    with jobs_module.job_execution_lock(job_id):
+        assert fail_persisted_job(job_id, "ERROR: terminal") is True
+        assert store.exists(object_key)
+        with SessionLocal() as db:
+            assert db.scalar(
+                select(ObjectDeletionOutbox).where(
+                    ObjectDeletionOutbox.object_key == object_key
+                )
+            ) is not None
+
+    assert drain_object_deletions(job_id=job_id) >= 1
     assert not store.exists(object_key)
 
 

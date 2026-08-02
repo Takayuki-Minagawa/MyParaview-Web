@@ -223,6 +223,9 @@ APIとjob-workerで同じcache directoryをmountすると、相手processが使�
 APIとjob-workerは起動時にDBの`queued` jobをRedisへ再投入します。RQ job idはDB job idから
 一意に決まり、複数replicaが同時起動してもRedis側のatomic unique enqueueで重複を防ぎます。
 実行中にworkerが失われたjobはRQ retry後に同じDB recordから再構築されます。
+object削除意図もPostgreSQLのoutboxへ先にcommitし、APIが既定30秒ごとに最大100件ずつ再試行します。
+間隔とbatch上限は`PVWEB_OBJECT_DELETE_INTERVAL_SECONDS`と
+`PVWEB_OBJECT_DELETE_BATCH_SIZE`で変更できます。
 
 `docker compose down` は通常volumeを残しますが、`docker compose down -v` は永続volumeを削除するため、
 本番では実行しません。DB recordとobjectを対応させる必要があるため、PostgreSQLとMinIO/S3は同じ

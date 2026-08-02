@@ -1,16 +1,52 @@
+x-api-build: &api-build
+  context: ..
+  dockerfile: backend/Dockerfile
+
+x-api-environment: &api-environment
+  PVWEB_DATA_ROOT: /var/lib/pvweb
+  PVWEB_DATABASE_URL: ${PVWEB_DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-pvweb}:${POSTGRES_PASSWORD:-pvweb-dev}@postgres:5432/${POSTGRES_DB:-pvweb}}
+  PVWEB_OBJECT_STORE: ${PVWEB_OBJECT_STORE:-s3}
+  PVWEB_S3_BUCKET: ${PVWEB_S3_BUCKET:-pvweb}
+  PVWEB_S3_ENDPOINT_URL: ${PVWEB_S3_ENDPOINT_URL:-http://minio:9000}
+  PVWEB_S3_REGION: ${PVWEB_S3_REGION:-us-east-1}
+  PVWEB_S3_CACHE_MAX_BYTES: ${PVWEB_S3_CACHE_MAX_BYTES:-5368709120}
+  PVWEB_S3_CACHE_TTL_SECONDS: ${PVWEB_S3_CACHE_TTL_SECONDS:-86400}
+  PVWEB_S3_PRESIGNED_DOWNLOADS: ${PVWEB_S3_PRESIGNED_DOWNLOADS:-0}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-${MINIO_ROOT_USER:-minioadmin}}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
+  AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+  PVWEB_AUTH_MODE: ${PVWEB_AUTH_MODE:-oidc}
+  PVWEB_ALLOW_INSECURE_DEV_AUTH: ${PVWEB_ALLOW_INSECURE_DEV_AUTH:-0}
+  PVWEB_OIDC_ISSUER: ${PVWEB_OIDC_ISSUER:-}
+  PVWEB_OIDC_AUDIENCE: ${PVWEB_OIDC_AUDIENCE:-}
+  PVWEB_OIDC_JWKS_URL: ${PVWEB_OIDC_JWKS_URL:-}
+  PVWEB_BOOTSTRAP_ADMIN_SUBS: ${PVWEB_BOOTSTRAP_ADMIN_SUBS:-}
+  PVWEB_CORS_ORIGINS: ${PVWEB_CORS_ORIGINS:-http://localhost:8080}
+  PVWEB_MAX_UPLOAD_BYTES: ${PVWEB_MAX_UPLOAD_BYTES:-536870912}
+  PVWEB_MAX_ARTIFACT_BYTES: ${PVWEB_MAX_ARTIFACT_BYTES:-33554432}
+  PVWEB_AUDIT_LIST_LIMIT: ${PVWEB_AUDIT_LIST_LIMIT:-500}
+  PVWEB_JOB_STREAM_MAX_SECONDS: ${PVWEB_JOB_STREAM_MAX_SECONDS:-300}
+  PVWEB_PVPYTHON: ${PVWEB_PVPYTHON:-}
+  PVWEB_FFMPEG: ${PVWEB_FFMPEG:-}
+  PVWEB_WORKER_TIMEOUT: ${PVWEB_WORKER_TIMEOUT:-900}
+  PVWEB_SESSION_TTL: ${PVWEB_SESSION_TTL:-3600}
+  PVWEB_TRAME_BROKER_URL: ${PVWEB_TRAME_BROKER_URL:-}
+  PVWEB_TRAME_BROKER_TOKEN: ${PVWEB_TRAME_BROKER_TOKEN:-}
+  PVWEB_TRAME_ALLOWED_WS_HOSTS: ${PVWEB_TRAME_ALLOWED_WS_HOSTS:-}
+
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: pvweb
-      POSTGRES_USER: pvweb
-      POSTGRES_PASSWORD: pvweb-dev
+      POSTGRES_DB: ${POSTGRES_DB:-pvweb}
+      POSTGRES_USER: ${POSTGRES_USER:-pvweb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pvweb-dev}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_BIND_ADDRESS:-0.0.0.0}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pvweb -d pvweb"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -19,22 +55,95 @@ services:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address :9001
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_BIND_ADDRESS:-0.0.0.0}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_BIND_ADDRESS:-0.0.0.0}:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
 
   minio-init:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      PVWEB_S3_BUCKET: ${PVWEB_S3_BUCKET:-pvweb}
     entrypoint: >-
-      /bin/sh -c "until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 1; done;
-      mc mb --ignore-existing local/pvweb"
+      /bin/sh -c "until mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\"; do sleep 1; done;
+      mc mb --ignore-existing \"local/$$PVWEB_S3_BUCKET\""
+
+  migration:
+    profiles: ["full-stack"]
+    image: pvweb-api:${PVWEB_IMAGE_TAG:-local}
+    build: *api-build
+    command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+    environment: *api-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    profiles: ["full-stack"]
+    image: pvweb-api:${PVWEB_IMAGE_TAG:-local}
+    build: *api-build
+    environment: *api-environment
+    volumes:
+      - api-cache:/var/lib/pvweb
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    profiles: ["full-stack"]
+    image: pvweb-web:${PVWEB_IMAGE_TAG:-local}
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE: /api
+        VITE_BASE_PATH: /
+        VITE_APP_MODE: server
+        VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-}
+        VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-}
+        VITE_OIDC_REDIRECT_URI: ${VITE_OIDC_REDIRECT_URI:-}
+    ports:
+      - "${PVWEB_WEB_BIND_ADDRESS:-0.0.0.0}:${PVWEB_WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--output-document=-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
 
 volumes:
   postgres-data:
   minio-data:
+  api-cache:

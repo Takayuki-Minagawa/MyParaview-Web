@@ -24,6 +24,42 @@ PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db \
   .venv/bin/alembic -c alembic.ini upgrade head --sql >/tmp/pvweb.sql
 ```
 
+## G11 container構成の検証
+
+profileなしの従来構成とfull-stack構成を両方展開し、Composeの参照・環境変数・
+healthcheck構文を検証する。
+
+```bash
+docker compose -f infra/docker-compose.yml config --quiet
+docker compose --env-file .env.production.example \
+  -f infra/docker-compose.yml --profile full-stack config --quiet
+docker compose --env-file .env.production.example \
+  -f infra/docker-compose.yml --profile full-stack build
+```
+
+loopbackでE2E相当の確認を行う場合は、production用OIDC placeholderを使わず、
+この起動だけ明示的にdev認証へ切り替える。
+
+```bash
+PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 \
+  docker compose -f infra/docker-compose.yml --profile full-stack up --build -d
+docker compose -f infra/docker-compose.yml --profile full-stack ps
+curl --fail http://localhost:8080/healthz
+curl --fail http://localhost:8080/api/health
+curl --fail http://localhost:8080/api/capabilities
+```
+
+ブラウザでproject作成、VTP upload、表示、download、project削除まで確認する。
+stock imageはParaView/ffmpeg/trameを含めず設定も渡さないため、capabilitiesの
+`paraview_worker`、`video_export`（実装されている版の場合）、`trame_sessions` が
+`false` であることも確認する。実体のないcommand/pathを設定して成功扱いにしない。
+
+確認後はvolumeを削除せず停止する。
+
+```bash
+docker compose -f infra/docker-compose.yml --profile full-stack down
+```
+
 ## Browser smoke test
 
 1. Projectを作成/選択する。

@@ -51,6 +51,15 @@ import {
   type MeasurementResult,
   type MeasurementSettings,
 } from "../lib/viewer/measurementTool";
+import {
+  createVectorGlyphController,
+  pointVectorArrayNames,
+  VECTOR_GLYPH_SCALE_MAX,
+  VECTOR_GLYPH_SCALE_MIN,
+  type VectorGlyphController,
+  type VectorGlyphSettings,
+  type VectorGlyphSummary,
+} from "../lib/viewer/vectorGlyph";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Volume";
@@ -116,6 +125,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
   const planeControllerRef = useRef<ClientPlaneController | null>(null);
   const probeControllerRef = useRef<ProbeController | null>(null);
   const measurementControllerRef = useRef<MeasurementController | null>(null);
+  const vectorGlyphControllerRef = useRef<VectorGlyphController | null>(null);
   const [status, setStatus] = useState("");
   const [probeEnabled, setProbeEnabled] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
@@ -128,6 +138,15 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
   const [measurementResult, setMeasurementResult] = useState<MeasurementResult | null>(null);
   const measurementSettingsRef = useRef(measurementSettings);
   measurementSettingsRef.current = measurementSettings;
+  const [vectorArrays, setVectorArrays] = useState<string[]>([]);
+  const [vectorGlyphSettings, setVectorGlyphSettings] = useState<VectorGlyphSettings>({
+    enabled: false,
+    arrayName: null,
+    scale: 1,
+  });
+  const [vectorGlyphSummary, setVectorGlyphSummary] = useState<VectorGlyphSummary | null>(null);
+  const vectorGlyphSettingsRef = useRef(vectorGlyphSettings);
+  vectorGlyphSettingsRef.current = vectorGlyphSettings;
   const [planeSettings, setPlaneSettings] = useState<ClientPlaneSettings>({
     enabled: false,
     mode: "clip",
@@ -225,6 +244,8 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     const abortController = new AbortController();
     const strings = messagesRef.current;
     setStatus(strings.viewer.loading);
+    setVectorArrays([]);
+    setVectorGlyphSummary(null);
     const grw = vtkGenericRenderWindow.newInstance({ background: backgroundRef.current });
     grw.setContainer(containerRef.current);
     grw.resize();
@@ -265,6 +286,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     let planeController: ClientPlaneController | null = null;
     let probeController: ProbeController | null = null;
     let measurementController: MeasurementController | null = null;
+    let vectorGlyphController: VectorGlyphController | null = null;
     scene.emitCamera = () => cameraCallbackRef.current(readCamera(scene));
     ctx.current = scene;
     const interactor = renderWindow.getInteractor();
@@ -289,6 +311,21 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
         scene.prop.getProperty().setOpacity(display.opacity);
         scene.renderer.addActor(scene.prop);
         if (isSurfaceDatasetType(datasetType)) {
+          const vectorNames = pointVectorArrayNames(scene.output);
+          const currentGlyphSettings = vectorGlyphSettingsRef.current;
+          const nextGlyphSettings = {
+            ...currentGlyphSettings,
+            arrayName: currentGlyphSettings.arrayName
+              && vectorNames.includes(currentGlyphSettings.arrayName)
+              ? currentGlyphSettings.arrayName
+              : vectorNames[0] ?? null,
+          };
+          vectorGlyphSettingsRef.current = nextGlyphSettings;
+          setVectorArrays(vectorNames);
+          setVectorGlyphSettings(nextGlyphSettings);
+          vectorGlyphController = createVectorGlyphController(scene);
+          vectorGlyphControllerRef.current = vectorGlyphController;
+          setVectorGlyphSummary(vectorGlyphController?.apply(nextGlyphSettings) ?? null);
           planeController = createClientPlaneController(scene);
           planeControllerRef.current = planeController;
           planeController?.apply(planeSettingsRef.current);
@@ -387,6 +424,10 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
         if (probeControllerRef.current === probeController) probeControllerRef.current = null;
         planeController?.delete();
         if (planeControllerRef.current === planeController) planeControllerRef.current = null;
+        vectorGlyphController?.delete();
+        if (vectorGlyphControllerRef.current === vectorGlyphController) {
+          vectorGlyphControllerRef.current = null;
+        }
         orientationWidget.setEnabled(false);
         if (scene.prop) {
           if (scene.kind === "volume") scene.renderer.removeVolume(scene.prop);
@@ -431,6 +472,10 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     measurementControllerRef.current?.apply(measurementSettings);
     if (!measurementSettings.enabled) setMeasurementResult(null);
   }, [measurementSettings]);
+
+  useEffect(() => {
+    setVectorGlyphSummary(vectorGlyphControllerRef.current?.apply(vectorGlyphSettings) ?? null);
+  }, [vectorGlyphSettings]);
 
   useEffect(() => {
     const scene = ctx.current;
@@ -578,6 +623,58 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
           >
             {messages.viewer.planeReset}
           </button>
+        </div>
+      )}
+      {vectorArrays.length > 0 && (
+        <div
+          className="viewer-toolbar viewer-vector-toolbar"
+          aria-label={messages.viewer.vectorGlyphTools}
+        >
+          <button
+            aria-pressed={vectorGlyphSettings.enabled}
+            onClick={() => setVectorGlyphSettings((current) => ({
+              ...current,
+              enabled: !current.enabled,
+            }))}
+          >
+            {messages.viewer.vectorGlyphToggle}
+          </button>
+          <label>
+            <span>{messages.viewer.vectorArray}</span>
+            <select
+              aria-label={messages.viewer.vectorArray}
+              value={vectorGlyphSettings.arrayName ?? ""}
+              onChange={(event) => setVectorGlyphSettings((current) => ({
+                ...current,
+                arrayName: event.target.value,
+              }))}
+            >
+              {vectorArrays.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>{messages.viewer.vectorScale}</span>
+            <input
+              aria-label={messages.viewer.vectorScale}
+              type="range"
+              min={VECTOR_GLYPH_SCALE_MIN}
+              max={VECTOR_GLYPH_SCALE_MAX}
+              step="0.1"
+              value={vectorGlyphSettings.scale}
+              onChange={(event) => setVectorGlyphSettings((current) => ({
+                ...current,
+                scale: Number(event.target.value),
+              }))}
+            />
+            <output>{vectorGlyphSettings.scale.toFixed(1)}×</output>
+          </label>
+          {vectorGlyphSettings.enabled && (
+            <span className="viewer-vector-count" role="status">
+              {vectorGlyphSummary
+                ? `${messages.viewer.vectorGlyphCount}: ${vectorGlyphSummary.glyphCount.toLocaleString()} / ${vectorGlyphSummary.sourcePointCount.toLocaleString()}`
+                : messages.viewer.vectorGlyphEmpty}
+            </span>
+          )}
         </div>
       )}
       {probeEnabled && probeResult && (

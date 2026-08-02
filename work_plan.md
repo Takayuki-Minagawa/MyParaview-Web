@@ -127,7 +127,7 @@
 - [ ] block/set選択UI
 - [ ] フィルタ追加: Cell Data to Point Data / Resample / Decimation
 - [ ] volume rendering（`vtkVolumeMapper`をUI統合）
-- [ ] vector glyph sampling
+- [x] vector glyph sampling
 - [ ] pipeline state の保存 / 共有（`glance`のscene export形式を参考に）
 - **DoD**: 大規模データ（M0-Aの1種）が読み込み・block選択・フィルタまで到達する
 

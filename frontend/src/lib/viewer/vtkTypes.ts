@@ -22,8 +22,13 @@ export interface VtkObject {
 export interface VtkDataArrayLike {
   getName?: () => string;
   getNumberOfComponents?: () => number;
+  getData?: () => ArrayLike<number>;
   getRange?: (component?: number) => number[] | undefined;
   getTuple?: (tupleId: number) => ArrayLike<number>;
+}
+
+export interface VtkPointsLike {
+  getData?: () => ArrayLike<number>;
 }
 
 export interface VtkAttributes {
@@ -40,6 +45,7 @@ export interface VtkDataSet extends VtkObject {
   getSpacing: () => number[];
   getBounds: () => number[];
   getNumberOfPoints: () => number;
+  getPoints?: () => VtkPointsLike;
 }
 
 /** Union of the mapper members used across geometry/glyph/slice/volume. */

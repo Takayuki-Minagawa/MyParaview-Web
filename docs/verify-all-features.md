@@ -73,6 +73,21 @@ docker compose -f infra/docker-compose.yml --profile full-stack down
 9. assistantに「temperature の等値面」を入力し、提案だけではjobが増えないことを確認。
 10. ParaView worker未設定時、server filter buttonが無効であることを確認。
 
+## G9 vector glyph manual test
+
+1. 3成分のpoint配列（例: `velocity`）を含むVTPまたはVTUを選択し、右上の
+   **ベクトル矢印**ツールに配列名が表示されることを確認する。cell配列は直接の対象外で、
+   必要な場合はG10の **Cell Data to Point Data** を先に実行する。
+2. **ベクトル矢印**を有効にし、矢印が各ベクトル方向を向き、ベクトルの相対的な大きさが
+   長さへ反映されることを確認する。配列を変更すると向き・大きさが更新されることを確認する。
+3. **矢印倍率**を0.1〜5.0倍で動かし、主形状やcameraを再読み込みせず矢印だけが変わることを
+   確認する。標準1.0倍では最大矢印長がモデル対角長のおよそ8%に正規化される。
+4. 2,000点を超えるデータでは **矢印数 / 元点数** の左側が2,000以下であること、同じデータを
+   再読込しても同じ点が選ばれることを確認する。samplingは全点範囲を等間隔に選ぶ決定的方式。
+5. 全ベクトルがゼロまたは非有限値の配列では矢印actorを追加せず、表示可能なベクトルがない旨を
+   UIに表示することを確認する。ON/OFF、dataset切替を繰り返して古い矢印やWebGL resourceが
+   残らないことも確認する。
+
 ## G10 server filter manual test（pvpython環境）
 
 1. `PVWEB_PVPYTHON=/path/to/pvpython` を設定してbackendを起動し、

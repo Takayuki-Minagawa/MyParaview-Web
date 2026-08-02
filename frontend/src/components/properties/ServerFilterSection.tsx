@@ -17,6 +17,8 @@ interface Props {
   onRunFilter: (params: ServerFilterParams) => void;
 }
 
+const MAX_RESAMPLE_SAMPLE_COUNT = 16_777_216;
+
 export const ServerFilterSection = memo(function ServerFilterSection({
   dataset,
   sliceAxis,
@@ -68,12 +70,22 @@ export const ServerFilterSection = memo(function ServerFilterSection({
       filterMinimumNumber <= filterMaximumNumber
     ));
   const dimensionNumbers = resampleDimensions.map(Number) as [number, number, number];
-  const dimensionsValid = resampleDimensions.every((value, index) =>
+  const dimensionValuesValid = resampleDimensions.map((value, index) =>
     value.trim() !== "" &&
     Number.isInteger(dimensionNumbers[index]) &&
     dimensionNumbers[index] >= 2 &&
     dimensionNumbers[index] <= 512,
   );
+  const dimensionAxesValid = dimensionValuesValid.every(Boolean);
+  const resampleSampleCount = dimensionNumbers.reduce((product, value) => product * value, 1);
+  const resampleSampleCountExceeded =
+    dimensionAxesValid && resampleSampleCount > MAX_RESAMPLE_SAMPLE_COUNT;
+  const dimensionsValid = dimensionAxesValid && !resampleSampleCountExceeded;
+  const resampleError = !dimensionAxesValid
+    ? messages.properties.resampleDimensionsError
+    : resampleSampleCountExceeded
+      ? messages.properties.resampleSampleLimitError
+      : null;
   const targetReductionNumber = Number(targetReduction);
   const targetReductionValid =
     targetReduction.trim() !== "" &&
@@ -185,6 +197,8 @@ export const ServerFilterSection = memo(function ServerFilterSection({
                   min="2"
                   max="512"
                   step="1"
+                  aria-invalid={!dimensionValuesValid[index] || resampleSampleCountExceeded}
+                  aria-describedby={resampleError ? "resample-dimensions-error" : undefined}
                   value={resampleDimensions[index]}
                   onChange={(event) => setResampleDimensions((previous) => {
                     const next: [string, string, string] = [...previous];
@@ -194,6 +208,11 @@ export const ServerFilterSection = memo(function ServerFilterSection({
                 />
               </label>
             ))}
+            {resampleError && (
+              <p id="resample-dimensions-error" className="validation-error" role="alert">
+                {resampleError}
+              </p>
+            )}
           </>
         ) : (
           <label>

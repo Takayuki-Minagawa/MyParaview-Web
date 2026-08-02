@@ -114,6 +114,40 @@ describe("ServerFilterSection", () => {
     });
   });
 
+  it("accepts the resample sample-count boundary and rejects a product above it", async () => {
+    const user = userEvent.setup();
+    const onRunFilter = renderSection();
+    await selectFilter(user, "resample");
+
+    const x = screen.getByLabelText(`${messages.properties.resampleDimensions} X`);
+    const y = screen.getByLabelText(`${messages.properties.resampleDimensions} Y`);
+    const z = screen.getByLabelText(`${messages.properties.resampleDimensions} Z`);
+    for (const input of [x, y, z]) {
+      await user.clear(input);
+      await user.type(input, "256");
+    }
+
+    const runButton = screen.getByRole("button", { name: messages.properties.runFilter });
+    expect((runButton as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(messages.properties.resampleSampleLimitError)).toBeNull();
+    await user.click(runButton);
+    expect(onRunFilter).toHaveBeenCalledWith({
+      filter: "resample",
+      dimensions: [256, 256, 256],
+    });
+
+    await user.clear(x);
+    await user.type(x, "257");
+
+    expect((runButton as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("alert").textContent).toBe(
+      messages.properties.resampleSampleLimitError,
+    );
+    expect(x.getAttribute("aria-invalid")).toBe("true");
+    expect(y.getAttribute("aria-invalid")).toBe("true");
+    expect(z.getAttribute("aria-invalid")).toBe("true");
+  });
+
   it("submits a bounded decimation target reduction", async () => {
     const user = userEvent.setup();
     const onRunFilter = renderSection();

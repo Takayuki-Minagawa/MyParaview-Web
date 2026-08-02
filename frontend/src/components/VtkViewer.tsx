@@ -60,6 +60,7 @@ import {
   type VectorGlyphSettings,
   type VectorGlyphSummary,
 } from "../lib/viewer/vectorGlyph";
+import { viewerContextPool } from "../lib/viewer/contextPool";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Volume";
@@ -85,7 +86,7 @@ export interface VtkViewerHandle {
   resetCamera: () => void;
 }
 
-interface Props {
+export interface VtkViewerProps {
   datasetId: string | null;
   url: string | null;
   datasetType?: string | null;
@@ -109,15 +110,19 @@ interface Props {
   onScreenshotCaptured?: (blob: Blob, datasetId: string | null) => void;
   onGeometryExported?: (blob: Blob, datasetId: string | null) => void;
   viewerBackground: [number, number, number];
+  /** Identifies the WebGL-context lease in diagnostics. */
+  contextOwner?: string;
+  /** Accessible label for comparison panes. */
+  viewerLabel?: string;
 }
 
-export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(props, ref) {
+export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function VtkViewer(props, ref) {
   const {
     datasetId, url, datasetType, emptyMessage, representation, colorBy, colorRange, opacity, colorMap,
     legendVisible, axesVisible, tableCoordinates, imageMode, sliceAxis, sliceIndex,
     volumeOpacityPoints,
     onColorRangeResolved, onLoadComplete, cameraState, onCameraChange, onScreenshotCaptured,
-    onGeometryExported, viewerBackground,
+    onGeometryExported, viewerBackground, contextOwner = "primary", viewerLabel,
   } = props;
   const messages = useMessages();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -246,9 +251,22 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
     setStatus(strings.viewer.loading);
     setVectorArrays([]);
     setVectorGlyphSummary(null);
-    const grw = vtkGenericRenderWindow.newInstance({ background: backgroundRef.current });
-    grw.setContainer(containerRef.current);
-    grw.resize();
+    const contextLease = viewerContextPool.tryAcquire(contextOwner);
+    if (!contextLease) {
+      setStatus(strings.viewer.webglContextLimit);
+      return;
+    }
+    let grw: ReturnType<typeof vtkGenericRenderWindow.newInstance> | null = null;
+    try {
+      grw = vtkGenericRenderWindow.newInstance({ background: backgroundRef.current });
+      grw.setContainer(containerRef.current);
+      grw.resize();
+    } catch (error) {
+      grw?.delete?.();
+      contextLease.release();
+      setStatus(`${strings.viewer.renderError}: ${String(error)}`);
+      return;
+    }
     const renderer = grw.getRenderer();
     const renderWindow = grw.getRenderWindow();
     const axes = vtkAxesActor.newInstance();
@@ -445,6 +463,8 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
         grw.delete();
       } catch {
         /* already torn down */
+      } finally {
+        contextLease.release();
       }
       if (ctx.current === scene) ctx.current = null;
     };
@@ -530,7 +550,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, Props>(function VtkViewer(p
   }, [cameraState]);
 
   return (
-    <div className="viewer">
+    <div className="viewer" aria-label={viewerLabel}>
       <div ref={containerRef} className="viewer-canvas" />
       {renderable && (
         <div className="viewer-toolbar" aria-label={messages.viewer.standardViews}>

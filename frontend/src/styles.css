@@ -131,6 +131,77 @@ body {
 
 .center { position: relative; min-width: 0; }
 
+.comparison-viewport {
+  position: absolute;
+  inset: 0;
+}
+.comparison-grid {
+  position: absolute;
+  inset: 0;
+}
+.comparison-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.comparison-enabled {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.comparison-enabled .comparison-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.comparison-secondary { border-left: 1px solid var(--accent); }
+.comparison-controls {
+  z-index: 8;
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-wrap: wrap;
+}
+.comparison-controls strong { align-self: center; white-space: nowrap; }
+.comparison-controls label {
+  display: grid;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.comparison-controls select { min-width: 150px; padding: 4px 6px; }
+.comparison-controls button { padding: 4px 7px; }
+.comparison-context-note {
+  align-self: center;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.comparison-pane-label {
+  position: absolute;
+  z-index: 7;
+  top: 12px;
+  left: 50%;
+  max-width: 45%;
+  transform: translateX(-50%);
+  overflow: hidden;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--viewer-toolbar-bg);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.comparison-enabled .viewer-toolbar:not(.viewer-plane-toolbar):not(.viewer-vector-toolbar) {
+  max-width: calc(100% - 24px);
+  flex-wrap: wrap;
+}
+
 .viewer { position: absolute; inset: 0; }
 .viewer-canvas { position: absolute; inset: 0; }
 .viewer-overlay {
@@ -453,6 +524,18 @@ button:hover { border-color: var(--accent); }
   .capability-badge {
     flex-basis: 100%;
   }
+}
+
+@media (max-width: 1100px) {
+  .comparison-enabled .comparison-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .comparison-secondary {
+    border-top: 1px solid var(--accent);
+    border-left: 0;
+  }
+  .comparison-context-note { display: none; }
 }
 
 /* ---- review-remediation additions ---- */

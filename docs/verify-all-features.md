@@ -88,6 +88,26 @@ docker compose -f infra/docker-compose.yml --profile full-stack down
    UIに表示することを確認する。ON/OFF、dataset切替を繰り返して古い矢印やWebGL resourceが
    残らないことも確認する。
 
+## G5 2-up comparison manual test
+
+設計上、vtk.jsの共有render windowは単一canvas/interactorとなり、既存VtkViewerが所有する
+widget・orientation marker・DOM overlayをpaneごとに独立させられない。そのため最初のsliceは
+各pane 1 contextとし、global leaseを2個にhard limitしている。比較toggleではprimaryを保持し、
+secondaryだけを生成・`delete()`・lease解放する。
+
+1. ready状態のVTP/VTUを選び、top barの **比較** を有効にする。左viewerを再読込せず
+   右viewerだけが追加され、2画面とも描画されることを確認する。
+2. ready状態の別datasetを **右側データセット** で選び、左側のdatasetを変えず右側だけが
+   切り替わることを確認する。両datasetに同じscalarがなければ、右側は無効なscalarを
+   適用せず単色表示へ安全に戻ることを確認する。
+3. PVD collectionを左右に選び、左はPropertiesのtimestep、右は比較barの
+   **右側タイムステップ** で別々のstepを指定できることを確認する。
+4. **カメラ同期** がONの状態でどちらかをrotate/pan/zoomし、もう一方のcameraが追従する
+   ことを確認する。OFFにして右側を操作し、左側cameraが変わらないことも確認する。
+5. 比較ON/OFF、右dataset切替を10回以上繰り返す。常にcanvasは単一表示で1個、比較表示で
+   2個だけで、3個目のWebGL contextを作らず、context上限messageやcontext lostが出ないことを
+   browser developer toolsで確認する。
+
 ## G10 server filter manual test（pvpython環境）
 
 1. `PVWEB_PVPYTHON=/path/to/pvpython` を設定してbackendを起動し、

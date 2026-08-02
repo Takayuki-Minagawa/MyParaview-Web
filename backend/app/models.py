@@ -101,6 +101,7 @@ class Dataset(Base):
     timesteps: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     arrays: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     extra: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     created_at: Mapped[datetime] = mapped_column(default=_now)
 

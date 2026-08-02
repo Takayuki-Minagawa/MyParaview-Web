@@ -6,7 +6,7 @@ import math
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ORMModel(BaseModel):
@@ -68,7 +68,32 @@ class DatasetOut(ORMModel):
     timesteps: Optional[list[float]] = None
     arrays: Optional[list[dict[str, Any]]] = None
     extra: Optional[dict[str, Any]] = None
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime
+
+
+class DatasetTagsUpdate(BaseModel):
+    tags: list[str]
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, tags: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for tag in tags:
+            value = tag.strip()
+            if not value:
+                continue
+            if len(value) > 50:
+                raise ValueError("dataset tags must be at most 50 characters")
+            identity = value.casefold()
+            if identity in seen:
+                continue
+            seen.add(identity)
+            normalized.append(value)
+        if len(normalized) > 20:
+            raise ValueError("datasets may have at most 20 tags")
+        return normalized
 
 
 class CollectionStepOut(BaseModel):

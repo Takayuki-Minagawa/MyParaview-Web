@@ -291,6 +291,26 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     pushError, stopRemoteIfDatasetChanged,
   ]);
 
+  const updateDatasetTags = useCallback(async (
+    datasetId: string,
+    tags: string[],
+  ): Promise<Dataset | null> => {
+    const ticket = scope.capture();
+    if (!ticket) return null;
+    clearErrors();
+    try {
+      const updated = await api.updateDatasetTags(datasetId, tags);
+      if (!ticket.stillCurrent() || updated.project_id !== ticket.projectId) return null;
+      setDatasets((previous) => previous.map(
+        (dataset) => (dataset.id === updated.id ? updated : dataset),
+      ));
+      return updated;
+    } catch (reason) {
+      if (ticket.stillCurrent()) pushError(String(reason));
+      return null;
+    }
+  }, [scope, clearErrors, setDatasets, pushError]);
+
   const selectedDataset = useMemo(
     () => datasets.find((d) => d.id === selectedDatasetId) ?? null,
     [datasets, selectedDatasetId],
@@ -708,6 +728,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
           datasets={datasets}
           selectedDatasetId={selectedDatasetId}
           onSelectDataset={(id) => void selectDataset(id)}
+          onUpdateDatasetTags={updateDatasetTags}
           onUploadFiles={(files) => void upload(files)}
           busy={busy}
           jobs={jobs}

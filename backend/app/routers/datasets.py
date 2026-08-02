@@ -11,7 +11,7 @@ from typing import Optional
 from defusedxml import ElementTree as SafeET
 from defusedxml.common import DefusedXmlException
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from sqlalchemy import select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -25,7 +25,7 @@ from ..jobs import manager
 from ..models import Dataset, DatasetFile, Job
 from ..project_locks import locked_project
 from ..responses import serve_object
-from ..schemas import CollectionStepOut, DatasetOut, JobOut
+from ..schemas import CollectionStepOut, DatasetOut, DatasetTagsUpdate, JobOut
 from ..services import run_ingest
 from ..storage import store
 from ..validation import sniff_upload as _sniff_upload
@@ -381,22 +381,70 @@ def list_datasets(
     status: Optional[str] = Query(
         default=None, pattern="^(registered|ingesting|ready|error)$"
     ),
+    name: Optional[str] = Query(default=None, max_length=200),
+    tag: Optional[str] = Query(default=None, max_length=50),
     limit: int = Query(default=500, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
     require_project(db, project_id, principal)
-    stmt = (
-        select(Dataset)
-        .where(Dataset.project_id == project_id)
-        .order_by(Dataset.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+    stmt = select(Dataset).where(Dataset.project_id == project_id)
     if status:
         stmt = stmt.where(Dataset.status == status)
+    name_filter = (name or "").strip().lower()
+    tag_filter = (tag or "").strip().lower()
+    if name_filter:
+        stmt = stmt.where(
+            func.lower(Dataset.filename).contains(name_filter, autoescape=True)
+        )
+    if tag_filter:
+        if db.get_bind().dialect.name == "postgresql":
+            tag_values = func.json_array_elements_text(Dataset.tags).table_valued(
+                "value"
+            ).render_derived(name="dataset_tags")
+        else:
+            # SQLite's JSON1 table-valued function exposes a built-in `value`
+            # column and does not accept PostgreSQL's derived-column syntax.
+            tag_values = func.json_each(Dataset.tags).table_valued("value").alias(
+                "dataset_tags"
+            )
+        stmt = stmt.where(
+            exists(
+                select(1).select_from(tag_values).where(
+                    func.lower(tag_values.c.value) == tag_filter
+                )
+            )
+        )
+    stmt = stmt.order_by(Dataset.created_at.desc()).limit(limit).offset(offset)
     return list(db.scalars(stmt))
+
+
+@router.patch("/datasets/{dataset_id}/tags", response_model=DatasetOut)
+def update_dataset_tags(
+    dataset_id: str,
+    payload: DatasetTagsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    dataset = authorized_dataset(db, dataset_id, principal, "editor")
+    project_id = dataset.project_id
+    with locked_project(db, project_id, principal, "editor"):
+        dataset = db.get(Dataset, dataset_id)
+        if dataset is None:
+            raise HTTPException(404, "dataset not found")
+        dataset.tags = payload.tags
+        db.add(dataset)
+        db.flush()
+    tag_audit(
+        request,
+        "dataset",
+        dataset.id,
+        project_id,
+        detail={"tags": list(dataset.tags)},
+    )
+    return dataset
 
 
 @router.get("/datasets/{dataset_id}", response_model=DatasetOut)

@@ -248,21 +248,58 @@ button:hover { border-color: var(--accent); }
   background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
 }
 
+.dataset-search { display: grid; gap: 7px; margin-top: 10px; }
+.dataset-search label, .dataset-tag-editor label { display: grid; gap: 3px; }
+.dataset-search label > span, .dataset-tag-editor label > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.dataset-search-actions { display: flex; gap: 7px; }
 .dataset-list { list-style: none; margin: 8px 0 0; padding: 0; }
 .dataset-list li {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 2px 8px;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   margin-bottom: 6px;
-  cursor: pointer;
 }
+.dataset-select-button {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.dataset-select-button:hover { border-color: transparent; }
 .dataset-list li.selected { border-color: var(--accent); background: var(--panel-2); }
-.dataset-list li.empty, .dataset-list li.empty:hover { cursor: default; color: var(--muted); display: block; }
+.dataset-list li.empty, .dataset-list li.empty:hover { color: var(--muted); }
 .ds-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ds-meta { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.ds-tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.tag-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+}
+.dataset-list .dataset-tag-edit {
+  display: block;
+  margin-top: 3px;
+  padding: 1px 0;
+}
+.dataset-tag-editor {
+  display: grid;
+  gap: 4px;
+  margin-top: 5px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  cursor: default;
+}
+.dataset-tag-editor input { min-width: 0; width: 100%; }
 
 .badge { font-size: 11px; padding: 1px 6px; border-radius: 999px; align-self: start; }
 .badge-registered { background: #2a2f3a; color: var(--muted); }

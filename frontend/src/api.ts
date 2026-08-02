@@ -104,9 +104,23 @@ export const api = {
     return response.blob();
   },
 
-  listDatasets: (projectId: string) =>
-    req<Dataset[]>(`/projects/${projectId}/datasets`),
+  listDatasets: (
+    projectId: string,
+    filters: { name?: string; tag?: string } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (filters.name?.trim()) params.set("name", filters.name.trim());
+    if (filters.tag?.trim()) params.set("tag", filters.tag.trim());
+    const query = params.toString();
+    return req<Dataset[]>(`/projects/${projectId}/datasets${query ? `?${query}` : ""}`);
+  },
   getDataset: (id: string) => req<Dataset>(`/datasets/${id}`),
+  updateDatasetTags: (id: string, tags: string[]) =>
+    req<Dataset>(`/datasets/${id}/tags`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags }),
+    }),
 
   uploadDataset: (projectId: string, file: File) => {
     const fd = new FormData();

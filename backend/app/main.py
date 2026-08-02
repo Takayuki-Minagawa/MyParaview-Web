@@ -95,9 +95,12 @@ def _persist_audit_event(
     resource_id: str | None,
     status_code: int,
     path: str,
+    extra_detail: dict | None,
 ) -> None:
     with SessionLocal() as db:
         project_id = known_project_id or _resolve_audit_project_id(db, path_params, dataset_id)
+        detail = dict(extra_detail or {})
+        detail["path"] = path
         db.add(
             AuditEvent(
                 actor_id=actor_id,
@@ -106,7 +109,7 @@ def _persist_audit_event(
                 resource_type=resource_type,
                 resource_id=resource_id,
                 status_code=status_code,
-                detail={"path": path},
+                detail=detail,
             )
         )
         db.commit()
@@ -151,6 +154,7 @@ async def record_audit_event(request: Request, call_next):
                 resource_id=resource_id,
                 status_code=response.status_code,
                 path=path,
+                extra_detail=getattr(request.state, "audit_detail", None),
             )
         except Exception:
             # Audit storage must not replace the original API response. Operators

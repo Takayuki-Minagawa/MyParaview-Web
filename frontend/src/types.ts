@@ -38,6 +38,7 @@ export interface Dataset {
   timesteps?: number[] | null;
   arrays?: ArrayInfo[] | null;
   extra?: Record<string, unknown> | null;
+  tags?: string[];
   created_at: string;
 }
 

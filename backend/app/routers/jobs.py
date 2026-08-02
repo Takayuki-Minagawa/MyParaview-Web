@@ -15,7 +15,7 @@ from ..access import authorized_job, require_project, tag_audit
 from ..auth import Principal, get_principal
 from ..config import settings
 from ..db import SessionLocal, get_db
-from ..jobs import manager
+from ..jobs import JobQueueUnavailable, manager
 from ..models import Dataset, Job
 from ..project_locks import locked_project
 from ..schemas import JobCreate, JobOut
@@ -98,7 +98,10 @@ def create_job(
         db.add(job)
         db.flush()
     tag_audit(request, "job", job.id, payload.project_id)
-    manager.submit(job.id, _job_body_for(payload.kind, dataset.id, payload.params))
+    try:
+        manager.submit(job.id, _job_body_for(payload.kind, dataset.id, payload.params))
+    except JobQueueUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
     return job
 
 
@@ -206,8 +209,6 @@ def cancel_job(
         if job.status in ("succeeded", "failed", "canceled"):
             raise HTTPException(409, f"job already {job.status}")
         cancelled = manager.cancel(job_id, db=db)
-        # The manager remains in-process; a job owned by another worker cannot
-        # be canceled here, but the database mutation is still serialized.
         if not cancelled and job.status not in ("succeeded", "failed", "canceled"):
-            raise HTTPException(409, "job is not cancellable on this instance")
+            raise HTTPException(409, "job is not cancellable")
         return job

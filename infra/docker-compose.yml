@@ -29,12 +29,33 @@ x-api-environment: &api-environment
   PVWEB_PVPYTHON: ${PVWEB_PVPYTHON:-}
   PVWEB_FFMPEG: ${PVWEB_FFMPEG:-}
   PVWEB_WORKER_TIMEOUT: ${PVWEB_WORKER_TIMEOUT:-900}
+  PVWEB_JOB_QUEUE_BACKEND: ${PVWEB_JOB_QUEUE_BACKEND:-rq}
+  PVWEB_REDIS_URL: ${PVWEB_REDIS_URL:-redis://redis:6379/0}
+  PVWEB_JOB_QUEUE_NAME: ${PVWEB_JOB_QUEUE_NAME:-pvweb}
+  PVWEB_JOB_QUEUE_TIMEOUT: ${PVWEB_JOB_QUEUE_TIMEOUT:-3600}
+  PVWEB_JOB_QUEUE_RESULT_TTL: ${PVWEB_JOB_QUEUE_RESULT_TTL:-86400}
+  PVWEB_JOB_QUEUE_FAILURE_TTL: ${PVWEB_JOB_QUEUE_FAILURE_TTL:-604800}
+  PVWEB_JOB_QUEUE_MAX_RETRIES: ${PVWEB_JOB_QUEUE_MAX_RETRIES:-3}
+  PVWEB_JOB_QUEUE_RETRY_INTERVAL: ${PVWEB_JOB_QUEUE_RETRY_INTERVAL:-10}
   PVWEB_SESSION_TTL: ${PVWEB_SESSION_TTL:-3600}
   PVWEB_TRAME_BROKER_URL: ${PVWEB_TRAME_BROKER_URL:-}
   PVWEB_TRAME_BROKER_TOKEN: ${PVWEB_TRAME_BROKER_TOKEN:-}
   PVWEB_TRAME_ALLOWED_WS_HOSTS: ${PVWEB_TRAME_ALLOWED_WS_HOSTS:-}
 
 services:
+  redis:
+    profiles: ["full-stack"]
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -105,6 +126,8 @@ services:
         condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -115,6 +138,24 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
+    restart: unless-stopped
+
+  job-worker:
+    profiles: ["full-stack"]
+    image: pvweb-api:${PVWEB_IMAGE_TAG:-local}
+    build: *api-build
+    command: ["python", "-m", "app.rq_worker"]
+    environment: *api-environment
+    volumes:
+      - api-cache:/var/lib/pvweb
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    stop_grace_period: 30s
     restart: unless-stopped
 
   web:
@@ -146,4 +187,5 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  redis-data:
   api-cache:

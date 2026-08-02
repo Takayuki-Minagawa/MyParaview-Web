@@ -21,7 +21,7 @@ from ..bundles import bundle_reference_path as _bundle_reference_path
 from ..bundles import safe_relative_path as _safe_relative_path
 from ..config import settings
 from ..db import get_db
-from ..jobs import manager
+from ..jobs import JobQueueUnavailable, manager
 from ..models import Dataset, DatasetFile, Job
 from ..project_locks import locked_project
 from ..responses import serve_object
@@ -566,7 +566,10 @@ def ingest_dataset(
         job = Job(project_id=project_id, kind="ingest", status="queued", target_id=dataset_id)
         db.add(job)
         db.flush()
-    manager.submit(job.id, run_ingest(dataset_id))
+    try:
+        manager.submit(job.id, run_ingest(dataset_id))
+    except JobQueueUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
     return job
 
 

@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from .access import artifact_project_id
 from .config import settings
 from .db import SessionLocal, init_db
-from .jobs import recover_interrupted_jobs
+from .jobs import JobQueueUnavailable, manager, recover_interrupted_jobs
 from .models import Artifact, AuditEvent, Dataset, Job, Pipeline, RenderSession
 from .routers import artifacts, assist, datasets, jobs, pipelines, projects, sessions
 from .worker import ffmpeg_available
@@ -29,9 +29,19 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    recovered = recover_interrupted_jobs()
-    if recovered:
-        logger.warning("marked %d interrupted in-process jobs as failed", recovered)
+    if settings.job_queue_backend == "rq":
+        try:
+            reconciled = manager.reconcile_queued_jobs()
+        except JobQueueUnavailable:
+            logger.exception("could not reconcile queued DB jobs with RQ")
+        else:
+            if reconciled:
+                logger.info("re-enqueued %d persisted jobs after API restart", reconciled)
+    else:
+        recovered = recover_interrupted_jobs()
+        if recovered:
+            logger.warning("marked %d interrupted in-process jobs as failed", recovered)
+    logger.info("job queue backend=%s", settings.job_queue_backend)
     yield
 
 
@@ -182,6 +192,7 @@ def capabilities() -> dict:
         ),
         "paraview_worker": bool(settings.worker_command),
         "video_export": bool(settings.worker_command) and ffmpeg_available(),
+        "job_queue": settings.job_queue_backend,
         "trame_sessions": bool(settings.trame_broker_url),
     }
 

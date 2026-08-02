@@ -283,5 +283,6 @@ export interface ServerCapabilities {
   oidc: boolean;
   paraview_worker: boolean;
   video_export: boolean;
+  job_queue: "local" | "rq";
   trame_sessions: boolean;
 }

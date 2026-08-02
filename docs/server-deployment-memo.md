@@ -66,6 +66,7 @@ web / nginx (HTTP, React配信, /api proxy)
    +--> api (FastAPI)
            +--> postgres
            +--> minio または外部S3
+           +--> redis --> job-worker (RQ)
            +--> pvpython worker（任意）
            +--> trame broker（任意）
 ```
@@ -79,11 +80,15 @@ web / nginx (HTTP, React配信, /api proxy)
 | `migration` | API起動前にAlembicを1回実行 | 不要 |
 | `postgres` | project、metadata、job、権限など | 必須volume |
 | `minio` | upload、export、artifact本体 | 必須volume |
+| `redis` | 永続job queue（AOF） | 必須volume |
+| `job-worker` | DB jobを取得して実行するRQ worker | 不要 |
 | `worker` | ParaView変換・filter | 任意 |
 | `trame-broker` | remote rendering session | 任意 |
 
-単一サーバーの初期構成は `web / api / postgres / minio / minio-init / migration` です。
-workerとtrameは、実体を含む派生imageまたは別serviceとリソース制限を用意した段階で追加します。
+単一サーバーの初期構成は
+`web / api / job-worker / redis / postgres / minio / minio-init / migration` です。
+ParaView workerとtrameは、実体を含む派生imageまたは別serviceとリソース制限を
+用意した段階で追加します。
 
 ## リポジトリ側で整備済みのもの
 
@@ -94,7 +99,8 @@ workerとtrameは、実体を含む派生imageまたは別serviceとリソース
 - `infra/docker-compose.yml` の `full-stack` profile
 - `.env.production.example`（秘密値を含めない雛形）
 - migration専用のone-shot service
-- API、web、PostgreSQL、MinIOのhealthcheck
+- Redis AOF volumeと独立RQ worker
+- API、web、PostgreSQL、Redis、MinIOのhealthcheck
 
 今後の運用作業は、HTTPSを終端する外部proxy/load balancer、container imageのregistry公開、
 PostgreSQLとobject storageのbackup/restore自動化です。サーバー固有の値はDockerfileを
@@ -196,7 +202,12 @@ ParaView/ffmpegを含む派生imageまたはread-only mountを構成し、contai
 
 - PostgreSQL: project、user、権限、dataset metadata、pipeline、job、artifact record
 - MinIO/S3: uploadしたdataset、bundle member、export、screenshot、変換結果
+- Redis: queued RQ message。DBのjob recordと同じ復旧点でbackupする
 - API cache: 再生成できるためbackup対象外
+
+APIとjob-workerは起動時にDBの`queued` jobをRedisへ再投入します。RQ job idはDB job idから
+一意に決まり、複数replicaが同時起動してもRedis側のatomic unique enqueueで重複を防ぎます。
+実行中にworkerが失われたjobはRQ retry後に同じDB recordから再構築されます。
 
 `docker compose down` は通常volumeを残しますが、`docker compose down -v` は永続volumeを削除するため、
 本番では実行しません。DB recordとobjectを対応させる必要があるため、PostgreSQLとMinIO/S3は同じ
@@ -212,7 +223,8 @@ ParaView/ffmpegを含む派生imageまたはread-only mountを構成し、contai
 - reverse proxyでrequest body上限とtimeoutをupload要件に合わせる。
 - containerをnon-rootで実行し、不要なhost directory mountを避ける。
 - dependencyとbase imageを定期更新し、CI成功後のimageだけを配置する。
-- worker/trameにはCPU、memory、実行時間、同時実行数の上限を設ける。
+- job-worker/ParaView worker/trameにはCPU、memory、実行時間、同時実行数の上限を設ける。
+- Redisを外部公開せず、AOF永続化、memory監視、DB/object storeと整合した復旧試験を行う。
 
 ## 配置前チェックリスト
 
@@ -223,6 +235,8 @@ ParaView/ffmpegを含む派生imageまたはread-only mountを構成し、contai
 - [ ] 本番secretがGit管理外である
 - [x] migration serviceの成功後にAPIが起動する
 - [x] PostgreSQLとobject storageに永続volumeがある
+- [x] Redis/RQ workerがAPIから分離され、Redisに永続volumeがある
+- [ ] API再起動中もRQ jobが完了することを本番相当環境で検証した
 - [ ] DB/object backupとrestoreを検証した
 - [ ] OIDC loginとrole付与を検証した
 - [ ] upload/download/deleteを本番相当環境で検証した

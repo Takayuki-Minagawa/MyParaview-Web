@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ..access import authorized_dataset, tag_audit
 from ..auth import Principal, get_principal, require_project_role
 from ..db import get_db
-from ..jobs import manager
+from ..jobs import JobQueueUnavailable, manager
 from ..models import AssistProposal, Dataset, Job
 from ..project_locks import locked_project
 from ..schemas import (
@@ -267,7 +267,10 @@ def apply_proposal(
         current.applied_job_id = job.id
         db.add(current)
     tag_audit(request, "job", job.id, project_id)
-    manager.submit(job.id, run_dataset_operation(record.dataset_id, "filter", params))
+    try:
+        manager.submit(job.id, run_dataset_operation(record.dataset_id, "filter", params))
+    except JobQueueUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
     return job
 
 

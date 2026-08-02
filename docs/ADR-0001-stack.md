@@ -28,10 +28,12 @@ environment without VTK/ParaView/GPU installed.
    mirrors an S3-style key/stream API so a boto3/MinIO backend can replace it
    without touching routers or jobs.
 
-4. **Jobs: in-process thread pool with cooperative cancellation.** Satisfies the
-   work plan's "all jobs must be cancellable" requirement (8.2) without standing
-   up Celery/Redis for the MVP. The submit/cancel/status-via-DB surface matches
-   a distributed queue.
+4. **Jobs: durable DB contract with local and RQ executors.** The original
+   in-process thread pool remains the zero-service default for development.
+   Production can select Redis Queue (RQ): the API enqueues only a persisted
+   job id and an independent worker reconstructs the validated operation from
+   the database. Both backends use the same status/progress/result contract and
+   cooperative cancellation; only local active jobs are failed on API restart.
 
 5. **Frontend: React 19 + Vite + TypeScript + vtk.js.** The productisation
    front end from the work plan. Browser rendering is scoped to `PolyData`
@@ -42,6 +44,7 @@ environment without VTK/ParaView/GPU installed.
 
 - The MVP runs with only Python and Node — no GPU, VTK, or ParaView — which
   makes it CI-friendly and easy to evaluate.
-- The original local defaults remain available. PostgreSQL/S3/OIDC, external
-  ParaView processing, and trame session contracts were subsequently added as
-  optional capabilities in [ADR-0002](./ADR-0002-production-capabilities.md).
+- The original local defaults remain available. PostgreSQL/S3/OIDC, RQ,
+  external ParaView processing, and trame session contracts were subsequently
+  added as optional capabilities in
+  [ADR-0002](./ADR-0002-production-capabilities.md).

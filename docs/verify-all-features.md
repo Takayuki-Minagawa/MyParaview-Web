@@ -133,6 +133,22 @@ docker compose -f infra/docker-compose.yml --profile full-stack down
 9. 長い動画jobをcancelし、短い`PVWEB_WORKER_TIMEOUT`でも再実行する。jobがそれぞれ
    `canceled` / `failed`となり、pvpythonとそのffmpeg子processが残らないことを確認する。
 
+## G12 external job queue restart/cancel test
+
+1. `docker compose -f infra/docker-compose.yml --profile full-stack up -d` で
+   `redis`、`job-worker`、`api`が起動し、`GET /capabilities`の`job_queue`が`rq`になることを
+   確認する。
+2. 大きなdatasetのingestまたは長時間filter jobを作成し、statusが`queued`または`running`の間に
+   `docker compose -f infra/docker-compose.yml restart api`を実行する。API復帰後もjobが
+   `failed`へ強制遷移せず、同じjob idで`running`からterminal stateへ進むことを確認する。
+3. job実行中に`POST /jobs/{job_id}/cancel`を送り、APIとは別processのworkerがDB上の
+   cancel状態を検出すること、jobが`canceled`になり、途中Artifact/objectが残らないことを確認する。
+4. `job-worker`を停止した状態でjobを作成するとRedisにqueuedのまま残り、worker再起動後に
+   実行されることを確認する。Redisも停止した場合はjob作成APIが503となり、DB jobが
+   `failed`（偽のqueued/succeededではない）になることを確認する。
+5. local fallbackは`PVWEB_JOB_QUEUE_BACKEND=local`で起動し、API再起動前のactive jobが従来通り
+   `failed`と`retry required`ログへ遷移することを確認する。
+
 ## Security boundary test
 
 - PVD: missing/escaping/non-finite/repeated timestep、不正part、standalone sibling分離を検証。

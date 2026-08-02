@@ -48,6 +48,35 @@ class Settings:
         # isolated pvpython process.
         self.ffmpeg_executable = os.environ.get("PVWEB_FFMPEG", "").strip()
         self.worker_timeout_seconds = int(os.environ.get("PVWEB_WORKER_TIMEOUT", "900"))
+        self.job_queue_backend = os.environ.get("PVWEB_JOB_QUEUE_BACKEND", "local").strip().lower()
+        if self.job_queue_backend not in {"local", "rq"}:
+            raise ValueError("PVWEB_JOB_QUEUE_BACKEND must be 'local' or 'rq'")
+        self.redis_url = os.environ.get("PVWEB_REDIS_URL", "redis://127.0.0.1:6379/0").strip()
+        self.job_queue_name = os.environ.get("PVWEB_JOB_QUEUE_NAME", "pvweb").strip()
+        if not self.job_queue_name:
+            raise ValueError("PVWEB_JOB_QUEUE_NAME must not be empty")
+        self.job_queue_timeout_seconds = int(os.environ.get("PVWEB_JOB_QUEUE_TIMEOUT", "3600"))
+        self.job_queue_result_ttl_seconds = int(
+            os.environ.get("PVWEB_JOB_QUEUE_RESULT_TTL", "86400")
+        )
+        self.job_queue_failure_ttl_seconds = int(
+            os.environ.get("PVWEB_JOB_QUEUE_FAILURE_TTL", "604800")
+        )
+        self.job_queue_max_retries = int(os.environ.get("PVWEB_JOB_QUEUE_MAX_RETRIES", "3"))
+        self.job_queue_retry_interval_seconds = int(
+            os.environ.get("PVWEB_JOB_QUEUE_RETRY_INTERVAL", "10")
+        )
+        if (
+            min(
+                self.job_queue_timeout_seconds,
+                self.job_queue_result_ttl_seconds,
+                self.job_queue_failure_ttl_seconds,
+                self.job_queue_max_retries,
+                self.job_queue_retry_interval_seconds,
+            )
+            <= 0
+        ):
+            raise ValueError("job queue timeout, TTL, and retry values must be positive")
         self.trame_broker_url = os.environ.get("PVWEB_TRAME_BROKER_URL") or None
         self.trame_broker_token = os.environ.get("PVWEB_TRAME_BROKER_TOKEN") or None
         configured_ws_hosts = os.environ.get("PVWEB_TRAME_ALLOWED_WS_HOSTS", "")

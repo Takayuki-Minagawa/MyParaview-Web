@@ -37,7 +37,7 @@ describe("parseViewState", () => {
   });
 
   it("restores a custom colormap while its imported preset is registered", () => {
-    const id = "custom:test:view-state" as const;
+    const id = "custom:test:viewstate" as const;
     registerCustomColorMap(id, "Test", [
       { position: 0, rgb: [0, 0, 0] },
       { position: 1, rgb: [1, 1, 1] },

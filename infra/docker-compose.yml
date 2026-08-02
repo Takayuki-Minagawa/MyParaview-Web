@@ -3,6 +3,8 @@ x-api-build: &api-build
   dockerfile: backend/Dockerfile
 
 x-api-environment: &api-environment
+  # Only the dedicated Compose network may supply trusted proxy headers.
+  FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.30.0.0/24}
   PVWEB_DATA_ROOT: /var/lib/pvweb
   PVWEB_ROOT_PATH: ${PVWEB_ROOT_PATH:-/api}
   PVWEB_DATABASE_URL: ${PVWEB_DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-pvweb}:${POSTGRES_PASSWORD:-pvweb-dev}@postgres:5432/${POSTGRES_DB:-pvweb}}
@@ -198,3 +200,9 @@ volumes:
   postgres-data:
   minio-data:
   redis-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${PVWEB_COMPOSE_SUBNET:-172.30.0.0/24}

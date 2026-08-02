@@ -27,6 +27,12 @@ export default defineConfig(({ command }) => ({
       exclude: ["src/**/*.d.ts"],
       reporter: ["text", "html", "json-summary", "lcov"],
       reportsDirectory: "coverage",
+      thresholds: {
+        lines: 51,
+        branches: 45,
+        functions: 48,
+        statements: 49,
+      },
     },
     // Component tests (.test.tsx) need a DOM; lib tests stay on the fast node env.
     projects: [

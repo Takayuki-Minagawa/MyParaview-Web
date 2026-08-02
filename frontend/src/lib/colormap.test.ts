@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { colorMapCssGradient, colorMapStops, sampleColorMap } from "./colormap";
+import {
+  MAX_REGISTERED_CUSTOM_COLOR_MAPS,
+  colorMapCssGradient,
+  colorMapStops,
+  hasColorMap,
+  registerCustomColorMap,
+  registeredCustomColorMaps,
+  sampleColorMap,
+} from "./colormap";
 
 describe("sampleColorMap", () => {
   it("is blue-ish at the low end of cool-to-warm", () => {
@@ -47,5 +55,35 @@ describe("registered colormaps", () => {
     const gradient = colorMapCssGradient("cool-to-warm");
     expect(gradient).toContain("linear-gradient");
     expect(gradient).toContain("50%");
+  });
+});
+
+describe("custom colormap registry", () => {
+  const stops = [
+    { position: 0, rgb: [0, 0, 0] as [number, number, number] },
+    { position: 1, rgb: [1, 1, 1] as [number, number, number] },
+  ];
+
+  it("rejects malformed ids at the public mutation boundary", () => {
+    expect(() => registerCustomColorMap(
+      "__proto__" as never,
+      "unsafe",
+      stops,
+    )).toThrow(/invalid format/);
+    expect(hasColorMap("__proto__")).toBe(false);
+  });
+
+  it("bounds the session registry and evicts the oldest entry", () => {
+    const first = "custom:coverage-0:a" as const;
+    for (let index = 0; index <= MAX_REGISTERED_CUSTOM_COLOR_MAPS; index += 1) {
+      registerCustomColorMap(
+        `custom:coverage-${index}:a` as never,
+        `Coverage ${index}`,
+        stops,
+      );
+    }
+    expect(registeredCustomColorMaps()).toHaveLength(MAX_REGISTERED_CUSTOM_COLOR_MAPS);
+    expect(hasColorMap(first)).toBe(false);
+    expect(hasColorMap(`custom:coverage-${MAX_REGISTERED_CUSTOM_COLOR_MAPS}:a`)).toBe(true);
   });
 });

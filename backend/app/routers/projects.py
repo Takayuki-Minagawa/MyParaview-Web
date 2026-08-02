@@ -117,7 +117,12 @@ def delete_project(
     # The project and its local session records are already deleted. Keep
     # broker cleanup best-effort so its outage cannot misreport the committed
     # delete. Object cleanup is durable in the transaction-backed outbox.
-    drain_object_deletions(object_keys=set(object_keys))
+    # The request already enumerated every matching key. Drain them in one
+    # pass instead of leaving all but the configured periodic batch behind.
+    drain_object_deletions(
+        object_keys=set(object_keys),
+        batch_size=max(len(object_keys), 1),
+    )
     for remote_session_id in remote_session_ids:
         try_delete_remote(remote_session_id)
 

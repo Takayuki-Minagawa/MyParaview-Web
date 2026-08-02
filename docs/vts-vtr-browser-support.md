@@ -14,10 +14,12 @@ ParaView worker への変換ジョブなしで vtk.js の `PolyData` として�
 - 複数 `Piece`（各 Piece の外表面を結合）
 - point/cell DataArray（cell値は抽出した外表面要素へ引き継ぐ）
 - 3次元格子は外表面quad、2次元格子はquad、1次元格子はline、単一点はvertexとして表示
+- 1 documentあたり合計200万source point以下（超過時は配列確保前にserver VTP conversionへ誘導）
 
 ブラウザ側パーサが扱わない big-endian、base64 AppendedData、未知の compressor/header、
-不正な extent/tuple数は成功扱いにしない。ビューアに理由と server VTP conversion の案内を
-表示し、従来のサーバ側 **Convert to VTP** 操作をフォールバックとして残す。
+不正な extent/tuple数や上限超過は成功扱いにしない。3次元のtopology生成は内部cellを走査せず
+6境界面だけを走査する。ビューアに理由と server VTP conversion の案内を表示し、従来の
+サーバ側 **Convert to VTP** 操作をフォールバックとして残す。
 
 ## 自動検証
 
@@ -40,5 +42,5 @@ npm run build
 2. Network panel で dataset source の GET 以外に convert job が発行されないことを確認する。
 3. 外表面、point/cell scalar着色、surface/wireframe/points、clip/probe/計測を確認する。
 4. **Export current geometry** で、ブラウザ抽出面を VTP として保存できることを確認する。
-5. big-endian 等の非対応fixtureでは描画エラーと server VTP conversion の案内が表示され、
+5. big-endian、200万point超過等の非対応fixtureでは描画エラーと server VTP conversion の案内が表示され、
    ParaView worker 設定時には従来の **Convert to VTP** が利用できることを確認する。

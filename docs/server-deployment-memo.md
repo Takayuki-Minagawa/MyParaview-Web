@@ -148,6 +148,11 @@ nginxは外部の`/api`をAPI container内の`/`へstripするため、Compose�
 `X-Forwarded-Prefix`を揃えて変更します。`proxy_pass`末尾の`/`によるprefix stripは維持し、
 web imageを再buildします。
 
+API imageは既定ではloopbackからのproxy headerだけを信頼します。Composeは専用networkの
+`PVWEB_COMPOSE_SUBNET`だけを`FORWARDED_ALLOW_IPS`へ渡します。サブネット競合を避けて値を
+変更する場合は、両変数を同じCIDRに設定してください。API portを直接公開する構成で
+`FORWARDED_ALLOW_IPS=*`を指定しないでください。
+
 ```bash
 PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 \
 PVWEB_WEB_BIND_ADDRESS=127.0.0.1 POSTGRES_BIND_ADDRESS=127.0.0.1 \

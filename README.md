@@ -239,10 +239,14 @@ CIと同じカバレッジレポートは次のコマンドで生成できます
 ```bash
 cd backend
 mkdir -p coverage
-.venv/bin/pytest --cov=app --cov=../workers --cov-branch --cov-report=term-missing --cov-report=xml:coverage/coverage.xml --cov-report=html:coverage/html
+.venv/bin/pytest --cov=app --cov=../workers --cov-branch --cov-fail-under=80 --cov-report=term-missing --cov-report=xml:coverage/coverage.xml --cov-report=html:coverage/html
 cd ../frontend
 npm run test:coverage
 ```
+
+CIはサポート下限のPython 3.11と、backend imageが配布するPython 3.13の両方でbackend
+testを実行します。frontend coverageにもlines 51%、branches 45%、functions 48%、
+statements 49%の退行防止下限を設定しています。
 
 GitHub DependabotはPython・npm・GitHub Actions・Docker Composeの依存関係を週次で確認します。
 脆弱性に基づく更新PRも受け取るには、リポジトリ側のDependabot alertsとsecurity updatesを

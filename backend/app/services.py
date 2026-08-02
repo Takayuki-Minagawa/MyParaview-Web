@@ -496,19 +496,20 @@ def _validate_existing_artifact(
     dataset_id: Optional[str],
     kind: str,
     filename: str,
-    object_key: str,
+    object_key: str | None,
     content_type: str,
 ) -> None:
     """Fail closed if a job id is already attached to another output contract."""
-    expected = (dataset_id, kind, filename, object_key, content_type)
+    expected = (dataset_id, kind, filename, content_type)
     actual = (
         artifact.dataset_id,
         artifact.kind,
         artifact.filename,
-        artifact.object_key,
         artifact.content_type,
     )
-    if actual != expected:
+    if actual != expected or (
+        object_key is not None and artifact.object_key != object_key
+    ):
         raise RuntimeError(
             f"existing artifact for job {artifact.job_id} does not match its output contract"
         )
@@ -560,7 +561,10 @@ def _recover_job_artifact(
             dataset_id=dataset_id,
             kind=spec.kind,
             filename=spec.filename,
-            object_key=artifact.object_key,
+            # A retry may recover a legacy UUID-keyed row. Validate the
+            # semantic contract here and intentionally retain that row's key;
+            # persist_job_artifact performs strict key matching after output.
+            object_key=None,
             content_type=spec.content_type,
         )
         staged = job.result

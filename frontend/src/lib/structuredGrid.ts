@@ -16,6 +16,10 @@ import {
 
 export type StructuredGridType = "StructuredGrid" | "RectilinearGrid";
 
+/** Bound browser-native parsing before coordinate/attribute arrays allocate.
+ * Larger datasets retain the documented server-side VTP conversion path. */
+export const MAX_STRUCTURED_SOURCE_POINTS = 2_000_000;
+
 export interface StructuredSurfaceArray {
   name: string;
   numberOfComponents: number;
@@ -210,43 +214,43 @@ function buildPieceTopology(dimensions: Dimensions) {
       }
     }
   } else {
+    const emit = (points: GridIndex[], source: GridIndex) => {
+      polys.push(4, ...points.map(pointId));
+      polySources.push(sourceCellId(source));
+    };
+    // Visit the six boundary planes directly. Runtime and generated topology
+    // are proportional to the rendered surface, not the full cell volume.
     for (let k = 0; k < dimensions[2] - 1; k += 1) {
       for (let j = 0; j < dimensions[1] - 1; j += 1) {
-        for (let i = 0; i < dimensions[0] - 1; i += 1) {
-          const c000: GridIndex = [i, j, k];
-          const c100: GridIndex = [i + 1, j, k];
-          const c010: GridIndex = [i, j + 1, k];
-          const c110: GridIndex = [i + 1, j + 1, k];
-          const c001: GridIndex = [i, j, k + 1];
-          const c101: GridIndex = [i + 1, j, k + 1];
-          const c011: GridIndex = [i, j + 1, k + 1];
-          const c111: GridIndex = [i + 1, j + 1, k + 1];
-          const source = sourceCellId(c000);
-          if (i === 0) {
-            polys.push(4, pointId(c000), pointId(c001), pointId(c011), pointId(c010));
-            polySources.push(source);
-          }
-          if (i === dimensions[0] - 2) {
-            polys.push(4, pointId(c100), pointId(c110), pointId(c111), pointId(c101));
-            polySources.push(source);
-          }
-          if (j === 0) {
-            polys.push(4, pointId(c000), pointId(c100), pointId(c101), pointId(c001));
-            polySources.push(source);
-          }
-          if (j === dimensions[1] - 2) {
-            polys.push(4, pointId(c010), pointId(c011), pointId(c111), pointId(c110));
-            polySources.push(source);
-          }
-          if (k === 0) {
-            polys.push(4, pointId(c000), pointId(c010), pointId(c110), pointId(c100));
-            polySources.push(source);
-          }
-          if (k === dimensions[2] - 2) {
-            polys.push(4, pointId(c001), pointId(c101), pointId(c111), pointId(c011));
-            polySources.push(source);
-          }
-        }
+        const low: GridIndex = [0, j, k];
+        const high: GridIndex = [dimensions[0] - 2, j, k];
+        emit([low, [0, j, k + 1], [0, j + 1, k + 1], [0, j + 1, k]], low);
+        emit([
+          [high[0] + 1, j, k], [high[0] + 1, j + 1, k],
+          [high[0] + 1, j + 1, k + 1], [high[0] + 1, j, k + 1],
+        ], high);
+      }
+    }
+    for (let k = 0; k < dimensions[2] - 1; k += 1) {
+      for (let i = 0; i < dimensions[0] - 1; i += 1) {
+        const low: GridIndex = [i, 0, k];
+        const high: GridIndex = [i, dimensions[1] - 2, k];
+        emit([low, [i + 1, 0, k], [i + 1, 0, k + 1], [i, 0, k + 1]], low);
+        emit([
+          [i, high[1] + 1, k], [i, high[1] + 1, k + 1],
+          [i + 1, high[1] + 1, k + 1], [i + 1, high[1] + 1, k],
+        ], high);
+      }
+    }
+    for (let j = 0; j < dimensions[1] - 1; j += 1) {
+      for (let i = 0; i < dimensions[0] - 1; i += 1) {
+        const low: GridIndex = [i, j, 0];
+        const high: GridIndex = [i, j, dimensions[2] - 2];
+        emit([low, [i, j + 1, 0], [i + 1, j + 1, 0], [i + 1, j, 0]], low);
+        emit([
+          [i, j, high[2] + 1], [i + 1, j, high[2] + 1],
+          [i + 1, j + 1, high[2] + 1], [i, j + 1, high[2] + 1],
+        ], high);
       }
     }
   }
@@ -375,6 +379,15 @@ export async function parseStructuredSurface(buffer: ArrayBuffer): Promise<Struc
     const sourceType = context.fileType as StructuredGridType;
     const pieces = Array.from(document.querySelectorAll(`${sourceType} > Piece`));
     if (pieces.length === 0) throw new Error(`${sourceType} has no Piece elements`);
+    const sourcePoints = pieces.reduce(
+      (sum, piece) => sum + pointCount(parseExtent(piece).dimensions),
+      0,
+    );
+    if (!Number.isSafeInteger(sourcePoints) || sourcePoints > MAX_STRUCTURED_SOURCE_POINTS) {
+      throw new Error(
+        `${sourceType} has ${sourcePoints} source points; browser limit is ${MAX_STRUCTURED_SOURCE_POINTS}`,
+      );
+    }
     return combinePieces(
       sourceType,
       await Promise.all(pieces.map((piece) => parsePiece(piece, sourceType, context))),

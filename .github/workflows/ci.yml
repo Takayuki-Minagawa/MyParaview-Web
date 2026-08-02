@@ -28,11 +28,17 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the supported language floor; 3.13 is the interpreter
+        # shipped by backend/Dockerfile.
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: backend/requirements-dev.txt
       - run: pip install -r backend/requirements-dev.txt
@@ -43,6 +49,7 @@ jobs:
           --cov=app
           --cov=../workers
           --cov-branch
+          --cov-fail-under=80
           --cov-report=term-missing
           --cov-report=xml:coverage/coverage.xml
           --cov-report=html:coverage/html
@@ -55,7 +62,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: backend-coverage
+          name: backend-coverage-py${{ matrix.python-version }}
           path: backend/coverage/
           if-no-files-found: ignore
           retention-days: 14

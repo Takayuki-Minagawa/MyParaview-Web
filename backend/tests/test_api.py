@@ -26,7 +26,7 @@ def test_project_crud(client):
     assert client.get("/projects/nope").status_code == 404
 
 
-def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data_dir):
+def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data_dir, monkeypatch):
     from sqlalchemy import or_, select
 
     from app.db import SessionLocal
@@ -68,7 +68,18 @@ def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data
             )
         )
     assert keys and all(store.exists(key) for key in keys)
+    from app.routers import projects as projects_router
+
+    real_drain = projects_router.drain_object_deletions
+    batch_sizes: list[int | None] = []
+
+    def recording_drain(**kwargs):
+        batch_sizes.append(kwargs.get("batch_size"))
+        return real_drain(**kwargs)
+
+    monkeypatch.setattr(projects_router, "drain_object_deletions", recording_drain)
     assert client.delete(f"/projects/{project_id}").status_code == 204
+    assert batch_sizes == [len(keys)]
     assert all(not store.exists(key) for key in keys)
 
 

@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseStructuredSurface } from "./structuredGrid";
+import { MAX_STRUCTURED_SOURCE_POINTS, parseStructuredSurface } from "./structuredGrid";
 
 const encoder = new TextEncoder();
 
@@ -114,5 +114,15 @@ describe("parseStructuredSurface", () => {
   <StructuredGrid><Piece Extent="0 0 0 0 0 0"/></StructuredGrid>
 </VTKFile>`;
     await expect(parseStructuredSurface(bufferOf(xml))).rejects.toThrow(/server VTP conversion/);
+  });
+
+  it("rejects oversized grids before allocating point arrays", async () => {
+    const xml = `<?xml version="1.0"?>
+<VTKFile type="StructuredGrid" byte_order="LittleEndian">
+  <StructuredGrid><Piece Extent="0 ${MAX_STRUCTURED_SOURCE_POINTS} 0 0 0 0"/></StructuredGrid>
+</VTKFile>`;
+    await expect(parseStructuredSurface(bufferOf(xml))).rejects.toThrow(
+      /browser limit.*server VTP conversion/,
+    );
   });
 });

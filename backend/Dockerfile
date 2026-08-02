@@ -37,4 +37,6 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=6 \
 
 STOPSIGNAL SIGTERM
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+# Uvicorn defaults FORWARDED_ALLOW_IPS to 127.0.0.1. Deployments behind a
+# reverse proxy must opt into that proxy's exact address or subnet.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

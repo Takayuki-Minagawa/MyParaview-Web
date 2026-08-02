@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import time
+from functools import lru_cache
 from pathlib import Path
 
 from .config import settings
@@ -17,6 +18,18 @@ from .metadata import ArrayInfo, DatasetMetadata
 
 class WorkerUnavailable(RuntimeError):
     pass
+
+
+@lru_cache(maxsize=32)
+def _resolve_ffmpeg_executable(configured: str) -> str | None:
+    """Resolve one immutable operator setting once per API process."""
+    resolved = shutil.which(configured)
+    if resolved is None:
+        return None
+    path = Path(resolved).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return None
+    return str(path)
 
 
 def resolve_ffmpeg_executable() -> str:
@@ -29,17 +42,12 @@ def resolve_ffmpeg_executable() -> str:
     configured = settings.ffmpeg_executable
     if not configured:
         raise WorkerUnavailable("video export requires PVWEB_FFMPEG (ffmpeg capability)")
-    resolved = shutil.which(configured)
+    resolved = _resolve_ffmpeg_executable(configured)
     if resolved is None:
         raise WorkerUnavailable(
             f"PVWEB_FFMPEG executable was not found or is not executable: {configured}"
         )
-    path = Path(resolved).resolve()
-    if not path.is_file() or not os.access(path, os.X_OK):
-        raise WorkerUnavailable(
-            f"PVWEB_FFMPEG executable was not found or is not executable: {configured}"
-        )
-    return str(path)
+    return resolved
 
 
 def ffmpeg_available() -> bool:

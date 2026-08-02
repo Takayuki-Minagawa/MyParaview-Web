@@ -13,6 +13,7 @@ from app.config import settings
 from app.jobs import JobCancelled, JobContext
 from app.worker import (
     WorkerUnavailable,
+    _resolve_ffmpeg_executable,
     _run,
     resolve_ffmpeg_executable,
     run_movie_video,
@@ -77,6 +78,32 @@ def test_ffmpeg_must_be_configured_and_executable(tmp_path, monkeypatch):
     executable.chmod(0o700)
     monkeypatch.setattr(settings, "ffmpeg_executable", str(executable))
     assert resolve_ffmpeg_executable() == str(executable.resolve())
+
+
+def test_ffmpeg_resolution_is_cached_per_operator_setting(tmp_path, monkeypatch):
+    executable = tmp_path / "ffmpeg"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    calls = 0
+
+    def counted_which(configured):
+        nonlocal calls
+        calls += 1
+        return str(executable) if configured == "cached-ffmpeg" else None
+
+    _resolve_ffmpeg_executable.cache_clear()
+    monkeypatch.setattr(settings, "ffmpeg_executable", "cached-ffmpeg")
+    monkeypatch.setattr("app.worker.shutil.which", counted_which)
+    assert resolve_ffmpeg_executable() == str(executable.resolve())
+    assert resolve_ffmpeg_executable() == str(executable.resolve())
+    assert calls == 1
+
+    monkeypatch.setattr(settings, "ffmpeg_executable", "missing-cached-ffmpeg")
+    with pytest.raises(WorkerUnavailable):
+        resolve_ffmpeg_executable()
+    with pytest.raises(WorkerUnavailable):
+        resolve_ffmpeg_executable()
+    assert calls == 2
 
 
 def test_movie_video_passes_trusted_ffmpeg_path_through_worker_params(

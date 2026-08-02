@@ -10,6 +10,7 @@ export type RGB = [number, number, number];
 export type ColorStop = ColorMapStopDefinition;
 
 export const MAX_CUSTOM_COLOR_MAP_STOPS = 4096;
+export const MAX_REGISTERED_CUSTOM_COLOR_MAPS = 64;
 const CUSTOM_COLOR_MAP_ID = /^custom:[A-Za-z0-9_.!~*'()%-]+:[a-z0-9]{1,16}$/;
 
 const MAPS: Record<string, ColorStop[]> = {
@@ -165,11 +166,24 @@ export function registerCustomColorMap(
   label: string,
   stops: readonly ColorStop[],
 ): void {
+  if (id.length > 1024 || !CUSTOM_COLOR_MAP_ID.test(id)) {
+    throw new Error("A custom colormap id has an invalid format");
+  }
   const normalizedLabel = label.trim();
   if (!normalizedLabel || normalizedLabel.length > 200) {
     throw new Error("A custom colormap label must contain 1 to 200 characters");
   }
-  MAPS[id] = validatedStops(stops);
+  const validated = validatedStops(stops);
+  // Refresh existing entries in insertion order and bound memory for
+  // long-lived tabs that open many embedded ViewStates.
+  if (CUSTOM_LABELS.has(id)) CUSTOM_LABELS.delete(id);
+  while (CUSTOM_LABELS.size >= MAX_REGISTERED_CUSTOM_COLOR_MAPS) {
+    const oldest = CUSTOM_LABELS.keys().next().value;
+    if (oldest === undefined) break;
+    CUSTOM_LABELS.delete(oldest);
+    delete MAPS[oldest];
+  }
+  MAPS[id] = validated;
   CUSTOM_LABELS.set(id, normalizedLabel);
 }
 

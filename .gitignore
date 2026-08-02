@@ -5,11 +5,14 @@ __pycache__/
 .pytest_cache/
 backend/.pvweb-data/
 .pvweb-data/
+backend/coverage/
+.coverage
 
 # Node
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/coverage/
 *.log
 
 # OS / editor

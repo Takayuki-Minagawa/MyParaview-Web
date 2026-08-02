@@ -21,6 +21,13 @@ export default defineConfig(({ command }) => ({
     port: 5173,
   },
   test: {
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/**/*.d.ts"],
+      reporter: ["text", "html", "json-summary", "lcov"],
+      reportsDirectory: "coverage",
+    },
     // Component tests (.test.tsx) need a DOM; lib tests stay on the fast node env.
     projects: [
       {

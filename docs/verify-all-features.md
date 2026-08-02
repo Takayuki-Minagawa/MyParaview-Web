@@ -73,6 +73,51 @@ docker compose -f infra/docker-compose.yml --profile full-stack down
 9. assistantに「temperature の等値面」を入力し、提案だけではjobが増えないことを確認。
 10. ParaView worker未設定時、server filter buttonが無効であることを確認。
 
+## G10 server filter manual test（pvpython環境）
+
+1. `PVWEB_PVPYTHON=/path/to/pvpython` を設定してbackendを起動し、
+   `GET /capabilities` の `paraview_worker` が `true` であることを確認する。
+2. cell scalarを含むdatasetで **Cell Data to Point Data** を実行する。生成VTPを
+   datasetへ昇格・ingestし、元の全cell配列に対応するpoint配列が存在することを確認する。
+3. **Resample To Image** を `dimensions = [16, 24, 32]` で実行する。生成VTPを
+   datasetへ昇格・ingestし、表示できること、およびジョブログが成功で終わることを確認する。
+4. PolyDataで **Decimation** を `target_reduction = 0.5` で実行する。生成VTPを
+   datasetへ昇格・ingestし、元データよりcell数が減り、形状を表示できることを確認する。
+5. `PVWEB_PVPYTHON` を外してbackendを再起動する。UIの実行ボタンが無効になることに加え、
+   APIから `cell_to_point` filter jobを作成してもjobが `failed` となり、Artifactが作られず、
+   ログに `PVWEB_PVPYTHON` が必要と記録されることを確認する。
+
+## G13 animation/video export manual test（pvpython + ffmpeg環境）
+
+1. 実行可能な絶対パスを指定してbackendを起動する。
+
+   ```bash
+   PVWEB_PVPYTHON=/path/to/pvpython \
+   PVWEB_FFMPEG=/path/to/ffmpeg \
+   PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 \
+     .venv/bin/uvicorn app.main:app
+   ```
+
+2. `GET /capabilities` で `paraview_worker=true` と `video_export=true` を確認する。
+3. 複数timestepのPVD bundleを選び、**PNG frames (ZIP)** を実行する。Artifactの
+   content typeが`application/zip`、ファイル名が`*-movie.zip`で、ZIP内が
+   `frame-0000.png`から連番になっていることを確認する。format省略のAPI jobでも
+   同じZIPが生成されることを確認する。
+4. FPS=24、幅1280、高さ720で **MP4 (H.264)** を実行する。Artifactが
+   `*-movie.mp4` / `video/mp4`となり、`ffprobe`でcodec=`h264`、pix_fmt=`yuv420p`
+   を確認する。
+5. FPS=30で **WebM (VP9)** を実行する。Artifactが`*-movie.webm` / `video/webm`
+   となり、`ffprobe`でcodec=`vp9`、pix_fmt=`yuv420p`を確認する。
+6. APIで`format=gif`、`format=MP4`、`fps=0`、`fps=121`、小数FPS、16未満または
+   4096超の幅・高さを送り、すべて422になることを確認する。
+7. `PVWEB_FFMPEG`を外す、存在しないパスにする、実行権限のないファイルにする、の各状態で
+   `video_export=false`となり、MP4/WebM jobが`failed`、Artifactなし、ログに
+   `PVWEB_FFMPEG`が明記されることを確認する。この状態でもPNG ZIPは成功する。
+8. `PVWEB_PVPYTHON`を外した状態ではZIP/MP4/WebMのすべてが`failed`となり、ログに
+   `PVWEB_PVPYTHON`が明記されることを確認する。
+9. 長い動画jobをcancelし、短い`PVWEB_WORKER_TIMEOUT`でも再実行する。jobがそれぞれ
+   `canceled` / `failed`となり、pvpythonとそのffmpeg子processが残らないことを確認する。
+
 ## Security boundary test
 
 - PVD: missing/escaping/non-finite/repeated timestep、不正part、standalone sibling分離を検証。

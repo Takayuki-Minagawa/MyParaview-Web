@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -223,15 +223,82 @@ def _finite_number(params: dict[str, Any], name: str) -> float:
     return converted
 
 
+FilterName = Literal[
+    "slice",
+    "clip",
+    "contour",
+    "threshold",
+    "cell_to_point",
+    "resample",
+    "decimate",
+]
+JobKind = Literal["convert", "filter", "export", "render", "stats", "movie"]
+
+
+def _integer_value(value: Any, name: str) -> int:
+    """Return an integer value without silently truncating fractions."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, float) and (
+        not math.isfinite(value) or not value.is_integer()
+    ):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be an integer") from None
+
+
 def validate_filter_params(params: dict[str, Any]) -> dict[str, Any]:
-    """Validate slice/clip/contour/threshold parameters.
+    """Validate parameters for all supported ParaView server filters.
 
     Shared by ad-hoc filter jobs and stored pipeline execution so both paths
     enforce the same contract. Returns normalized params.
     """
     operation = str(params.get("filter", "")).lower()
-    if operation not in {"slice", "clip", "contour", "threshold"}:
-        raise ValueError("filter must be slice, clip, contour, or threshold")
+    if operation not in {
+        "slice",
+        "clip",
+        "contour",
+        "threshold",
+        "cell_to_point",
+        "resample",
+        "decimate",
+    }:
+        raise ValueError(
+            "filter must be slice, clip, contour, threshold, cell_to_point, "
+            "resample, or decimate"
+        )
+
+    if operation == "cell_to_point":
+        return {**params, "filter": operation}
+
+    if operation == "resample":
+        dimensions = params.get("dimensions")
+        if not isinstance(dimensions, list) or len(dimensions) != 3:
+            raise ValueError("dimensions must contain three integers")
+        normalized_dimensions = [
+            _integer_value(value, "dimensions values") for value in dimensions
+        ]
+        if any(value < 2 or value > 512 for value in normalized_dimensions):
+            raise ValueError("dimensions values must be between 2 and 512")
+        return {
+            **params,
+            "filter": operation,
+            "dimensions": normalized_dimensions,
+        }
+
+    if operation == "decimate":
+        target_reduction = _finite_number(params, "target_reduction")
+        if not 0 <= target_reduction < 1:
+            raise ValueError(
+                "target_reduction must be greater than or equal to 0 and less than 1"
+            )
+        return {
+            **params,
+            "filter": operation,
+            "target_reduction": target_reduction,
+        }
 
     if operation in {"slice", "clip"}:
         for name in ("origin", "normal"):
@@ -270,17 +337,7 @@ def validate_filter_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _integer_param(params: dict[str, Any], name: str, default: int) -> int:
     """Return an integer job parameter without silently truncating values."""
-    value = params.get(name, default)
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
-    if isinstance(value, float) and (
-        not math.isfinite(value) or not value.is_integer()
-    ):
-        raise ValueError(f"{name} must be an integer")
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
-        raise ValueError(f"{name} must be an integer") from None
+    return _integer_value(params.get(name, default), name)
 
 
 def validate_render_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -309,7 +366,7 @@ def validate_stats_params(params: dict[str, Any]) -> dict[str, Any]:
 
 class JobCreate(BaseModel):
     project_id: str
-    kind: str = Field(pattern="^(convert|filter|export|render|stats|movie)$")
+    kind: JobKind
     target_id: str
     params: dict[str, Any] = Field(default_factory=dict)
 

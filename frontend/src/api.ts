@@ -7,6 +7,8 @@ import type {
   Dataset,
   Job,
   JobKind,
+  JobParamsByKind,
+  MovieParams,
   Pipeline,
   Project,
   ProjectMember,
@@ -155,16 +157,27 @@ export const api = {
   listJobs: (projectId?: string) =>
     req<Job[]>(`/jobs${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
   cancelJob: (id: string) => req<Job>(`/jobs/${id}/cancel`, { method: "POST" }),
-  createJob: (
+  createJob: <K extends JobKind>(
     projectId: string,
-    kind: JobKind,
+    kind: K,
     targetId: string,
-    params: Record<string, unknown>,
+    params: JobParamsByKind[K],
   ) => req<Job>("/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_id: projectId, kind, target_id: targetId, params }),
   }),
+  createMovieJob: (projectId: string, targetId: string, params: MovieParams) =>
+    req<Job>("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_id: projectId,
+        kind: "movie",
+        target_id: targetId,
+        params,
+      }),
+    }),
 
   listPipelines: (projectId: string) =>
     req<Pipeline[]>(`/pipelines?project_id=${encodeURIComponent(projectId)}`),

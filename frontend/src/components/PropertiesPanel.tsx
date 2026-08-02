@@ -1,5 +1,12 @@
 import { memo } from "react";
-import type { Artifact, Dataset, Job, RenderSession, SliceAxis } from "../types";
+import type {
+  Artifact,
+  Dataset,
+  Job,
+  RenderSession,
+  ServerFilterParams,
+  SliceAxis,
+} from "../types";
 import type { DisplayState } from "../hooks/useDisplayState";
 import { useMessages } from "../i18n-context";
 import { MetadataTable } from "./properties/MetadataTable";
@@ -42,7 +49,7 @@ export interface DatasetJobControls {
   clientExportPending: boolean;
   filterPending: boolean;
   serverFilterAvailable: boolean;
-  onRunFilter: (params: Record<string, unknown>) => void;
+  onRunFilter: (params: ServerFilterParams) => void;
   onJobCreated: (job: Job) => void;
   onDownloadTimestep: (index: number) => void;
 }

@@ -91,6 +91,17 @@ def _apply_filter(simple, source, params: dict):
         result.Scalars = [params.get("association", "POINTS"), params["array"]]
         result.LowerThreshold = params["minimum"]
         result.UpperThreshold = params["maximum"]
+    elif operation == "cell_to_point":
+        result = simple.CellDatatoPointData(Input=source)
+        # Keep this explicit so the API contract always converts every cell
+        # array, independent of ParaView's saved/default proxy properties.
+        result.ProcessAllArrays = 1
+    elif operation == "resample":
+        result = simple.ResampleToImage(Input=source)
+        result.SamplingDimensions = params["dimensions"]
+    elif operation == "decimate":
+        result = simple.Decimate(Input=source)
+        result.TargetReduction = params["target_reduction"]
     else:
         raise ValueError(f"unsupported filter {operation!r}")
     return result

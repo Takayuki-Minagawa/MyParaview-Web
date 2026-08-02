@@ -75,6 +75,51 @@ export type ColorMapName = (typeof COLOR_MAP_NAMES)[number];
 export const JOB_KINDS = ["convert", "filter", "export", "render", "stats", "movie"] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 
+export const MOVIE_FORMATS = ["zip", "mp4", "webm"] as const;
+export type MovieFormat = (typeof MOVIE_FORMATS)[number];
+
+export interface MovieParams {
+  /** Omitted format preserves the legacy PNG-frame ZIP contract. */
+  format?: MovieFormat;
+  fps?: number;
+  width?: number;
+  height?: number;
+}
+
+export const SERVER_FILTER_NAMES = [
+  "slice",
+  "clip",
+  "contour",
+  "threshold",
+  "cell_to_point",
+  "resample",
+  "decimate",
+] as const;
+export type ServerFilterName = (typeof SERVER_FILTER_NAMES)[number];
+
+export type ServerFilterParams =
+  | { filter: "slice" | "clip"; origin: [number, number, number]; normal: [number, number, number] }
+  | { filter: "contour"; array: string; association: "POINTS" | "CELLS"; value: number }
+  | {
+    filter: "threshold";
+    array: string;
+    association: "POINTS" | "CELLS";
+    minimum: number;
+    maximum: number;
+  }
+  | { filter: "cell_to_point" }
+  | { filter: "resample"; dimensions: [number, number, number] }
+  | { filter: "decimate"; target_reduction: number };
+
+export interface JobParamsByKind {
+  convert: Record<string, unknown>;
+  filter: ServerFilterParams;
+  export: Record<string, unknown>;
+  render: Record<string, unknown>;
+  stats: Record<string, unknown>;
+  movie: MovieParams;
+}
+
 export interface ScalarSelection {
   name: string;
   association: ScalarAssociation;

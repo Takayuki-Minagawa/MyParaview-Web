@@ -1,6 +1,13 @@
 import { useCallback, useState } from "react";
 import { api, authorizedFetch, pollJob } from "../api";
-import type { Artifact, Job, JobKind } from "../types";
+import type {
+  Artifact,
+  Job,
+  JobKind,
+  JobParamsByKind,
+  MovieParams,
+  ServerFilterParams,
+} from "../types";
 import { responseFilename, triggerBlobDownload } from "../lib/download";
 import type { ProjectScope, ScopeTicket } from "./useProjectScope";
 
@@ -29,6 +36,7 @@ export function useDatasetJobs({
   const [exportPending, setExportPending] = useState(false);
   const [convertPending, setConvertPending] = useState(false);
   const [statsPending, setStatsPending] = useState(false);
+  const [moviePending, setMoviePending] = useState(false);
   const [filterPending, setFilterPending] = useState(false);
   const [promotePendingIds, setPromotePendingIds] = useState<Set<string>>(() => new Set());
 
@@ -37,6 +45,7 @@ export function useDatasetJobs({
     setExportPending(false);
     setConvertPending(false);
     setStatsPending(false);
+    setMoviePending(false);
     setFilterPending(false);
     setPromotePendingIds(new Set());
   }, []);
@@ -56,9 +65,9 @@ export function useDatasetJobs({
     return final;
   }, [scope, upsertJob, refreshArtifacts]);
 
-  const runDatasetJob = useCallback(async (
-    kind: JobKind,
-    params: Record<string, unknown>,
+  const runDatasetJob = useCallback(async <K extends JobKind>(
+    kind: K,
+    params: JobParamsByKind[K],
     setPending: (pending: boolean) => void,
   ) => {
     const ticket = scope.capture();
@@ -91,7 +100,24 @@ export function useDatasetJobs({
     void runDatasetJob("stats", { bins: 32 }, setStatsPending);
   }, [statsPending, runDatasetJob]);
 
-  const runServerFilter = useCallback((params: Record<string, unknown>) => {
+  const exportMovie = useCallback((params: MovieParams) => {
+    if (moviePending) return;
+    const ticket = scope.capture();
+    const datasetId = scope.selectedDatasetRef.current;
+    if (!ticket || !datasetId) return;
+    setMoviePending(true);
+    clearErrors();
+    void api.createMovieJob(ticket.projectId, datasetId, params)
+      .then((job) => trackJob(job, ticket))
+      .catch((e) => {
+        if (ticket.stillCurrent()) onError(String(e));
+      })
+      .finally(() => {
+        if (ticket.stillCurrent()) setMoviePending(false);
+      });
+  }, [moviePending, scope, clearErrors, trackJob, onError]);
+
+  const runServerFilter = useCallback((params: ServerFilterParams) => {
     if (filterPending) return;
     void runDatasetJob("filter", params, setFilterPending);
   }, [filterPending, runDatasetJob]);
@@ -154,6 +180,8 @@ export function useDatasetJobs({
     convertPending,
     runStats,
     statsPending,
+    exportMovie,
+    moviePending,
     runServerFilter,
     filterPending,
     onAssistJobCreated,

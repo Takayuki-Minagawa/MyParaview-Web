@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -29,6 +31,21 @@ class FakeSimple:
         proxy.Scalars = None
         proxy.LowerThreshold = None
         proxy.UpperThreshold = None
+        return proxy
+
+    def CellDatatoPointData(self, *, Input):
+        proxy = Proxy("cell_to_point", Input)
+        proxy.ProcessAllArrays = None
+        return proxy
+
+    def ResampleToImage(self, *, Input):
+        proxy = Proxy("resample", Input)
+        proxy.SamplingDimensions = None
+        return proxy
+
+    def Decimate(self, *, Input):
+        proxy = Proxy("decimate", Input)
+        proxy.TargetReduction = None
         return proxy
 
     def MergeBlocks(self, *, Input):
@@ -150,6 +167,34 @@ def test_pipeline_surface_extracts_only_after_all_native_filters(tmp_path, monke
     assert final_filter.kind == "threshold"
     assert final_filter.source.kind == "threshold"
     assert final_filter.source.source.kind == "reader"
+
+
+@pytest.mark.parametrize(
+    ("params", "kind", "property_name", "expected"),
+    [
+        ({"filter": "cell_to_point"}, "cell_to_point", "ProcessAllArrays", 1),
+        (
+            {"filter": "resample", "dimensions": [16, 24, 32]},
+            "resample",
+            "SamplingDimensions",
+            [16, 24, 32],
+        ),
+        (
+            {"filter": "decimate", "target_reduction": 0.65},
+            "decimate",
+            "TargetReduction",
+            0.65,
+        ),
+    ],
+)
+def test_new_filters_map_to_paraview_proxy_properties(
+    params, kind, property_name, expected
+):
+    result = pv_worker._apply_filter(FakeSimple(), Proxy("reader"), params)
+
+    assert result.kind == kind
+    assert result.source.kind == "reader"
+    assert getattr(result, property_name) == expected
 
 
 def test_metadata_omits_non_finite_bounds(monkeypatch, capsys):

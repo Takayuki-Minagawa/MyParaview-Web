@@ -141,14 +141,27 @@ class TableCoordinatesState(BaseModel):
         return self
 
 
-class ViewState(BaseModel):
+class VolumeOpacityPointState(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
+    value: float = Field(ge=0, le=1)
+    alpha: float = Field(ge=0, le=1)
+
+
+class ViewState(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
     schema_version: int = Field(default=1, ge=1, le=1)
     representation: str = Field(pattern="^(surface|wireframe|points)$")
     color_by: Optional[ScalarSelectionState] = None
     color_range: Optional[list[float]] = Field(default=None, min_length=2, max_length=2)
     opacity: float = Field(ge=0, le=1)
-    color_map: str = Field(pattern="^(cool-to-warm|viridis|grayscale|plasma|turbo)$")
+    color_map: str = Field(
+        min_length=1,
+        max_length=1024,
+        pattern=(
+            "^(cool-to-warm|viridis|grayscale|plasma|turbo|"
+            "custom:[A-Za-z0-9_.!~*'()%-]+:[a-z0-9]{1,16})$"
+        ),
+    )
     legend_visible: bool
     camera: Optional[CameraState] = None
     table_coordinates: Optional[TableCoordinatesState] = None
@@ -156,6 +169,11 @@ class ViewState(BaseModel):
     slice_axis: Optional[str] = Field(default=None, pattern="^(X|Y|Z)$")
     slice_index: Optional[int] = None
     timestep_index: Optional[int] = Field(default=None, ge=0)
+    volume_opacity_points: Optional[list[VolumeOpacityPointState]] = Field(
+        default=None,
+        min_length=2,
+        max_length=4,
+    )
 
     @model_validator(mode="after")
     def validate_color_range(self):

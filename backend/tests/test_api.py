@@ -779,6 +779,11 @@ def test_pipeline_view_state_validation_and_roundtrip(client, data_dir):
         "opacity": 0.65,
         "color_map": "viridis",
         "legend_visible": True,
+        "volume_opacity_points": [
+            {"value": 0.0, "alpha": 0.0},
+            {"value": 0.5, "alpha": 0.35},
+            {"value": 1.0, "alpha": 1.0},
+        ],
         "camera": {
             "position": [2.0, 2.0, 2.0],
             "focal_point": [0.5, 0.5, 0.5],
@@ -805,6 +810,24 @@ def test_pipeline_view_state_validation_and_roundtrip(client, data_dir):
     )
     assert representation["params"]["view_state"] == state
 
+    custom_state = {**state, "color_map": "custom:Thermal%20Map:1z141z3"}
+    custom = client.post(
+        "/pipelines",
+        json={
+            "project_id": pid,
+            "name": "saved custom colormap view",
+            "nodes": [
+                {
+                    "node_type": "representation",
+                    "name": "custom view",
+                    "params": {"view_state": custom_state},
+                }
+            ],
+        },
+    )
+    assert custom.status_code == 201, custom.text
+    assert custom.json()["nodes"][0]["params"]["view_state"] == custom_state
+
     bad = {**state, "opacity": 1.5}
     rejected = client.post(
         "/pipelines",
@@ -828,6 +851,43 @@ def test_pipeline_view_state_validation_and_roundtrip(client, data_dir):
         },
     )
     assert rejected_range.status_code == 422
+
+    bad_opacity_points = {
+        **state,
+        "volume_opacity_points": [{"value": 0.0, "alpha": 0.0}],
+    }
+    rejected_points = client.post(
+        "/pipelines",
+        json={
+            "project_id": pid,
+            "name": "bad opacity points",
+            "nodes": [
+                {
+                    "node_type": "representation",
+                    "name": "bad",
+                    "params": {"view_state": bad_opacity_points},
+                }
+            ],
+        },
+    )
+    assert rejected_points.status_code == 422
+
+    unknown_field = {**state, "unrecognized_display_field": True}
+    rejected_unknown = client.post(
+        "/pipelines",
+        json={
+            "project_id": pid,
+            "name": "unknown view state field",
+            "nodes": [
+                {
+                    "node_type": "representation",
+                    "name": "bad",
+                    "params": {"view_state": unknown_field},
+                }
+            ],
+        },
+    )
+    assert rejected_unknown.status_code == 422
 
 
 def test_pipeline_rejects_unresolvable_input_id(client, data_dir):

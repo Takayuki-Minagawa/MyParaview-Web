@@ -17,7 +17,7 @@
     "@kitware/vtk.js": "^36.2.0",
     "events": "^3.3.0",
     "oidc-client-ts": "^3.5.0",
-    "react": "^19.2.0",
+    "react": "^19.2.8",
     "react-dom": "^19.2.0",
     "url": "^0.11.4"
   },
@@ -28,7 +28,7 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/node": "^26.1.1",
-    "@types/react": "^19.0.0",
+    "@types/react": "^19.2.18",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.0",
     "@vitest/coverage-v8": "^4.1.0",

@@ -14,7 +14,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@kitware/vtk.js": "^36.2.0",
+    "@kitware/vtk.js": "^36.6.0",
     "events": "^3.3.0",
     "oidc-client-ts": "^3.5.0",
     "react": "^19.2.0",

@@ -109,4 +109,26 @@ describe("custom colormap registry", () => {
       releaseComparison();
     }
   });
+
+  it("preserves retained maps and reports a full registry without throwing", () => {
+    for (let index = 0; index < MAX_REGISTERED_CUSTOM_COLOR_MAPS; index += 1) {
+      registerCustomColorMap(
+        `custom:retained-full-${index}:a` as never,
+        `Retained ${index}`,
+        stops,
+      );
+    }
+    const releases = registeredCustomColorMaps().map(({ id }) => retainColorMap(id));
+    try {
+      expect(registerCustomColorMap(
+        "custom:cannot-evict:a",
+        "Cannot evict",
+        stops,
+      )).toBe(false);
+      expect(hasColorMap("custom:cannot-evict:a")).toBe(false);
+      expect(registeredCustomColorMaps()).toHaveLength(MAX_REGISTERED_CUSTOM_COLOR_MAPS);
+    } finally {
+      for (const release of releases) release();
+    }
+  });
 });

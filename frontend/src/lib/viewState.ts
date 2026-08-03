@@ -143,11 +143,14 @@ export function parseViewState(value: unknown): ViewState | null {
   // Register only after every other ViewState field has passed validation, so
   // an otherwise malformed saved view cannot mutate the browser session.
   if (embeddedColorMap) {
-    registerCustomColorMap(
+    const registered = registerCustomColorMap(
       embeddedColorMap.id,
       embeddedColorMap.label,
       embeddedColorMap.stops,
     );
+    // A registry whose entries are all retained must preserve the mounted
+    // viewers. Reject this saved view instead of restoring an unavailable map.
+    if (!registered) return null;
   }
 
   return {

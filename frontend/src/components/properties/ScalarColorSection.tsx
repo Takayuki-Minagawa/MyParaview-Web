@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useState, useSyncExternalStore } from "react";
 import type {
   ArrayInfo,
   BuiltInColorMapName,
@@ -7,7 +7,11 @@ import type {
   ScalarSelection,
 } from "../../types";
 import { isImageScalarArray } from "../../lib/imageData";
-import { registeredCustomColorMaps } from "../../lib/colormap";
+import {
+  getCustomColorMapRegistryVersion,
+  registeredCustomColorMaps,
+  subscribeCustomColorMapRegistry,
+} from "../../lib/colormap";
 import { importParaViewColorMapPreset } from "../../lib/paraviewPreset";
 import { useMessages } from "../../i18n-context";
 
@@ -96,7 +100,12 @@ export const ScalarColorSection = memo(function ScalarColorSection({
   onLegendVisible,
 }: Props) {
   const messages = useMessages();
-  const [customColorMaps, setCustomColorMaps] = useState(registeredCustomColorMaps);
+  useSyncExternalStore(
+    subscribeCustomColorMapRegistry,
+    getCustomColorMapRegistryVersion,
+    getCustomColorMapRegistryVersion,
+  );
+  const customColorMaps = registeredCustomColorMaps();
   const [presetStatus, setPresetStatus] = useState<{
     kind: "success" | "error";
     message: string;
@@ -183,7 +192,6 @@ export const ScalarColorSection = memo(function ScalarColorSection({
                 void file.text()
                   .then((text) => {
                     const preset = importParaViewColorMapPreset(text);
-                    setCustomColorMaps(registeredCustomColorMaps());
                     onColorMap(preset.id);
                     setPresetStatus({
                       kind: "success",

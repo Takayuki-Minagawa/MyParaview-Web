@@ -48,6 +48,13 @@ const MAPS: Record<string, ColorStop[]> = {
 
 const CUSTOM_LABELS = new Map<CustomColorMapName, string>();
 const RETAINED_CUSTOM_COLOR_MAPS = new Map<CustomColorMapName, number>();
+const CUSTOM_COLOR_MAP_LISTENERS = new Set<() => void>();
+let customColorMapRegistryVersion = 0;
+
+function notifyCustomColorMapRegistryChanged(): void {
+  customColorMapRegistryVersion += 1;
+  for (const listener of CUSTOM_COLOR_MAP_LISTENERS) listener();
+}
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const allowedKeys = new Set(allowed);
@@ -178,7 +185,7 @@ export function registerCustomColorMap(
   id: CustomColorMapName,
   label: string,
   stops: readonly ColorStop[],
-): void {
+): boolean {
   if (id.length > 1024 || !CUSTOM_COLOR_MAP_ID.test(id)) {
     throw new Error("A custom colormap id has an invalid format");
   }
@@ -196,13 +203,26 @@ export function registerCustomColorMap(
       (candidate) => !RETAINED_CUSTOM_COLOR_MAPS.has(candidate),
     );
     if (oldestUnused === undefined) {
-      throw new Error("The custom colormap registry is full with maps currently in use");
+      return false;
     }
     CUSTOM_LABELS.delete(oldestUnused);
     delete MAPS[oldestUnused];
   }
   MAPS[id] = validated;
   CUSTOM_LABELS.set(id, normalizedLabel);
+  notifyCustomColorMapRegistryChanged();
+  return true;
+}
+
+/** Subscribe UI snapshots to registration, refresh, and eviction changes. */
+export function subscribeCustomColorMapRegistry(listener: () => void): () => void {
+  CUSTOM_COLOR_MAP_LISTENERS.add(listener);
+  return () => { CUSTOM_COLOR_MAP_LISTENERS.delete(listener); };
+}
+
+/** Stable scalar snapshot for React's useSyncExternalStore. */
+export function getCustomColorMapRegistryVersion(): number {
+  return customColorMapRegistryVersion;
 }
 
 export function registeredCustomColorMaps(): Array<{

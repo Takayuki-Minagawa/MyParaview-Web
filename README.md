@@ -161,7 +161,9 @@ APIと同じbackend image/environmentで`python -m app.rq_worker`を起動しま
 DB commit後のobject削除は永続outboxから再試行されます。APIの周期drainは
 `PVWEB_OBJECT_DELETE_INTERVAL_SECONDS`（既定30秒）と
 `PVWEB_OBJECT_DELETE_BATCH_SIZE`（既定100件）で上限を調整できます。project削除requestでは
-最大5,000件を同期drainし、それを超える安全な残りは周期drainへ引き継ぎます。
+最大5,000件を同期drainし、それを超える安全な残りは周期drainへ引き継ぎます。既定値では
+残りを約200件/分で回収します。数万object規模のprojectを運用する場合は、object storeとDBの
+負荷を確認しながら`PVWEB_OBJECT_DELETE_BATCH_SIZE`（最大1,000件）を増やすかintervalを短縮します。
 
 ## ParaView / ffmpeg worker capability
 

@@ -55,9 +55,30 @@ def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data
     uploaded = client.post(
         f"/projects/{project_id}/dataset-bundles",
         files=[
-            ("files", ("sample_series.pvd", (data_dir / "sample_series.pvd").read_bytes(), "application/xml")),
-            ("files", ("series_step0.vtp", (data_dir / "series_step0.vtp").read_bytes(), "application/xml")),
-            ("files", ("series_step1.vtp", (data_dir / "series_step1.vtp").read_bytes(), "application/xml")),
+            (
+                "files",
+                (
+                    "sample_series.pvd",
+                    (data_dir / "sample_series.pvd").read_bytes(),
+                    "application/xml",
+                ),
+            ),
+            (
+                "files",
+                (
+                    "series_step0.vtp",
+                    (data_dir / "series_step0.vtp").read_bytes(),
+                    "application/xml",
+                ),
+            ),
+            (
+                "files",
+                (
+                    "series_step1.vtp",
+                    (data_dir / "series_step1.vtp").read_bytes(),
+                    "application/xml",
+                ),
+            ),
         ],
     )
     assert uploaded.status_code == 201
@@ -99,6 +120,38 @@ def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data
     assert client.delete(f"/projects/{project_id}").status_code == 204
     assert batch_sizes == [len(keys)]
     assert all(not store.exists(key) for key in keys)
+
+
+def test_delete_project_applies_sync_drain_limit_in_route(client, data_dir, monkeypatch):
+    from app.routers import projects as projects_router
+
+    project_id = _new_project(client, "bounded-object-cleanup")
+    uploaded = client.post(
+        f"/projects/{project_id}/dataset-bundles",
+        files=[
+            ("files", ("sample_series.pvd", (data_dir / "sample_series.pvd").read_bytes(), "application/xml")),
+            ("files", ("series_step0.vtp", (data_dir / "series_step0.vtp").read_bytes(), "application/xml")),
+            ("files", ("series_step1.vtp", (data_dir / "series_step1.vtp").read_bytes(), "application/xml")),
+        ],
+    )
+    assert uploaded.status_code == 201
+
+    batch_sizes: list[int | None] = []
+    real_drain = projects_router.drain_object_deletions
+
+    def recording_drain(**kwargs):
+        batch_sizes.append(kwargs.get("batch_size"))
+        object_keys = kwargs.get("object_keys")
+        return real_drain(
+            object_keys=object_keys,
+            batch_size=max(len(object_keys), 1),
+        )
+
+    monkeypatch.setattr(projects_router, "PROJECT_DELETE_SYNC_DRAIN_LIMIT", 2)
+    monkeypatch.setattr(projects_router, "drain_object_deletions", recording_drain)
+
+    assert client.delete(f"/projects/{project_id}").status_code == 204
+    assert batch_sizes == [2]
 
 
 def test_delete_project_rejects_active_jobs(client, data_dir):

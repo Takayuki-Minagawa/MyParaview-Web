@@ -149,6 +149,8 @@ export function parseParaViewColorMapPreset(text: string): ImportedColorMapPrese
 
 export function importParaViewColorMapPreset(text: string): ImportedColorMapPreset {
   const preset = parseParaViewColorMapPreset(text);
-  registerCustomColorMap(preset.id, preset.label, preset.stops);
+  if (!registerCustomColorMap(preset.id, preset.label, preset.stops)) {
+    throw new Error("The custom colormap registry is full with maps currently in use");
+  }
   return preset;
 }

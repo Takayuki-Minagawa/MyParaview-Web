@@ -233,7 +233,9 @@ APIとjob-workerは起動時にDBの`queued` jobをRedisへ再投入します。
 object削除意図もPostgreSQLのoutboxへ先にcommitし、APIが既定30秒ごとに最大100件ずつ再試行します。
 間隔とbatch上限は`PVWEB_OBJECT_DELETE_INTERVAL_SECONDS`と
 `PVWEB_OBJECT_DELETE_BATCH_SIZE`で変更できます。project削除時は応答遅延を有界にするため
-最大5,000件だけをrequest内で同期drainし、残りはこの周期drainが回収します。
+最大5,000件だけをrequest内で同期drainし、残りはこの周期drainが回収します。既定値の回収速度は
+約200件/分です。数万object規模を想定する環境では、object storeとDBの負荷を監視しながら
+`PVWEB_OBJECT_DELETE_BATCH_SIZE`（最大1,000件）とintervalを調整してください。
 
 `docker compose down` は通常volumeを残しますが、`docker compose down -v` は永続volumeを削除するため、
 本番では実行しません。DB recordとobjectを対応させる必要があるため、PostgreSQLとMinIO/S3は同じ

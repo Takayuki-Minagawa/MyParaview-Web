@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_REGISTERED_CUSTOM_COLOR_MAPS,
   customColorMapDefinition,
   hasColorMap,
   registerCustomColorMap,
+  registeredCustomColorMaps,
+  retainColorMap,
 } from "./colormap";
 import { clampSliceIndex, parseViewState } from "./viewState";
 
@@ -117,6 +120,36 @@ describe("parseViewState", () => {
       },
     })).toBeNull();
     expect(customColorMapDefinition(conflictId)?.label).toBe("Original");
+  });
+
+  it("rejects an embedded map when every registry entry is retained", () => {
+    const stops = [
+      { position: 0, rgb: [0, 0, 0] as [number, number, number] },
+      { position: 1, rgb: [1, 1, 1] as [number, number, number] },
+    ];
+    for (let index = 0; index < MAX_REGISTERED_CUSTOM_COLOR_MAPS; index += 1) {
+      registerCustomColorMap(
+        `custom:viewstate-full-${index}:a` as never,
+        `Full ${index}`,
+        stops,
+      );
+    }
+    const releases = registeredCustomColorMaps().map(({ id }) => retainColorMap(id));
+    const definition = {
+      id: "custom:Unavailable:g002" as const,
+      label: "Unavailable",
+      stops,
+    };
+    try {
+      expect(parseViewState({
+        ...VALID,
+        color_map: definition.id,
+        custom_color_map: definition,
+      })).toBeNull();
+      expect(hasColorMap(definition.id)).toBe(false);
+    } finally {
+      for (const release of releases) release();
+    }
   });
 
   it("round-trips CSV and ImageData display controls", () => {

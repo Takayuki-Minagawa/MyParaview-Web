@@ -80,7 +80,7 @@
 **目的**: 認証付きで、アップロード→メタデータ抽出→表示→基本フィルタ→スクショまでの一連が動く最小製品。
 
 > **実装状況 (2026-08-02)**: M1コアと追加機能候補17件に加え、
-> [2026-08追加計画](./docs/feature-plan-2026-08.md) のG1〜G13を実装済み。
+> 2026-08追加計画のG1〜G14をPR #5で実装済み。
 > browser-directはVTP/VTU/VTS/VTR/CSV/VTI/PVD、production adapterは
 > PostgreSQL/S3/OIDC/RBAC、Redis/RQとfull-stack containerに対応した。
 > server capabilityはpvpythonの7 filter/external reader/renderと、PNG ZIP / MP4 / WebM
@@ -194,7 +194,7 @@ MVP〜M3の本線とは別トラックで、リスクを取らずに検証する
 
 ## 9. 2026-08追加計画の完了状況と次アクション
 
-[2026-08追加計画](./docs/feature-plan-2026-08.md) のG1〜G14は実装・検証済みである。
+2026-08追加計画のG1〜G14はPR #5で実装・検証済みである。
 G14はbackend/frontend coverage、Dependabot設定、MIT LICENSEを完了し、配布containerにも
 ライセンス本文を同梱した。
 

@@ -50,7 +50,7 @@ x-api-environment: &api-environment
 services:
   redis:
     profiles: ["full-stack"]
-    image: redis:7.4-alpine
+    image: redis:8.10-alpine
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     volumes:
       - redis-data:/data

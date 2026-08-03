@@ -1,4 +1,12 @@
 import { describe, expect, it } from "vitest";
+import {
+  MAX_REGISTERED_CUSTOM_COLOR_MAPS,
+  customColorMapDefinition,
+  hasColorMap,
+  registerCustomColorMap,
+  registeredCustomColorMaps,
+  retainColorMap,
+} from "./colormap";
 import { clampSliceIndex, parseViewState } from "./viewState";
 
 const VALID = {
@@ -28,6 +36,120 @@ describe("parseViewState", () => {
     expect(parseViewState({ ...VALID, color_by: { name: "x", association: "field" } })).toBeNull();
     expect(parseViewState({ ...VALID, color_range: [10, 0] })).toBeNull();
     expect(parseViewState({ ...VALID, color_range: [1, 1] })).toBeNull();
+    expect(parseViewState({ ...VALID, color_map: "custom:not-registered" })).toBeNull();
+  });
+
+  it("restores a custom colormap while its imported preset is registered", () => {
+    const id = "custom:test:viewstate" as const;
+    registerCustomColorMap(id, "Test", [
+      { position: 0, rgb: [0, 0, 0] },
+      { position: 1, rgb: [1, 1, 1] },
+    ]);
+    expect(parseViewState({ ...VALID, color_map: id })?.color_map).toBe(id);
+  });
+
+  it("registers an embedded custom colormap before restoring a new session state", () => {
+    const definition = {
+      id: "custom:Reloadable:abc123" as const,
+      label: "Reloadable",
+      stops: [
+        { position: 0, rgb: [0, 0.1, 0.2] as [number, number, number] },
+        { position: 0.5, rgb: [0.4, 0.5, 0.6] as [number, number, number] },
+        { position: 1, rgb: [0.8, 0.9, 1] as [number, number, number] },
+      ],
+    };
+    expect(hasColorMap(definition.id)).toBe(false);
+
+    const state = {
+      ...VALID,
+      color_map: definition.id,
+      custom_color_map: definition,
+    };
+    expect(parseViewState(state)).toEqual(state);
+    expect(customColorMapDefinition(definition.id)).toEqual(definition);
+    // Legacy/bare references remain readable once the definition is registered.
+    expect(parseViewState({ ...VALID, color_map: definition.id })?.color_map)
+      .toBe(definition.id);
+  });
+
+  it("rejects mismatched, conflicting, or invalid embedded definitions without side effects", () => {
+    const definition = {
+      id: "custom:Portable:abc124" as const,
+      label: "Portable",
+      stops: [
+        { position: 0, rgb: [0, 0, 0] as [number, number, number] },
+        { position: 1, rgb: [1, 1, 1] as [number, number, number] },
+      ],
+    };
+    expect(parseViewState({
+      ...VALID,
+      color_map: "custom:Different:abc125",
+      custom_color_map: definition,
+    })).toBeNull();
+    expect(parseViewState({
+      ...VALID,
+      color_map: definition.id,
+      custom_color_map: {
+        ...definition,
+        stops: [{ position: 0, rgb: [0, 0, 0] }, { position: 1.1, rgb: [1, 1, 1] }],
+      },
+    })).toBeNull();
+    expect(parseViewState({
+      ...VALID,
+      opacity: 2,
+      color_map: definition.id,
+      custom_color_map: definition,
+    })).toBeNull();
+    expect(hasColorMap(definition.id)).toBe(false);
+
+    const conflictId = "custom:Conflict:abc126" as const;
+    registerCustomColorMap(conflictId, "Original", [
+      { position: 0, rgb: [0, 0, 0] },
+      { position: 1, rgb: [1, 1, 1] },
+    ]);
+    expect(parseViewState({
+      ...VALID,
+      color_map: conflictId,
+      custom_color_map: {
+        id: conflictId,
+        label: "Replacement",
+        stops: [
+          { position: 0, rgb: [0, 0, 0] },
+          { position: 1, rgb: [1, 0, 0] },
+        ],
+      },
+    })).toBeNull();
+    expect(customColorMapDefinition(conflictId)?.label).toBe("Original");
+  });
+
+  it("rejects an embedded map when every registry entry is retained", () => {
+    const stops = [
+      { position: 0, rgb: [0, 0, 0] as [number, number, number] },
+      { position: 1, rgb: [1, 1, 1] as [number, number, number] },
+    ];
+    for (let index = 0; index < MAX_REGISTERED_CUSTOM_COLOR_MAPS; index += 1) {
+      registerCustomColorMap(
+        `custom:viewstate-full-${index}:a` as never,
+        `Full ${index}`,
+        stops,
+      );
+    }
+    const releases = registeredCustomColorMaps().map(({ id }) => retainColorMap(id));
+    const definition = {
+      id: "custom:Unavailable:g002" as const,
+      label: "Unavailable",
+      stops,
+    };
+    try {
+      expect(parseViewState({
+        ...VALID,
+        color_map: definition.id,
+        custom_color_map: definition,
+      })).toBeNull();
+      expect(hasColorMap(definition.id)).toBe(false);
+    } finally {
+      for (const release of releases) release();
+    }
   });
 
   it("round-trips CSV and ImageData display controls", () => {

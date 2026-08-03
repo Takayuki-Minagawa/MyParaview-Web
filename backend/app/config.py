@@ -11,6 +11,18 @@ class Settings:
     def __init__(self) -> None:
         # Root for the local object store and SQLite db. Overridable for tests.
         self.data_root = Path(os.environ.get("PVWEB_DATA_ROOT", ".pvweb-data")).resolve()
+        self.root_path = os.environ.get("PVWEB_ROOT_PATH", "").strip()
+        root_path_segments = self.root_path.split("/")[1:]
+        if self.root_path and (
+            len(self.root_path) > 256
+            or not self.root_path.startswith("/")
+            or self.root_path.endswith("/")
+            or any(segment in {"", ".", ".."} for segment in root_path_segments)
+            or any(character.isspace() or character in "?#\\" for character in self.root_path)
+        ):
+            raise ValueError(
+                "PVWEB_ROOT_PATH must be empty or an absolute URL path without a trailing slash"
+            )
         self.database_url = os.environ.get(
             "PVWEB_DATABASE_URL", f"sqlite:///{self.data_root / 'pvweb.db'}"
         )
@@ -42,7 +54,53 @@ class Settings:
             if subject.strip()
         }
         self.worker_command = shlex.split(os.environ.get("PVWEB_PVPYTHON", ""))
+        # Video export is opt-in, just like pvpython.  Keep this as one
+        # executable name/path (rather than a shell fragment); worker.py
+        # resolves it to an executable absolute path before passing it to the
+        # isolated pvpython process.
+        self.ffmpeg_executable = os.environ.get("PVWEB_FFMPEG", "").strip()
         self.worker_timeout_seconds = int(os.environ.get("PVWEB_WORKER_TIMEOUT", "900"))
+        self.job_queue_backend = os.environ.get("PVWEB_JOB_QUEUE_BACKEND", "local").strip().lower()
+        if self.job_queue_backend not in {"local", "rq"}:
+            raise ValueError("PVWEB_JOB_QUEUE_BACKEND must be 'local' or 'rq'")
+        self.redis_url = os.environ.get("PVWEB_REDIS_URL", "redis://127.0.0.1:6379/0").strip()
+        self.job_queue_name = os.environ.get("PVWEB_JOB_QUEUE_NAME", "pvweb").strip()
+        if not self.job_queue_name:
+            raise ValueError("PVWEB_JOB_QUEUE_NAME must not be empty")
+        self.job_queue_timeout_seconds = int(os.environ.get("PVWEB_JOB_QUEUE_TIMEOUT", "3600"))
+        self.job_queue_result_ttl_seconds = int(
+            os.environ.get("PVWEB_JOB_QUEUE_RESULT_TTL", "86400")
+        )
+        self.job_queue_failure_ttl_seconds = int(
+            os.environ.get("PVWEB_JOB_QUEUE_FAILURE_TTL", "604800")
+        )
+        self.job_queue_max_retries = int(os.environ.get("PVWEB_JOB_QUEUE_MAX_RETRIES", "3"))
+        self.job_queue_retry_interval_seconds = int(
+            os.environ.get("PVWEB_JOB_QUEUE_RETRY_INTERVAL", "10")
+        )
+        if (
+            min(
+                self.job_queue_timeout_seconds,
+                self.job_queue_result_ttl_seconds,
+                self.job_queue_failure_ttl_seconds,
+                self.job_queue_max_retries,
+                self.job_queue_retry_interval_seconds,
+            )
+            <= 0
+        ):
+            raise ValueError("job queue timeout, TTL, and retry values must be positive")
+        self.object_delete_interval_seconds = float(
+            os.environ.get("PVWEB_OBJECT_DELETE_INTERVAL_SECONDS", "30")
+        )
+        self.object_delete_batch_size = int(
+            os.environ.get("PVWEB_OBJECT_DELETE_BATCH_SIZE", "100")
+        )
+        if not 1 <= self.object_delete_interval_seconds <= 86400:
+            raise ValueError(
+                "PVWEB_OBJECT_DELETE_INTERVAL_SECONDS must be between 1 and 86400"
+            )
+        if not 1 <= self.object_delete_batch_size <= 1000:
+            raise ValueError("PVWEB_OBJECT_DELETE_BATCH_SIZE must be between 1 and 1000")
         self.trame_broker_url = os.environ.get("PVWEB_TRAME_BROKER_URL") or None
         self.trame_broker_token = os.environ.get("PVWEB_TRAME_BROKER_TOKEN") or None
         configured_ws_hosts = os.environ.get("PVWEB_TRAME_ALLOWED_WS_HOSTS", "")

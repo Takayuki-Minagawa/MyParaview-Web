@@ -17,11 +17,20 @@ from .auth import Principal, require_project_role
 from .models import Artifact, Dataset, Job, Pipeline, Project
 
 
-def tag_audit(request: Request, resource_type: str, resource_id: str, project_id: str) -> None:
+def tag_audit(
+    request: Request,
+    resource_type: str,
+    resource_id: str,
+    project_id: str,
+    *,
+    detail: Optional[dict] = None,
+) -> None:
     """Attach the audit middleware's resource attribution to this request."""
     request.state.audit_project_id = project_id
     request.state.audit_resource_type = resource_type
     request.state.audit_resource_id = resource_id
+    if detail is not None:
+        request.state.audit_detail = detail
 
 
 def require_project(

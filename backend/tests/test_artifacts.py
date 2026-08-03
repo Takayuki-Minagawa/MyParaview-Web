@@ -170,6 +170,23 @@ def test_filter_schema_and_worker_artifact(client, data_dir, monkeypatch):
     assert failed["status"] == "failed"
     assert "PVWEB_PVPYTHON" in failed["log"]
 
+    new_filter_unavailable = client.post(
+        "/jobs",
+        json={
+            "project_id": project_id,
+            "kind": "filter",
+            "target_id": dataset["id"],
+            "params": {"filter": "cell_to_point"},
+        },
+    )
+    assert new_filter_unavailable.status_code == 202
+    new_filter_failed = wait_for_job(client, new_filter_unavailable.json()["id"])
+    assert new_filter_failed["status"] == "failed"
+    assert "PVWEB_PVPYTHON" in new_filter_failed["log"]
+    assert client.get(
+        f"/artifacts?job_id={new_filter_unavailable.json()['id']}"
+    ).json() == []
+
     def fake_transform(_source, output, _kind, _params, _ctx):
         output.write_bytes((data_dir / "sample_surface.vtp").read_bytes())
 

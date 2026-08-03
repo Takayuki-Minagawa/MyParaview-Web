@@ -26,7 +26,25 @@ def test_project_crud(client):
     assert client.get("/projects/nope").status_code == 404
 
 
-def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data_dir):
+def test_project_delete_sync_drain_batch_is_bounded():
+    from app.routers.projects import (
+        PROJECT_DELETE_SYNC_DRAIN_LIMIT,
+        _project_delete_drain_batch_size,
+    )
+
+    assert _project_delete_drain_batch_size(0) == 1
+    assert _project_delete_drain_batch_size(12) == 12
+    assert (
+        _project_delete_drain_batch_size(PROJECT_DELETE_SYNC_DRAIN_LIMIT)
+        == PROJECT_DELETE_SYNC_DRAIN_LIMIT
+    )
+    assert (
+        _project_delete_drain_batch_size(PROJECT_DELETE_SYNC_DRAIN_LIMIT + 1)
+        == PROJECT_DELETE_SYNC_DRAIN_LIMIT
+    )
+
+
+def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data_dir, monkeypatch):
     from sqlalchemy import or_, select
 
     from app.db import SessionLocal
@@ -37,9 +55,30 @@ def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data
     uploaded = client.post(
         f"/projects/{project_id}/dataset-bundles",
         files=[
-            ("files", ("sample_series.pvd", (data_dir / "sample_series.pvd").read_bytes(), "application/xml")),
-            ("files", ("series_step0.vtp", (data_dir / "series_step0.vtp").read_bytes(), "application/xml")),
-            ("files", ("series_step1.vtp", (data_dir / "series_step1.vtp").read_bytes(), "application/xml")),
+            (
+                "files",
+                (
+                    "sample_series.pvd",
+                    (data_dir / "sample_series.pvd").read_bytes(),
+                    "application/xml",
+                ),
+            ),
+            (
+                "files",
+                (
+                    "series_step0.vtp",
+                    (data_dir / "series_step0.vtp").read_bytes(),
+                    "application/xml",
+                ),
+            ),
+            (
+                "files",
+                (
+                    "series_step1.vtp",
+                    (data_dir / "series_step1.vtp").read_bytes(),
+                    "application/xml",
+                ),
+            ),
         ],
     )
     assert uploaded.status_code == 201
@@ -68,8 +107,51 @@ def test_delete_project_removes_dataset_bundle_and_artifact_objects(client, data
             )
         )
     assert keys and all(store.exists(key) for key in keys)
+    from app.routers import projects as projects_router
+
+    real_drain = projects_router.drain_object_deletions
+    batch_sizes: list[int | None] = []
+
+    def recording_drain(**kwargs):
+        batch_sizes.append(kwargs.get("batch_size"))
+        return real_drain(**kwargs)
+
+    monkeypatch.setattr(projects_router, "drain_object_deletions", recording_drain)
     assert client.delete(f"/projects/{project_id}").status_code == 204
+    assert batch_sizes == [len(keys)]
     assert all(not store.exists(key) for key in keys)
+
+
+def test_delete_project_applies_sync_drain_limit_in_route(client, data_dir, monkeypatch):
+    from app.routers import projects as projects_router
+
+    project_id = _new_project(client, "bounded-object-cleanup")
+    uploaded = client.post(
+        f"/projects/{project_id}/dataset-bundles",
+        files=[
+            ("files", ("sample_series.pvd", (data_dir / "sample_series.pvd").read_bytes(), "application/xml")),
+            ("files", ("series_step0.vtp", (data_dir / "series_step0.vtp").read_bytes(), "application/xml")),
+            ("files", ("series_step1.vtp", (data_dir / "series_step1.vtp").read_bytes(), "application/xml")),
+        ],
+    )
+    assert uploaded.status_code == 201
+
+    batch_sizes: list[int | None] = []
+    real_drain = projects_router.drain_object_deletions
+
+    def recording_drain(**kwargs):
+        batch_sizes.append(kwargs.get("batch_size"))
+        object_keys = kwargs.get("object_keys")
+        return real_drain(
+            object_keys=object_keys,
+            batch_size=max(len(object_keys), 1),
+        )
+
+    monkeypatch.setattr(projects_router, "PROJECT_DELETE_SYNC_DRAIN_LIMIT", 2)
+    monkeypatch.setattr(projects_router, "drain_object_deletions", recording_drain)
+
+    assert client.delete(f"/projects/{project_id}").status_code == 204
+    assert batch_sizes == [2]
 
 
 def test_delete_project_rejects_active_jobs(client, data_dir):
@@ -779,6 +861,11 @@ def test_pipeline_view_state_validation_and_roundtrip(client, data_dir):
         "opacity": 0.65,
         "color_map": "viridis",
         "legend_visible": True,
+        "volume_opacity_points": [
+            {"value": 0.0, "alpha": 0.0},
+            {"value": 0.5, "alpha": 0.35},
+            {"value": 1.0, "alpha": 1.0},
+        ],
         "camera": {
             "position": [2.0, 2.0, 2.0],
             "focal_point": [0.5, 0.5, 0.5],
@@ -805,6 +892,114 @@ def test_pipeline_view_state_validation_and_roundtrip(client, data_dir):
     )
     assert representation["params"]["view_state"] == state
 
+    custom_state = {**state, "color_map": "custom:Thermal%20Map:1z141z3"}
+    custom = client.post(
+        "/pipelines",
+        json={
+            "project_id": pid,
+            "name": "saved custom colormap view",
+            "nodes": [
+                {
+                    "node_type": "representation",
+                    "name": "custom view",
+                    "params": {"view_state": custom_state},
+                }
+            ],
+        },
+    )
+    assert custom.status_code == 201, custom.text
+    assert custom.json()["nodes"][0]["params"]["view_state"] == custom_state
+
+    custom_definition = {
+        "id": "custom:Thermal%20Map:1z141z3",
+        "label": "Thermal Map",
+        "stops": [
+            {"position": 0.0, "rgb": [0.0, 0.1, 0.2]},
+            {"position": 0.5, "rgb": [0.4, 0.5, 0.6]},
+            {"position": 1.0, "rgb": [0.8, 0.9, 1.0]},
+        ],
+    }
+    portable_custom_state = {
+        **state,
+        "color_map": custom_definition["id"],
+        "custom_color_map": custom_definition,
+    }
+    portable_custom = client.post(
+        "/pipelines",
+        json={
+            "project_id": pid,
+            "name": "portable custom colormap view",
+            "nodes": [
+                {
+                    "node_type": "representation",
+                    "name": "portable custom view",
+                    "params": {"view_state": portable_custom_state},
+                }
+            ],
+        },
+    )
+    assert portable_custom.status_code == 201, portable_custom.text
+    assert portable_custom.json()["nodes"][0]["params"]["view_state"] == portable_custom_state
+
+    invalid_custom_definitions = [
+        {
+            **portable_custom_state,
+            "custom_color_map": {**custom_definition, "id": "custom:Other:abc123"},
+        },
+        {
+            **portable_custom_state,
+            "custom_color_map": {
+                **custom_definition,
+                "stops": [
+                    {"position": 0.0, "rgb": [0.0, 0.0, 0.0]},
+                    {"position": 1.1, "rgb": [1.0, 1.0, 1.0]},
+                ],
+            },
+        },
+        {
+            **portable_custom_state,
+            "custom_color_map": {
+                **custom_definition,
+                "stops": [
+                    {"position": 0.0, "rgb": [0.0, 0.0, 0.0]},
+                    {"position": 0.75, "rgb": [0.5, 0.5, 0.5]},
+                    {"position": 0.5, "rgb": [0.75, 0.75, 0.75]},
+                    {"position": 1.0, "rgb": [1.0, 1.0, 1.0]},
+                ],
+            },
+        },
+        {
+            **portable_custom_state,
+            "custom_color_map": {
+                **custom_definition,
+                "stops": [
+                    {"position": index / 4096, "rgb": [0.0, 0.0, 0.0]}
+                    for index in range(4097)
+                ],
+            },
+        },
+        {
+            **state,
+            "custom_color_map": custom_definition,
+        },
+    ]
+    for index, invalid_state in enumerate(invalid_custom_definitions):
+        rejected_custom = client.post(
+            "/pipelines",
+            json={
+                "project_id": pid,
+                "name": f"invalid custom colormap {index}",
+                "nodes": [
+                    {
+                        "node_type": "representation",
+                        "name": "bad custom view",
+                        "params": {"view_state": invalid_state},
+                    }
+                ],
+            },
+        )
+        assert rejected_custom.status_code == 422
+
     bad = {**state, "opacity": 1.5}
     rejected = client.post(
         "/pipelines",
@@ -828,6 +1023,43 @@ def test_pipeline_view_state_validation_and_roundtrip(client, data_dir):
         },
     )
     assert rejected_range.status_code == 422
+
+    bad_opacity_points = {
+        **state,
+        "volume_opacity_points": [{"value": 0.0, "alpha": 0.0}],
+    }
+    rejected_points = client.post(
+        "/pipelines",
+        json={
+            "project_id": pid,
+            "name": "bad opacity points",
+            "nodes": [
+                {
+                    "node_type": "representation",
+                    "name": "bad",
+                    "params": {"view_state": bad_opacity_points},
+                }
+            ],
+        },
+    )
+    assert rejected_points.status_code == 422
+
+    unknown_field = {**state, "unrecognized_display_field": True}
+    rejected_unknown = client.post(
+        "/pipelines",
+        json={
+            "project_id": pid,
+            "name": "unknown view state field",
+            "nodes": [
+                {
+                    "node_type": "representation",
+                    "name": "bad",
+                    "params": {"view_state": unknown_field},
+                }
+            ],
+        },
+    )
+    assert rejected_unknown.status_code == 422
 
 
 def test_pipeline_rejects_unresolvable_input_id(client, data_dir):

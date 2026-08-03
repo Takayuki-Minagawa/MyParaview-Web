@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from ..access import authorized_pipeline, require_project, tag_audit
 from ..auth import Principal, get_principal
 from ..db import get_db
-from ..jobs import manager
+from ..jobs import JobQueueUnavailable, manager
 from ..models import Dataset, Job, Pipeline, PipelineNode
 from ..pipeline_lifecycle import detach_pipeline_inputs
 from ..project_locks import locked_project
@@ -170,7 +170,10 @@ def run_pipeline(
         db.add(job)
         db.flush()
     tag_audit(request, "job", job.id, project_id)
-    manager.submit(job.id, run_pipeline_execution(pipeline_id, dataset_id, filters))
+    try:
+        manager.submit(job.id, run_pipeline_execution(pipeline_id, dataset_id, filters))
+    except JobQueueUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
     return job
 
 

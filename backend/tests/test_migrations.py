@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from alembic import command
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import JSON, create_engine, inspect, text
 
 from app.db import _alembic_config, migrate_database
 
@@ -14,11 +14,23 @@ def test_fresh_database_upgrades_to_head(tmp_path):
     try:
         assert "projects" in inspect(engine).get_table_names()
         with engine.connect() as connection:
-            assert connection.execute(text("select version_num from alembic_version")).scalar() == "0008"
+            assert connection.execute(text("select version_num from alembic_version")).scalar() == "0010"
+            dataset_columns = {
+                column["name"]: column for column in inspect(engine).get_columns("datasets")
+            }
+            assert isinstance(dataset_columns["tags"]["type"], JSON)
+            assert dataset_columns["tags"]["nullable"] is False
             assert "dataset_files" in inspect(engine).get_table_names()
             assert "project_members" in inspect(engine).get_table_names()
             assert "audit_events" in inspect(engine).get_table_names()
             assert "render_sessions" in inspect(engine).get_table_names()
+            assert "object_deletion_outbox" in inspect(engine).get_table_names()
+            outbox_columns = {
+                column["name"]
+                for column in inspect(engine).get_columns("object_deletion_outbox")
+            }
+            assert outbox_columns == {"id", "object_key", "job_id", "created_at"}
+            assert inspect(engine).get_foreign_keys("object_deletion_outbox") == []
             input_fk = next(
                 fk
                 for fk in inspect(engine).get_foreign_keys("pipeline_nodes")
@@ -46,6 +58,14 @@ def test_legacy_create_all_database_is_adopted(tmp_path):
         connection.execute(
             text("insert into projects (id, name, created_at) values ('legacy', 'kept', '2026-01-01')")
         )
+        connection.execute(
+            text(
+                "insert into datasets "
+                "(id, project_id, filename, ext, size_bytes, object_key, status, created_at) "
+                "values ('legacy-dataset', 'legacy', 'legacy.vtp', '.vtp', 0, "
+                "'legacy.vtp', 'registered', '2026-01-01')"
+            )
+        )
     engine.dispose()
 
     migrate_database(url)
@@ -53,8 +73,11 @@ def test_legacy_create_all_database_is_adopted(tmp_path):
     engine = create_engine(url)
     try:
         with engine.connect() as connection:
-            assert connection.execute(text("select version_num from alembic_version")).scalar() == "0008"
+            assert connection.execute(text("select version_num from alembic_version")).scalar() == "0010"
             assert connection.execute(text("select name from projects where id='legacy'")).scalar() == "kept"
+            assert connection.execute(
+                text("select tags from datasets where id='legacy-dataset'")
+            ).scalar() == "[]"
             assert connection.execute(
                 text("select role from project_members where project_id='legacy' and user_id='anonymous'")
             ).scalar() == "admin"

@@ -2,8 +2,8 @@ import { useCallback } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
 import type { Dataset, Job, Pipeline, ViewState } from "../types";
+import { customColorMapDefinition } from "../lib/colormap";
 import { parseViewState } from "../lib/viewState";
-import { DEFAULT_VOLUME_OPACITY_POINTS } from "../lib/imageData";
 import type { DisplayState } from "./useDisplayState";
 import type { ProjectScope, ScopeTicket } from "./useProjectScope";
 
@@ -33,6 +33,7 @@ export function usePipelineActions({
   const savePipeline = useCallback(async (name: string) => {
     const ticket = scope.capture();
     if (!ticket || !selectedDataset) return;
+    const customColorMap = customColorMapDefinition(display.colorMap);
     const state: ViewState = {
       schema_version: 1,
       representation: display.representation,
@@ -40,6 +41,7 @@ export function usePipelineActions({
       color_range: display.customColorRange,
       opacity: display.opacity,
       color_map: display.colorMap,
+      ...(customColorMap ? { custom_color_map: customColorMap } : {}),
       legend_visible: display.legendVisible,
       camera: display.cameraState,
       table_coordinates: display.tableCoordinates,
@@ -81,23 +83,7 @@ export function usePipelineActions({
     }
     const dataset = await selectDataset(input.dataset_id);
     if (!dataset || !ticket.stillCurrent()) return;
-    display.setRepresentation(state.representation);
-    display.setColorByState(state.color_by);
-    display.setCustomColorRange(state.color_range);
-    display.setRuntimeColorRange(null);
-    display.setOpacity(state.opacity);
-    display.setColorMap(state.color_map);
-    display.setLegendVisible(state.legend_visible);
-    display.setCameraState(state.camera);
-    display.setTableCoordinates(state.table_coordinates ?? null);
-    display.setImageMode(state.image_mode ?? "slice");
-    display.setSliceAxis(state.slice_axis ?? "Z");
-    display.setSliceIndex(state.slice_index ?? 0);
-    display.setTimestepIndex(state.timestep_index ?? 0);
-    display.setVolumeOpacityPoints(
-      state.volume_opacity_points ?? DEFAULT_VOLUME_OPACITY_POINTS,
-    );
-    display.setPlaying(false);
+    display.restoreViewState(state);
   }, [scope, onError, unreadableText, selectDataset, display]);
 
   const deletePipeline = useCallback((pipeline: Pipeline) => {

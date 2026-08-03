@@ -1,6 +1,18 @@
-import { memo, useEffect, useState } from "react";
-import type { ArrayInfo, ColorMapName, Dataset, ScalarSelection } from "../../types";
+import { memo, useEffect, useState, useSyncExternalStore } from "react";
+import type {
+  ArrayInfo,
+  BuiltInColorMapName,
+  ColorMapName,
+  Dataset,
+  ScalarSelection,
+} from "../../types";
 import { isImageScalarArray } from "../../lib/imageData";
+import {
+  getCustomColorMapRegistryVersion,
+  registeredCustomColorMaps,
+  subscribeCustomColorMapRegistry,
+} from "../../lib/colormap";
+import { importParaViewColorMapPreset } from "../../lib/paraviewPreset";
 import { useMessages } from "../../i18n-context";
 
 interface Props {
@@ -88,6 +100,16 @@ export const ScalarColorSection = memo(function ScalarColorSection({
   onLegendVisible,
 }: Props) {
   const messages = useMessages();
+  useSyncExternalStore(
+    subscribeCustomColorMapRegistry,
+    getCustomColorMapRegistryVersion,
+    getCustomColorMapRegistryVersion,
+  );
+  const customColorMaps = registeredCustomColorMaps();
+  const [presetStatus, setPresetStatus] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
   const associationLabel = (array: ArrayInfo) =>
     array.association === "table"
       ? messages.properties.associationNames.tablePoint
@@ -140,13 +162,58 @@ export const ScalarColorSection = memo(function ScalarColorSection({
           <label>
             {messages.properties.colorMap}
             <select value={colorMap} onChange={(e) => onColorMap(e.target.value as ColorMapName)}>
-              {(Object.entries(messages.properties.colorMapNames) as [ColorMapName, string][]).map(
+              {(Object.entries(messages.properties.colorMapNames) as [BuiltInColorMapName, string][]).map(
                 ([name, label]) => (
                   <option key={name} value={name}>{label}</option>
                 ),
               )}
+              {customColorMaps.map(({ id, label }) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
             </select>
           </label>
+
+          <label className="color-map-import">
+            <span>{messages.properties.importColorMap}</span>
+            <input
+              type="file"
+              accept=".json,application/json"
+              aria-label={messages.properties.importColorMap}
+              onChange={(event) => {
+                const input = event.currentTarget;
+                const file = input.files?.[0];
+                if (!file) return;
+                setPresetStatus(null);
+                if (file.size > 1024 * 1024) {
+                  setPresetStatus({ kind: "error", message: messages.properties.colorMapFileTooLarge });
+                  input.value = "";
+                  return;
+                }
+                void file.text()
+                  .then((text) => {
+                    const preset = importParaViewColorMapPreset(text);
+                    onColorMap(preset.id);
+                    setPresetStatus({
+                      kind: "success",
+                      message: `${messages.properties.colorMapImported}: ${preset.label}`,
+                    });
+                  })
+                  .catch((reason) => setPresetStatus({
+                    kind: "error",
+                    message: `${messages.properties.colorMapImportFailed}: ${String(reason)}`,
+                  }))
+                  .finally(() => { input.value = ""; });
+              }}
+            />
+          </label>
+          {presetStatus && (
+            <p
+              className={presetStatus.kind === "error" ? "validation-error" : "muted"}
+              role={presetStatus.kind === "error" ? "alert" : "status"}
+            >
+              {presetStatus.message}
+            </p>
+          )}
 
           <label className="checkbox-row">
             <input

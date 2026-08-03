@@ -2,7 +2,7 @@
 # Kept intentionally close to default; rule additions should come with the
 # codebase actually satisfying them (no blanket ignores).
 line-length = 100
-target-version = "py39"
+target-version = "py311"
 
 [lint]
 select = [

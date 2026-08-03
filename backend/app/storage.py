@@ -28,6 +28,13 @@ class ObjectStore:
         self._leases: dict[str, int] = {}
         self._pending_delete: set[str] = set()
 
+    def reset_after_fork(self) -> None:
+        """Replace process-local synchronization inherited by a forked worker."""
+
+        self._lease_lock = threading.Lock()
+        self._leases = {}
+        self._pending_delete = set()
+
     def new_key(self, suffix: str = "") -> str:
         return f"{uuid.uuid4().hex}{suffix}"
 
@@ -60,13 +67,16 @@ class ObjectStore:
                     self._pending_delete.remove(safe)
                     (self.root / safe).unlink(missing_ok=True)
 
-    def _delete_local_when_unleased(self, key: str) -> None:
+    def _delete_local_when_unleased(self, key: str) -> bool:
+        """Delete a local object, returning whether removal is complete."""
+
         safe = Path(key).name
         with self._lease_lock:
             if self._leases.get(safe, 0) > 0:
                 self._pending_delete.add(safe)
-                return
+                return False
             (self.root / safe).unlink(missing_ok=True)
+            return True
 
     @contextmanager
     def local_path(self, key: str) -> Iterator[Path]:
@@ -103,8 +113,8 @@ class ObjectStore:
     def exists(self, key: str) -> bool:
         return self.path_for(key).is_file()
 
-    def delete(self, key: str) -> None:
-        self._delete_local_when_unleased(key)
+    def delete(self, key: str) -> bool:
+        return self._delete_local_when_unleased(key)
 
     def copy_in(self, key: str, src: Path) -> int:
         shutil.copyfile(src, self.path_for(key))
@@ -147,6 +157,27 @@ class S3ObjectStore(ObjectStore):
             endpoint_url=settings.s3_endpoint_url,
             region_name=settings.s3_region,
         )
+
+    def reset_after_fork(self) -> None:
+        """Drop inherited boto3 pools and locks before a workhorse uses S3."""
+
+        inherited_client = self.client
+        try:
+            inherited_client.close()
+        except Exception:  # noqa: BLE001 - replacement must still complete
+            pass
+        finally:
+            super().reset_after_fork()
+            self._cache_lock = threading.Lock()
+            self._needs_eviction = False
+            self._key_locks = tuple(threading.Lock() for _ in range(64))
+            import boto3
+
+            self.client = boto3.client(
+                "s3",
+                endpoint_url=settings.s3_endpoint_url,
+                region_name=settings.s3_region,
+            )
 
     def _key_lock(self, key: str) -> threading.Lock:
         return self._key_locks[hash(Path(key).name) % len(self._key_locks)]
@@ -278,10 +309,13 @@ class S3ObjectStore(ObjectStore):
                 return False
             raise
 
-    def delete(self, key: str) -> None:
+    def delete(self, key: str) -> bool:
         with self._key_lock(key):
             self.client.delete_object(Bucket=self.bucket, Key=Path(key).name)
             self._delete_local_when_unleased(key)
+            # The S3 object is authoritative. A leased local cache copy is
+            # process-local and is removed automatically when its lease ends.
+            return True
 
     def copy_in(self, key: str, src: Path) -> int:
         target = super().path_for(key)

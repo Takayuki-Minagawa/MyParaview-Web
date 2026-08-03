@@ -3,13 +3,17 @@ backend/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 backend/.pvweb-data/
 .pvweb-data/
+backend/coverage/
+.coverage
 
 # Node
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/coverage/
 *.log
 
 # OS / editor
@@ -20,3 +24,10 @@ frontend/dist/
 # Playwright
 frontend/test-results/
 frontend/playwright-report/
+
+# Deployment secrets (checked-in examples are intentionally retained).
+.env
+.env.*
+!.env.production.example
+!infra/.env.example
+infra/.env

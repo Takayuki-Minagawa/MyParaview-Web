@@ -28,21 +28,44 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the supported language floor; 3.13 is the interpreter
+        # shipped by backend/Dockerfile.
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: backend/requirements-dev.txt
       - run: pip install -r backend/requirements-dev.txt
-      - run: pytest -q
+      - run: mkdir -p coverage
+        working-directory: backend
+      - run: >-
+          pytest
+          --cov=app
+          --cov=../workers
+          --cov-branch
+          --cov-fail-under=80
+          --cov-report=term-missing
+          --cov-report=xml:coverage/coverage.xml
+          --cov-report=html:coverage/html
         working-directory: backend
       - run: python -m pytest -q python
       - run: >-
           PVWEB_DATABASE_URL=postgresql+psycopg://u:p@localhost/db
           alembic -c alembic.ini upgrade head --sql > /tmp/pvweb-postgres.sql
         working-directory: backend
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage-py${{ matrix.python-version }}
+          path: backend/coverage/
+          if-no-files-found: ignore
+          retention-days: 14
 
   frontend:
     runs-on: ubuntu-latest
@@ -57,10 +80,17 @@ jobs:
         working-directory: frontend
       - run: npm run typecheck
         working-directory: frontend
-      - run: npm test -- --run
+      - run: npm run test:coverage
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/
+          if-no-files-found: ignore
+          retention-days: 14
 
   e2e:
     runs-on: ubuntu-latest
@@ -112,5 +142,5 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: alembic -c alembic.ini upgrade head
         working-directory: backend
-      - run: python -c "from sqlalchemy import create_engine,text; from app.config import settings; e=create_engine(settings.database_url); assert e.connect().execute(text('select version_num from alembic_version')).scalar() == '0008'"
+      - run: python -m scripts.verify_postgres_tags
         working-directory: backend

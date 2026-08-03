@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { ScalarColorSection } from "./ScalarColorSection";
 import { MessagesProvider } from "../../i18n-context";
 import { MESSAGES } from "../../i18n";
 import type { Dataset } from "../../types";
+import { registerCustomColorMap } from "../../lib/colormap";
 
 const messages = MESSAGES.ja;
 
@@ -58,8 +59,8 @@ describe("ScalarColorSection color map", () => {
       messages.properties.colorMapNames.viridis,
     ) as HTMLSelectElement;
     const labels = Array.from(select.options).map((option) => option.textContent);
-    expect(labels).toEqual(Object.values(messages.properties.colorMapNames));
-    expect(select.options.length).toBe(5);
+    expect(labels.slice(0, 5)).toEqual(Object.values(messages.properties.colorMapNames));
+    expect(select.options.length).toBeGreaterThanOrEqual(5);
   });
 
   it("reports colormap changes via onColorMap", async () => {
@@ -68,6 +69,41 @@ describe("ScalarColorSection color map", () => {
     const select = screen.getByDisplayValue(messages.properties.colorMapNames.viridis);
     await user.selectOptions(select, "turbo");
     expect(handlers.onColorMap).toHaveBeenCalledWith("turbo");
+  });
+
+  it("imports a ParaView JSON preset and selects it", async () => {
+    const user = userEvent.setup();
+    const handlers = renderSection();
+    const file = new File([
+      JSON.stringify({
+        Name: "Review Thermal",
+        RGBPoints: [0, 0, 0, 1, 1, 1, 0, 0],
+      }),
+    ], "thermal.json", { type: "application/json" });
+
+    await user.upload(screen.getByLabelText(messages.properties.importColorMap), file);
+
+    await waitFor(() => expect(handlers.onColorMap).toHaveBeenCalled());
+    const calls = handlers.onColorMap.mock.calls;
+    expect(calls[calls.length - 1]?.[0]).toMatch(/^custom:/);
+    expect((await screen.findByRole("status")).textContent).toContain("Review Thermal");
+  });
+
+  it("updates options when a saved view registers a colormap outside the panel", async () => {
+    const id = "custom:SavedView:g001" as const;
+    renderSection({ colorMap: id });
+    const select = screen.getAllByRole("combobox")[1] as HTMLSelectElement;
+    expect(select.value).not.toBe(id);
+
+    act(() => {
+      registerCustomColorMap(id, "Saved view preset", [
+        { position: 0, rgb: [0, 0, 0] },
+        { position: 1, rgb: [1, 1, 1] },
+      ]);
+    });
+
+    await waitFor(() => expect(select.value).toBe(id));
+    expect(screen.getByRole("option", { name: "Saved view preset" })).toBeTruthy();
   });
 });
 

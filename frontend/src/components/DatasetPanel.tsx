@@ -1,9 +1,9 @@
 import { memo, useEffect, useRef, useState } from "react";
 import type { AuditEvent, Dataset, Job, Project, ProjectMember, ProjectRole } from "../types";
 import { api } from "../api";
-import { humanFileSize } from "../lib/format";
 import { triggerBlobDownload } from "../lib/download";
 import { isCancellable, lastLogLine } from "../lib/job";
+import { DatasetList } from "./DatasetList";
 import { PipelinePanel } from "./PipelinePanel";
 import type { Pipeline } from "../types";
 import { useMessages } from "../i18n-context";
@@ -20,6 +20,7 @@ interface Props {
   datasets: Dataset[];
   selectedDatasetId: string | null;
   onSelectDataset: (id: string) => void;
+  onUpdateDatasetTags: (id: string, tags: string[]) => Promise<Dataset | null>;
   onUploadFiles: (files: File[]) => void;
   busy: string | null;
   jobs: Job[];
@@ -230,33 +231,15 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
       </div>
       {props.busy && <div className="busy">{props.busy}</div>}
 
-      <ul className="dataset-list">
-        {props.datasets.map((d) => (
-          <li
-            key={d.id}
-            className={d.id === props.selectedDatasetId ? "selected" : ""}
-            role="button"
-            tabIndex={0}
-            aria-pressed={d.id === props.selectedDatasetId}
-            onClick={() => props.onSelectDataset(d.id)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                props.onSelectDataset(d.id);
-              }
-            }}
-          >
-            <span className="ds-name">{d.filename}</span>
-            <span className={`badge badge-${d.status}`}>{t.datasetStatus[d.status]}</span>
-            <span className="ds-meta">
-              {d.dataset_type ?? d.ext} · {humanFileSize(d.size_bytes)}
-            </span>
-          </li>
-        ))}
-        {props.datasets.length === 0 && props.currentProjectId && (
-          <li className="empty">{t.datasetPanel.emptyDatasets}</li>
-        )}
-      </ul>
+      <DatasetList
+        projectId={props.currentProjectId}
+        datasets={props.datasets}
+        selectedDatasetId={props.selectedDatasetId}
+        canEditTags={props.membership?.role === "editor" || props.membership?.role === "admin"}
+        onSelectDataset={props.onSelectDataset}
+        onUpdateDatasetTags={props.onUpdateDatasetTags}
+        onError={props.onError}
+      />
 
       <h2>{t.datasetPanel.jobs}</h2>
       <ul className="job-list" aria-live="polite">

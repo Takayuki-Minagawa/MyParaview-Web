@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import uuid
 
+import pytest
+
 from conftest import wait_for_job
 
 
@@ -99,6 +101,26 @@ def test_list_jobs_requires_project_id(client):
     assert client.get("/jobs").status_code == 422
 
 
+def test_video_export_capability_requires_pvpython_and_executable_ffmpeg(
+    client, tmp_path, monkeypatch
+):
+    from app.config import settings
+
+    executable = tmp_path / "ffmpeg"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+
+    monkeypatch.setattr(settings, "worker_command", [])
+    monkeypatch.setattr(settings, "ffmpeg_executable", str(executable))
+    assert client.get("/capabilities").json()["video_export"] is False
+
+    monkeypatch.setattr(settings, "worker_command", ["pvpython"])
+    assert client.get("/capabilities").json()["video_export"] is True
+
+    monkeypatch.setattr(settings, "ffmpeg_executable", str(tmp_path / "missing"))
+    assert client.get("/capabilities").json()["video_export"] is False
+
+
 def test_stats_job_produces_json_artifact(client, data_dir):
     project_id = _project(client, "job-stats")
     dataset = _ingested_dataset(client, data_dir, project_id)
@@ -191,6 +213,150 @@ def test_movie_job_without_worker_fails_with_capability_error(client, data_dir):
     finished = wait_for_job(client, created.json()["id"])
     assert finished["status"] == "failed"
     assert "PVWEB_PVPYTHON" in finished["log"]
+
+
+def test_video_movie_without_ffmpeg_fails_explicitly(client, data_dir, monkeypatch):
+    from app.config import settings
+
+    project_id = _project(client, "job-video-no-ffmpeg")
+    dataset = _ingested_dataset(client, data_dir, project_id)
+    monkeypatch.setattr(settings, "ffmpeg_executable", "")
+    created = client.post(
+        "/jobs",
+        json={
+            "project_id": project_id,
+            "kind": "movie",
+            "target_id": dataset["id"],
+            "params": {"format": "mp4", "fps": 30},
+        },
+    )
+    assert created.status_code == 202, created.text
+    finished = wait_for_job(client, created.json()["id"])
+    assert finished["status"] == "failed"
+    assert "PVWEB_FFMPEG" in finished["log"]
+    assert client.get(f"/artifacts?job_id={created.json()['id']}").json() == []
+
+
+def test_video_movie_without_pvpython_fails_after_ffmpeg_validation(
+    client, data_dir, tmp_path, monkeypatch
+):
+    from app.config import settings
+
+    project_id = _project(client, "job-video-no-pvpython")
+    dataset = _ingested_dataset(client, data_dir, project_id)
+    executable = tmp_path / "ffmpeg"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    monkeypatch.setattr(settings, "ffmpeg_executable", str(executable))
+    monkeypatch.setattr(settings, "worker_command", [])
+    created = client.post(
+        "/jobs",
+        json={
+            "project_id": project_id,
+            "kind": "movie",
+            "target_id": dataset["id"],
+            "params": {"format": "webm", "fps": 30},
+        },
+    )
+    assert created.status_code == 202, created.text
+    finished = wait_for_job(client, created.json()["id"])
+    assert finished["status"] == "failed"
+    assert "PVWEB_PVPYTHON" in finished["log"]
+    assert client.get(f"/artifacts?job_id={created.json()['id']}").json() == []
+
+
+def test_legacy_movie_default_still_creates_frame_png_zip(
+    client, data_dir, monkeypatch
+):
+    import io
+    import zipfile
+
+    project_id = _project(client, "job-movie-legacy-zip")
+    dataset = _ingested_dataset(client, data_dir, project_id)
+
+    def fake_frames(_source, frames_dir, params, _ctx):
+        assert params["format"] == "zip"
+        frames_dir.mkdir(parents=True)
+        frames = [frames_dir / "frame-0000.png", frames_dir / "frame-0001.png"]
+        for index, frame in enumerate(frames):
+            frame.write_bytes(b"png" + bytes([index]))
+        return frames
+
+    monkeypatch.setattr("app.services.run_movie_frames", fake_frames)
+    created = client.post(
+        "/jobs",
+        json={
+            "project_id": project_id,
+            "kind": "movie",
+            "target_id": dataset["id"],
+            "params": {},
+        },
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["params"] == {
+        "width": 1280,
+        "height": 960,
+        "format": "zip",
+        "fps": 24,
+    }
+    finished = wait_for_job(client, created.json()["id"])
+    assert finished["status"] == "succeeded", finished
+    artifact_id = finished["result"]["artifact_id"]
+    listed = client.get(f"/artifacts?job_id={created.json()['id']}").json()
+    assert [(item["kind"], item["filename"], item["content_type"]) for item in listed] == [
+        ("movie_frames", "sample_surface-movie.zip", "application/zip")
+    ]
+    downloaded = client.get(f"/artifacts/{artifact_id}")
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        assert archive.namelist() == ["frame-0000.png", "frame-0001.png"]
+
+
+@pytest.mark.parametrize(
+    ("output_format", "content_type"),
+    [("mp4", "video/mp4"), ("webm", "video/webm")],
+)
+def test_video_movie_creates_typed_artifact(
+    client, data_dir, monkeypatch, output_format, content_type
+):
+    project_id = _project(client, f"job-movie-{output_format}")
+    dataset = _ingested_dataset(client, data_dir, project_id)
+
+    def fake_video(_source, output, params, _ctx):
+        assert params["format"] == output_format
+        assert params["fps"] == 30
+        output.write_bytes(f"fake-{output_format}".encode())
+        return 4
+
+    monkeypatch.setattr("app.services.run_movie_video", fake_video)
+    created = client.post(
+        "/jobs",
+        json={
+            "project_id": project_id,
+            "kind": "movie",
+            "target_id": dataset["id"],
+            "params": {
+                "format": output_format,
+                "fps": 30,
+                "width": 640,
+                "height": 360,
+            },
+        },
+    )
+    assert created.status_code == 202, created.text
+    finished = wait_for_job(client, created.json()["id"])
+    assert finished["status"] == "succeeded", finished
+    assert finished["result"]["format"] == output_format
+    assert finished["result"]["fps"] == 30
+    assert finished["result"]["frame_count"] == 4
+    listed = client.get(f"/artifacts?job_id={created.json()['id']}").json()
+    assert len(listed) == 1
+    artifact = listed[0]
+    assert artifact["kind"] == "movie_video"
+    assert artifact["filename"] == f"sample_surface-movie.{output_format}"
+    assert artifact["content_type"] == content_type
+    downloaded = client.get(f"/artifacts/{artifact['id']}")
+    assert downloaded.headers["content-type"].startswith(content_type)
+    assert downloaded.content == f"fake-{output_format}".encode()
 
 
 def test_jobs_stream_emits_existing_job_snapshot(client, data_dir):

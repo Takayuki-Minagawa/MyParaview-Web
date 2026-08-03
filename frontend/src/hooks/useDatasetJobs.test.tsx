@@ -8,6 +8,7 @@ import type { Job } from "../types";
 vi.mock("../api", () => ({
   api: {
     createJob: vi.fn(),
+    createMovieJob: vi.fn(),
     promoteArtifact: vi.fn(),
     ingest: vi.fn(),
     timestepUrl: vi.fn((id: string, index: number) => `/datasets/${id}/timesteps/${index}/download`),
@@ -17,6 +18,7 @@ vi.mock("../api", () => ({
 }));
 
 const createJob = vi.mocked(api.createJob);
+const createMovieJob = vi.mocked(api.createMovieJob);
 const mockedPollJob = vi.mocked(pollJob);
 
 function job(id: string, status: Job["status"] = "succeeded"): Job {
@@ -87,6 +89,19 @@ describe("useDatasetJobs", () => {
     expect(String(onError.mock.calls[0][0])).toContain("boom");
   });
 
+  it("exportMovie uses the typed movie API and tracks the artifact job", async () => {
+    createMovieJob.mockResolvedValue({ ...job("movie-1", "queued"), kind: "movie" });
+    mockedPollJob.mockResolvedValue({ ...job("movie-1", "succeeded"), kind: "movie" });
+    const { result, refreshArtifacts } = renderJobs();
+    const params = { format: "webm", fps: 30, width: 1280, height: 720 } as const;
+
+    act(() => result.current.jobs.exportMovie(params));
+    expect(result.current.jobs.moviePending).toBe(true);
+    await waitFor(() => expect(result.current.jobs.moviePending).toBe(false));
+    expect(createMovieJob).toHaveBeenCalledWith("p1", "d1", params);
+    expect(refreshArtifacts).toHaveBeenCalledWith("d1");
+  });
+
   it("re-entrant clicks while pending are ignored", async () => {
     createJob.mockResolvedValue(job("j1", "queued"));
     mockedPollJob.mockImplementation(() => new Promise(() => {}));
@@ -119,5 +134,6 @@ describe("useDatasetJobs", () => {
     await waitFor(() => expect(result.current.jobs.exportPending).toBe(true));
     act(() => result.current.jobs.resetPending());
     expect(result.current.jobs.exportPending).toBe(false);
+    expect(result.current.jobs.moviePending).toBe(false);
   });
 });

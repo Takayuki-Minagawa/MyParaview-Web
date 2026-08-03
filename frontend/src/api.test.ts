@@ -111,6 +111,49 @@ describe("pollJob", () => {
   });
 });
 
+describe("createJob", () => {
+  it("preserves the typed server-filter parameter contract in the request body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(jobWith("queued")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createJob("p1", "filter", "d1", {
+      filter: "resample",
+      dimensions: [16, 24, 32],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/jobs$/);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      project_id: "p1",
+      kind: "filter",
+      target_id: "d1",
+      params: { filter: "resample", dimensions: [16, 24, 32] },
+    });
+  });
+
+  it("sends the strict movie export contract", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(jobWith("queued")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createMovieJob("p1", "d1", {
+      format: "mp4",
+      fps: 24,
+      width: 1280,
+      height: 720,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/jobs$/);
+    expect(JSON.parse(String(init.body))).toEqual({
+      project_id: "p1",
+      kind: "movie",
+      target_id: "d1",
+      params: { format: "mp4", fps: 24, width: 1280, height: 720 },
+    });
+  });
+});
+
 describe("sessionWebSocketUrl", () => {
   it("converts an https API base to wss", async () => {
     vi.stubEnv("VITE_API_BASE", "https://api.example.com");

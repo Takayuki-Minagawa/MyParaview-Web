@@ -9,8 +9,8 @@ import type {
 } from "./types";
 import { DatasetPanel } from "./components/DatasetPanel";
 import { PropertiesPanel } from "./components/PropertiesPanel";
-import { VtkViewer } from "./components/VtkViewer";
 import type { VtkViewerHandle } from "./components/VtkViewer";
+import { ComparisonViewport } from "./components/ComparisonViewport";
 import { RemoteViewer } from "./components/RemoteViewer";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { clampSliceIndex } from "./lib/viewState";
@@ -22,6 +22,7 @@ import type { Language, ThemeMode } from "./i18n";
 import { MessagesProvider, useMessages } from "./i18n-context";
 import { useProjectScope } from "./hooks/useProjectScope";
 import { useDisplayState } from "./hooks/useDisplayState";
+import { useDisplayHistoryShortcuts } from "./hooks/useDisplayHistoryShortcuts";
 import { useJobPolling } from "./hooks/useJobPolling";
 import { useProjectResources } from "./hooks/useProjectResources";
 import { useRemoteSession } from "./hooks/useRemoteSession";
@@ -73,6 +74,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   const [viewerLoadedUrl, setViewerLoadedUrl] = useState<string | null>(null);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [comparisonEnabled, setComparisonEnabled] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const viewerRef = useRef<VtkViewerHandle | null>(null);
   const [authState, setAuthState] = useState({
@@ -83,6 +85,12 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   const [serverCapabilities, setServerCapabilities] = useState<ServerCapabilities | null>(null);
   const browserCapabilities = useMemo(() => detectBrowserCapabilities(), []);
   const display = useDisplayState();
+  useDisplayHistoryShortcuts({
+    canUndo: display.canUndo,
+    canRedo: display.canRedo,
+    undo: display.undo,
+    redo: display.redo,
+  });
   const scope = useProjectScope();
 
   // ---- error banners: multiple concurrent failures no longer clobber each other
@@ -150,6 +158,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     exportDataset, exportPending,
     convertDataset, convertPending,
     runStats, statsPending,
+    exportMovie, moviePending,
     runServerFilter, filterPending,
     onAssistJobCreated, promoteArtifact, promotePendingIds,
     downloadTimestep, resetPending,
@@ -219,6 +228,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     clearProjectResources();
     setJobs([]);
     setSelectedDatasetId(null);
+    setComparisonEnabled(false);
     clearRemoteOnProjectSwitch();
     display.reset();
     resetPending();
@@ -290,6 +300,26 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     scope, clearErrors, display, setArtifacts, setDatasets, refreshArtifacts,
     pushError, stopRemoteIfDatasetChanged,
   ]);
+
+  const updateDatasetTags = useCallback(async (
+    datasetId: string,
+    tags: string[],
+  ): Promise<Dataset | null> => {
+    const ticket = scope.capture();
+    if (!ticket) return null;
+    clearErrors();
+    try {
+      const updated = await api.updateDatasetTags(datasetId, tags);
+      if (!ticket.stillCurrent() || updated.project_id !== ticket.projectId) return null;
+      setDatasets((previous) => previous.map(
+        (dataset) => (dataset.id === updated.id ? updated : dataset),
+      ));
+      return updated;
+    } catch (reason) {
+      if (ticket.stillCurrent()) pushError(String(reason));
+      return null;
+    }
+  }, [scope, clearErrors, setDatasets, pushError]);
 
   const selectedDataset = useMemo(
     () => datasets.find((d) => d.id === selectedDatasetId) ?? null,
@@ -558,15 +588,19 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     promotePendingIds,
     onClientExport: clientExport,
     clientExportPending,
+    onMovieExport: exportMovie,
+    moviePending,
     filterPending,
     serverFilterAvailable,
+    videoExportAvailable: serverCapabilities?.video_export ?? false,
     onRunFilter: runServerFilter,
     onJobCreated: onAssistJobCreated,
     onDownloadTimestep: downloadTimestep,
   }), [
     exportDataset, exportPending, convertDataset, convertPending,
     runStats, statsPending, promoteArtifact, promotePendingIds,
-    clientExport, clientExportPending, filterPending, serverFilterAvailable,
+    clientExport, clientExportPending, exportMovie, moviePending,
+    filterPending, serverFilterAvailable, serverCapabilities?.video_export,
     runServerFilter, onAssistJobCreated, downloadTimestep,
   ]);
 
@@ -631,6 +665,13 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
           </select>
           <button onClick={copyShareLink} disabled={!currentProjectId}>
             {shareCopied ? t.common.copied : t.common.copyLink}
+          </button>
+          <button
+            aria-pressed={comparisonEnabled}
+            disabled={!selectedDataset || !!remoteSession}
+            onClick={() => setComparisonEnabled((value) => !value)}
+          >
+            {t.viewer.comparisonToggle}
           </button>
           <button onClick={() => setManualOpen(true)}>{t.common.manual}</button>
         </div>
@@ -708,6 +749,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
           datasets={datasets}
           selectedDatasetId={selectedDatasetId}
           onSelectDataset={(id) => void selectDataset(id)}
+          onUpdateDatasetTags={updateDatasetTags}
           onUploadFiles={(files) => void upload(files)}
           busy={busy}
           jobs={jobs}
@@ -733,31 +775,37 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
             {remoteSession ? (
               <RemoteViewer session={remoteSession} onError={pushError} />
             ) : (
-              <VtkViewer
+              <ComparisonViewport
                 ref={viewerRef}
-                datasetId={selectedDataset?.id ?? null}
-                url={viewerUrl}
-                datasetType={viewerDatasetType}
-                emptyMessage={viewerEmptyMessage}
-                representation={display.representation}
-                colorBy={display.colorBy}
-                colorRange={activeColorRange}
-                opacity={display.opacity}
-                colorMap={display.colorMap}
-                legendVisible={display.legendVisible}
-                axesVisible={display.axesVisible}
-                tableCoordinates={display.tableCoordinates}
-                imageMode={display.imageMode}
-                sliceAxis={display.sliceAxis}
-                sliceIndex={clampedSliceIndex}
-                volumeOpacityPoints={display.volumeOpacityPoints}
-                cameraState={display.cameraState}
-                onCameraChange={display.setCameraState}
-                onScreenshotCaptured={onScreenshotCaptured}
-                onGeometryExported={onGeometryExported}
-                onColorRangeResolved={onColorRangeResolved}
-                onLoadComplete={onLoadComplete}
-                viewerBackground={viewerBackground}
+                enabled={comparisonEnabled}
+                datasets={datasets}
+                primaryDataset={selectedDataset}
+                primaryTimestepIndex={display.timestepIndex}
+                primary={{
+                  datasetId: selectedDataset?.id ?? null,
+                  url: viewerUrl,
+                  datasetType: viewerDatasetType,
+                  emptyMessage: viewerEmptyMessage,
+                  representation: display.representation,
+                  colorBy: display.colorBy,
+                  colorRange: activeColorRange,
+                  opacity: display.opacity,
+                  colorMap: display.colorMap,
+                  legendVisible: display.legendVisible,
+                  axesVisible: display.axesVisible,
+                  tableCoordinates: display.tableCoordinates,
+                  imageMode: display.imageMode,
+                  sliceAxis: display.sliceAxis,
+                  sliceIndex: clampedSliceIndex,
+                  volumeOpacityPoints: display.volumeOpacityPoints,
+                  cameraState: display.cameraState,
+                  onCameraChange: display.setCameraState,
+                  onScreenshotCaptured,
+                  onGeometryExported,
+                  onColorRangeResolved,
+                  onLoadComplete,
+                  viewerBackground,
+                }}
               />
             )}
           </ErrorBoundary>

@@ -7,6 +7,8 @@ import type {
   Dataset,
   Job,
   JobKind,
+  JobParamsByKind,
+  MovieParams,
   Pipeline,
   Project,
   ProjectMember,
@@ -104,9 +106,23 @@ export const api = {
     return response.blob();
   },
 
-  listDatasets: (projectId: string) =>
-    req<Dataset[]>(`/projects/${projectId}/datasets`),
+  listDatasets: (
+    projectId: string,
+    filters: { name?: string; tag?: string } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (filters.name?.trim()) params.set("name", filters.name.trim());
+    if (filters.tag?.trim()) params.set("tag", filters.tag.trim());
+    const query = params.toString();
+    return req<Dataset[]>(`/projects/${projectId}/datasets${query ? `?${query}` : ""}`);
+  },
   getDataset: (id: string) => req<Dataset>(`/datasets/${id}`),
+  updateDatasetTags: (id: string, tags: string[]) =>
+    req<Dataset>(`/datasets/${id}/tags`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags }),
+    }),
 
   uploadDataset: (projectId: string, file: File) => {
     const fd = new FormData();
@@ -141,16 +157,27 @@ export const api = {
   listJobs: (projectId?: string) =>
     req<Job[]>(`/jobs${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
   cancelJob: (id: string) => req<Job>(`/jobs/${id}/cancel`, { method: "POST" }),
-  createJob: (
+  createJob: <K extends JobKind>(
     projectId: string,
-    kind: JobKind,
+    kind: K,
     targetId: string,
-    params: Record<string, unknown>,
+    params: JobParamsByKind[K],
   ) => req<Job>("/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_id: projectId, kind, target_id: targetId, params }),
   }),
+  createMovieJob: (projectId: string, targetId: string, params: MovieParams) =>
+    req<Job>("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_id: projectId,
+        kind: "movie",
+        target_id: targetId,
+        params,
+      }),
+    }),
 
   listPipelines: (projectId: string) =>
     req<Pipeline[]>(`/pipelines?project_id=${encodeURIComponent(projectId)}`),

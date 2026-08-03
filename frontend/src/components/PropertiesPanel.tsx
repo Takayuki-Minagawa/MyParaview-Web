@@ -1,5 +1,13 @@
 import { memo } from "react";
-import type { Artifact, Dataset, Job, RenderSession, SliceAxis } from "../types";
+import type {
+  Artifact,
+  Dataset,
+  Job,
+  MovieParams,
+  RenderSession,
+  ServerFilterParams,
+  SliceAxis,
+} from "../types";
 import type { DisplayState } from "../hooks/useDisplayState";
 import { useMessages } from "../i18n-context";
 import { MetadataTable } from "./properties/MetadataTable";
@@ -42,7 +50,10 @@ export interface DatasetJobControls {
   clientExportPending: boolean;
   filterPending: boolean;
   serverFilterAvailable: boolean;
-  onRunFilter: (params: Record<string, unknown>) => void;
+  videoExportAvailable: boolean;
+  onMovieExport: (params: MovieParams) => void;
+  moviePending: boolean;
+  onRunFilter: (params: ServerFilterParams) => void;
   onJobCreated: (job: Job) => void;
   onDownloadTimestep: (index: number) => void;
 }
@@ -89,9 +100,10 @@ export const PropertiesPanel = memo(function PropertiesPanel({
     ? String(dataset.extra?.inner_type ?? "")
     : dataset.dataset_type;
   const isImageData = renderType === "ImageData";
-  // UnstructuredGrid renders as an extracted surface, which exports as VTP too.
+  // Grid formats render as extracted PolyData surfaces, which export as VTP too.
   const isClientExportable =
-    renderType === "PolyData" || renderType === "Table" || renderType === "UnstructuredGrid";
+    renderType === "PolyData" || renderType === "Table" || renderType === "UnstructuredGrid"
+    || renderType === "StructuredGrid" || renderType === "RectilinearGrid";
 
   return (
     <aside className="panel panel-right">
@@ -107,6 +119,10 @@ export const PropertiesPanel = memo(function PropertiesPanel({
         onOpacity={display.setOpacity}
         axesVisible={display.axesVisible}
         onAxesVisible={display.setAxesVisible}
+        canUndo={display.canUndo}
+        canRedo={display.canRedo}
+        onUndo={display.undo}
+        onRedo={display.redo}
         onScreenshot={view.onScreenshot}
         onResetCamera={view.onResetCamera}
       />
@@ -197,10 +213,13 @@ export const PropertiesPanel = memo(function PropertiesPanel({
         onConvert={jobs.onConvert}
         convertPending={jobs.convertPending}
         serverFilterAvailable={jobs.serverFilterAvailable}
+        videoExportAvailable={jobs.videoExportAvailable}
         onRunStats={jobs.onRunStats}
         statsPending={jobs.statsPending}
         onClientExport={jobs.onClientExport}
         clientExportPending={jobs.clientExportPending}
+        onMovieExport={jobs.onMovieExport}
+        moviePending={jobs.moviePending}
         onPromoteArtifact={jobs.onPromoteArtifact}
         promotePendingIds={jobs.promotePendingIds}
         onError={onError}

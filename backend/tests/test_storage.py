@@ -18,6 +18,10 @@ class FakeS3Client:
         self.download_count = 0
         self.download_delay = 0.0
         self.upload_delay = 0.0
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1
 
     def upload_file(self, filename: str, bucket: str, key: str) -> None:
         if self.upload_delay:
@@ -102,9 +106,34 @@ def test_s3_store_stream_cache_and_delete(monkeypatch):
     assert storage.path_for(key).read_bytes() == b"payload"
     assert storage.exists(key)
 
-    storage.delete(key)
+    assert storage.delete(key) is True
     assert (storage.bucket, key) not in client.objects
     assert not storage.root.joinpath(key).exists()
+
+
+def test_s3_store_replaces_inherited_client_and_process_local_state(monkeypatch):
+    inherited = FakeS3Client()
+    replacement = FakeS3Client()
+    clients = iter((inherited, replacement))
+    monkeypatch.setattr(boto3, "client", lambda *_args, **_kwargs: next(clients))
+    storage = S3ObjectStore()
+    old_lease_lock = storage._lease_lock
+    old_cache_lock = storage._cache_lock
+    old_key_locks = storage._key_locks
+    storage._leases["leased"] = 1
+    storage._pending_delete.add("leased")
+    storage._needs_eviction = True
+
+    storage.reset_after_fork()
+
+    assert inherited.close_count == 1
+    assert storage.client is replacement
+    assert storage._lease_lock is not old_lease_lock
+    assert storage._cache_lock is not old_cache_lock
+    assert storage._key_locks is not old_key_locks
+    assert storage._leases == {}
+    assert storage._pending_delete == set()
+    assert storage._needs_eviction is False
 
 
 def test_s3_store_removes_crash_leftover_parts_on_start(monkeypatch):

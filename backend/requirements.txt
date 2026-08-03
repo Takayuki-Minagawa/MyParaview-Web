@@ -1,5 +1,6 @@
 fastapi>=0.110
-uvicorn[standard]>=0.29
+# 0.31 adds CIDR-aware FORWARDED_ALLOW_IPS used by the Compose proxy network.
+uvicorn[standard]>=0.31
 SQLAlchemy>=2.0
 alembic>=1.13
 psycopg[binary]>=3.2
@@ -10,3 +11,5 @@ defusedxml>=0.7
 pydantic>=2.6
 python-multipart>=0.0.9
 httpx>=0.27
+redis>=5.0
+rq>=2.8,<3

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Any, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ORMModel(BaseModel):
@@ -68,7 +68,32 @@ class DatasetOut(ORMModel):
     timesteps: Optional[list[float]] = None
     arrays: Optional[list[dict[str, Any]]] = None
     extra: Optional[dict[str, Any]] = None
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime
+
+
+class DatasetTagsUpdate(BaseModel):
+    tags: list[str]
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, tags: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for tag in tags:
+            value = tag.strip()
+            if not value:
+                continue
+            if len(value) > 50:
+                raise ValueError("dataset tags must be at most 50 characters")
+            identity = value.casefold()
+            if identity in seen:
+                continue
+            seen.add(identity)
+            normalized.append(value)
+        if len(normalized) > 20:
+            raise ValueError("datasets may have at most 20 tags")
+        return normalized
 
 
 class CollectionStepOut(BaseModel):
@@ -116,14 +141,67 @@ class TableCoordinatesState(BaseModel):
         return self
 
 
-class ViewState(BaseModel):
+class VolumeOpacityPointState(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
+    value: float = Field(ge=0, le=1)
+    alpha: float = Field(ge=0, le=1)
+
+
+UnitInterval = Annotated[float, Field(ge=0, le=1)]
+
+
+class ColorMapStopState(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+    position: UnitInterval
+    rgb: tuple[UnitInterval, UnitInterval, UnitInterval]
+
+
+class CustomColorMapDefinitionState(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+    id: str = Field(
+        min_length=1,
+        max_length=1024,
+        pattern="^custom:[A-Za-z0-9_.!~*'()%-]+:[a-z0-9]{1,16}$",
+    )
+    label: str = Field(min_length=1, max_length=200)
+    stops: list[ColorMapStopState] = Field(min_length=2, max_length=4096)
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def normalize_label(cls, label: Any) -> Any:
+        if not isinstance(label, str):
+            return label
+        normalized = label.strip()
+        if not normalized:
+            raise ValueError("custom colormap label must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_stop_order(self):
+        positions = [stop.position for stop in self.stops]
+        if positions[0] != 0 or positions[-1] != 1:
+            raise ValueError("custom colormap stops must start at 0 and end at 1")
+        if any(positions[index + 1] <= position for index, position in enumerate(positions[:-1])):
+            raise ValueError("custom colormap stop positions must be strictly increasing")
+        return self
+
+
+class ViewState(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
     schema_version: int = Field(default=1, ge=1, le=1)
     representation: str = Field(pattern="^(surface|wireframe|points)$")
     color_by: Optional[ScalarSelectionState] = None
     color_range: Optional[list[float]] = Field(default=None, min_length=2, max_length=2)
     opacity: float = Field(ge=0, le=1)
-    color_map: str = Field(pattern="^(cool-to-warm|viridis|grayscale|plasma|turbo)$")
+    color_map: str = Field(
+        min_length=1,
+        max_length=1024,
+        pattern=(
+            "^(cool-to-warm|viridis|grayscale|plasma|turbo|"
+            "custom:[A-Za-z0-9_.!~*'()%-]+:[a-z0-9]{1,16})$"
+        ),
+    )
+    custom_color_map: Optional[CustomColorMapDefinitionState] = None
     legend_visible: bool
     camera: Optional[CameraState] = None
     table_coordinates: Optional[TableCoordinatesState] = None
@@ -131,11 +209,21 @@ class ViewState(BaseModel):
     slice_axis: Optional[str] = Field(default=None, pattern="^(X|Y|Z)$")
     slice_index: Optional[int] = None
     timestep_index: Optional[int] = Field(default=None, ge=0)
+    volume_opacity_points: Optional[list[VolumeOpacityPointState]] = Field(
+        default=None,
+        min_length=2,
+        max_length=4,
+    )
 
     @model_validator(mode="after")
-    def validate_color_range(self):
+    def validate_color_range_and_custom_map(self):
         if self.color_range is not None and self.color_range[0] >= self.color_range[1]:
             raise ValueError("color_range minimum must be less than maximum")
+        if self.custom_color_map is not None:
+            if not self.color_map.startswith("custom:"):
+                raise ValueError("custom_color_map requires a custom color_map id")
+            if self.custom_color_map.id != self.color_map:
+                raise ValueError("custom_color_map id must match color_map")
         return self
 
 
@@ -198,15 +286,89 @@ def _finite_number(params: dict[str, Any], name: str) -> float:
     return converted
 
 
+FilterName = Literal[
+    "slice",
+    "clip",
+    "contour",
+    "threshold",
+    "cell_to_point",
+    "resample",
+    "decimate",
+]
+JobKind = Literal["convert", "filter", "export", "render", "stats", "movie"]
+MAX_RESAMPLE_SAMPLE_COUNT = 16_777_216
+
+
+def _integer_value(value: Any, name: str) -> int:
+    """Return an integer value without silently truncating fractions."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, float) and (
+        not math.isfinite(value) or not value.is_integer()
+    ):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be an integer") from None
+
+
 def validate_filter_params(params: dict[str, Any]) -> dict[str, Any]:
-    """Validate slice/clip/contour/threshold parameters.
+    """Validate parameters for all supported ParaView server filters.
 
     Shared by ad-hoc filter jobs and stored pipeline execution so both paths
     enforce the same contract. Returns normalized params.
     """
     operation = str(params.get("filter", "")).lower()
-    if operation not in {"slice", "clip", "contour", "threshold"}:
-        raise ValueError("filter must be slice, clip, contour, or threshold")
+    if operation not in {
+        "slice",
+        "clip",
+        "contour",
+        "threshold",
+        "cell_to_point",
+        "resample",
+        "decimate",
+    }:
+        raise ValueError(
+            "filter must be slice, clip, contour, threshold, cell_to_point, "
+            "resample, or decimate"
+        )
+
+    if operation == "cell_to_point":
+        return {**params, "filter": operation}
+
+    if operation == "resample":
+        dimensions = params.get("dimensions")
+        if not isinstance(dimensions, list) or len(dimensions) != 3:
+            raise ValueError("dimensions must contain three integers")
+        normalized_dimensions = [
+            _integer_value(value, "dimensions values") for value in dimensions
+        ]
+        if any(value < 2 or value > 512 for value in normalized_dimensions):
+            raise ValueError("dimensions values must be between 2 and 512")
+        sample_count = math.prod(normalized_dimensions)
+        if sample_count > MAX_RESAMPLE_SAMPLE_COUNT:
+            raise ValueError(
+                "dimensions product must not exceed "
+                f"{MAX_RESAMPLE_SAMPLE_COUNT} samples"
+            )
+        return {
+            **params,
+            "filter": operation,
+            "dimensions": normalized_dimensions,
+        }
+
+    if operation == "decimate":
+        target_reduction = _finite_number(params, "target_reduction")
+        if not 0 <= target_reduction < 1:
+            raise ValueError(
+                "target_reduction must be greater than or equal to 0 and less than 1"
+            )
+        return {
+            **params,
+            "filter": operation,
+            "target_reduction": target_reduction,
+        }
 
     if operation in {"slice", "clip"}:
         for name in ("origin", "normal"):
@@ -221,7 +383,7 @@ def validate_filter_params(params: dict[str, Any]) -> dict[str, Any]:
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
                 or not math.isfinite(number)
-                for value, number in zip(vector, converted)
+                for value, number in zip(vector, converted, strict=True)
             ):
                 raise ValueError(f"{name} must contain three finite numbers")
         if not any(float(value) != 0 for value in params["normal"]):
@@ -245,17 +407,7 @@ def validate_filter_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def _integer_param(params: dict[str, Any], name: str, default: int) -> int:
     """Return an integer job parameter without silently truncating values."""
-    value = params.get(name, default)
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
-    if isinstance(value, float) and (
-        not math.isfinite(value) or not value.is_integer()
-    ):
-        raise ValueError(f"{name} must be an integer")
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
-        raise ValueError(f"{name} must be an integer") from None
+    return _integer_value(params.get(name, default), name)
 
 
 def validate_render_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -282,9 +434,33 @@ def validate_stats_params(params: dict[str, Any]) -> dict[str, Any]:
     return {**params, "bins": bins}
 
 
+def validate_movie_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Validate movie rendering and encoding parameters.
+
+    Omitting ``format`` intentionally preserves the historical frame-PNG ZIP
+    artifact.  Video codecs and quality knobs are not client-controlled; the
+    worker maps the two video containers to fixed, interoperable codecs.
+    """
+    normalized = validate_render_params(params)
+    output_format = params.get("format", "zip")
+    if not isinstance(output_format, str) or output_format not in {
+        "zip",
+        "mp4",
+        "webm",
+    }:
+        raise ValueError("format must be zip, mp4, or webm")
+    fps = _integer_param(params, "fps", 24)
+    if not (1 <= fps <= 120):
+        raise ValueError("fps must be between 1 and 120")
+    # This internal field is injected from PVWEB_FFMPEG by app.worker.  Never
+    # retain a client-provided executable path in a persisted Job.
+    normalized.pop("ffmpeg_executable", None)
+    return {**normalized, "format": output_format, "fps": fps}
+
+
 class JobCreate(BaseModel):
     project_id: str
-    kind: str = Field(pattern="^(convert|filter|export|render|stats|movie)$")
+    kind: JobKind
     target_id: str
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -292,8 +468,10 @@ class JobCreate(BaseModel):
     def validate_operation_params(self):
         if self.kind == "filter":
             self.params = validate_filter_params(self.params)
-        elif self.kind in {"render", "movie"}:
+        elif self.kind == "render":
             self.params = validate_render_params(self.params)
+        elif self.kind == "movie":
+            self.params = validate_movie_params(self.params)
         elif self.kind == "stats":
             self.params = validate_stats_params(self.params)
         return self

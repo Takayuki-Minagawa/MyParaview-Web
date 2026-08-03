@@ -22,6 +22,11 @@ import type { ImageMode, SliceAxis, TableCoordinates } from "../../types";
 import type { Messages } from "../../i18n";
 import { authorizedFetch } from "../../api";
 import { csvToPointData } from "../csvToPoints";
+import {
+  parseStructuredSurface,
+  type StructuredGridType,
+  type StructuredSurface,
+} from "../structuredGrid";
 import { parseVtuSurface } from "../vtu";
 import type { Scene, VtkDataSet, VtkMapper, VtkProp } from "./vtkTypes";
 import { SLICE_MODE } from "./vtkTypes";
@@ -152,6 +157,74 @@ export async function buildUnstructuredScene(
   scene.prop = actor as unknown as VtkProp;
   scene.output = polyData as unknown as VtkDataSet;
   scene.createdOutput = true;
+}
+
+/** Convert a parsed VTS/VTR boundary into vtk.js PolyData. Kept separate from
+ * fetching so topology-to-vtk integration remains unit-testable. */
+export function structuredSurfaceToPolyData(surface: StructuredSurface) {
+  const polyData = vtkPolyData.newInstance();
+  const points = vtkPoints.newInstance();
+  points.setData(surface.points, 3);
+  polyData.setPoints(points);
+  if (surface.polys.length) {
+    polyData.setPolys(vtkCellArray.newInstance({ values: surface.polys }));
+  }
+  if (surface.lines.length) {
+    polyData.setLines(vtkCellArray.newInstance({ values: surface.lines }));
+  }
+  if (surface.verts.length) {
+    polyData.setVerts(vtkCellArray.newInstance({ values: surface.verts }));
+  }
+  for (const array of surface.pointArrays) {
+    polyData.getPointData().addArray(vtkDataArray.newInstance({
+      name: array.name,
+      numberOfComponents: array.numberOfComponents,
+      values: array.values,
+    }));
+  }
+  for (const array of surface.cellArrays) {
+    polyData.getCellData().addArray(vtkDataArray.newInstance({
+      name: array.name,
+      numberOfComponents: array.numberOfComponents,
+      values: array.values,
+    }));
+  }
+  return polyData;
+}
+
+/** Fetch a VTS/VTR, derive its browser-renderable exterior, and build the
+ * standard actor/mapper chain. Unsupported variants throw with a conversion
+ * hint, leaving the existing server-side VTP action available. */
+export async function buildStructuredScene(
+  scene: Scene,
+  url: string,
+  expectedType: StructuredGridType,
+  messages: Messages,
+  signal: AbortSignal,
+  isDisposed: () => boolean,
+): Promise<void> {
+  const response = await fetchOk(url, signal);
+  const surface = await parseStructuredSurface(await response.arrayBuffer());
+  if (surface.sourceType !== expectedType) {
+    throw new Error(
+      `dataset metadata says ${expectedType}, but the file contains ${surface.sourceType}; `
+      + "use the server VTP conversion for this dataset",
+    );
+  }
+  if (isDisposed()) return;
+  const polyData = structuredSurfaceToPolyData(surface);
+  const mapper = vtkMapper.newInstance();
+  const actor = vtkActor.newInstance();
+  actor.setMapper(mapper);
+  mapper.setInputData(polyData);
+  scene.mapper = mapper as unknown as VtkMapper;
+  scene.prop = actor as unknown as VtkProp;
+  scene.output = polyData as unknown as VtkDataSet;
+  scene.createdOutput = true;
+  scene.dataDiagnostic =
+    `${surface.sourceType}${messages.viewer.structuredSurfacePrefix}${surface.primitiveCount}`
+    + `${messages.viewer.structuredSurfaceInfix}${surface.sourceCellCount}`
+    + messages.viewer.structuredSurfaceSuffix;
 }
 
 /** Fetch a CSV and build a point cloud (spheres for small clouds, verts otherwise). */

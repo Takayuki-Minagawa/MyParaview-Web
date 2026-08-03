@@ -1,17 +1,23 @@
 import { memo, useEffect, useState } from "react";
-import type { Dataset, SliceAxis } from "../../types";
+import {
+  SERVER_FILTER_NAMES,
+  type Dataset,
+  type ServerFilterName,
+  type ServerFilterParams,
+  type SliceAxis,
+} from "../../types";
 import { AXIS_NORMALS, boundsCenter } from "../../lib/slice";
 import { useMessages } from "../../i18n-context";
-
-type ServerFilterName = "slice" | "clip" | "contour" | "threshold";
 
 interface Props {
   dataset: Dataset;
   sliceAxis: SliceAxis;
   filterPending: boolean;
   serverFilterAvailable: boolean;
-  onRunFilter: (params: Record<string, unknown>) => void;
+  onRunFilter: (params: ServerFilterParams) => void;
 }
+
+const MAX_RESAMPLE_SAMPLE_COUNT = 16_777_216;
 
 export const ServerFilterSection = memo(function ServerFilterSection({
   dataset,
@@ -25,6 +31,10 @@ export const ServerFilterSection = memo(function ServerFilterSection({
   const [filterArray, setFilterArray] = useState("");
   const [filterMinimum, setFilterMinimum] = useState("0");
   const [filterMaximum, setFilterMaximum] = useState("1");
+  const [resampleDimensions, setResampleDimensions] = useState<[string, string, string]>(
+    ["50", "50", "50"],
+  );
+  const [targetReduction, setTargetReduction] = useState("0.5");
 
   useEffect(() => {
     const scalar = (dataset.arrays ?? []).find(
@@ -51,7 +61,7 @@ export const ServerFilterSection = memo(function ServerFilterSection({
   );
   const filterMinimumNumber = Number(filterMinimum);
   const filterMaximumNumber = Number(filterMaximum);
-  const filterNumbersValid =
+  const scalarValueValid =
     filterMinimum.trim() !== "" &&
     Number.isFinite(filterMinimumNumber) &&
     (serverFilter !== "threshold" || (
@@ -59,6 +69,34 @@ export const ServerFilterSection = memo(function ServerFilterSection({
       Number.isFinite(filterMaximumNumber) &&
       filterMinimumNumber <= filterMaximumNumber
     ));
+  const dimensionNumbers = resampleDimensions.map(Number) as [number, number, number];
+  const dimensionValuesValid = resampleDimensions.map((value, index) =>
+    value.trim() !== "" &&
+    Number.isInteger(dimensionNumbers[index]) &&
+    dimensionNumbers[index] >= 2 &&
+    dimensionNumbers[index] <= 512,
+  );
+  const dimensionAxesValid = dimensionValuesValid.every(Boolean);
+  const resampleSampleCount = dimensionNumbers.reduce((product, value) => product * value, 1);
+  const resampleSampleCountExceeded =
+    dimensionAxesValid && resampleSampleCount > MAX_RESAMPLE_SAMPLE_COUNT;
+  const dimensionsValid = dimensionAxesValid && !resampleSampleCountExceeded;
+  const resampleError = !dimensionAxesValid
+    ? messages.properties.resampleDimensionsError
+    : resampleSampleCountExceeded
+      ? messages.properties.resampleSampleLimitError
+      : null;
+  const targetReductionNumber = Number(targetReduction);
+  const targetReductionValid =
+    targetReduction.trim() !== "" &&
+    Number.isFinite(targetReductionNumber) &&
+    targetReductionNumber >= 0 &&
+    targetReductionNumber < 1;
+  const requiresArray = serverFilter === "contour" || serverFilter === "threshold";
+  const filterParamsValid =
+    (requiresArray ? scalarValueValid : true) &&
+    (serverFilter === "resample" ? dimensionsValid : true) &&
+    (serverFilter === "decimate" ? targetReductionValid : true);
 
   const runFilter = () => {
     if (serverFilter === "slice" || serverFilter === "clip") {
@@ -67,6 +105,20 @@ export const ServerFilterSection = memo(function ServerFilterSection({
         origin: boundsCenter(dataset.bounds),
         normal: AXIS_NORMALS[sliceAxis],
       });
+      return;
+    }
+    if (serverFilter === "cell_to_point") {
+      onRunFilter({ filter: serverFilter });
+      return;
+    }
+    if (serverFilter === "resample") {
+      if (!dimensionsValid) return;
+      onRunFilter({ filter: serverFilter, dimensions: dimensionNumbers });
+      return;
+    }
+    if (serverFilter === "decimate") {
+      if (!targetReductionValid) return;
+      onRunFilter({ filter: serverFilter, target_reduction: targetReductionNumber });
       return;
     }
     const [association, ...nameParts] = filterArray.split(":");
@@ -100,16 +152,16 @@ export const ServerFilterSection = memo(function ServerFilterSection({
         <label>
           {messages.properties.filter}
           <select value={serverFilter} onChange={(event) => setServerFilter(event.target.value as ServerFilterName)}>
-            {(Object.entries(messages.properties.filterNames) as [ServerFilterName, string][]).map(
-              ([name, label]) => (
-                <option key={name} value={name}>{label}</option>
+            {SERVER_FILTER_NAMES.map(
+              (name) => (
+                <option key={name} value={name}>{messages.properties.filterNames[name]}</option>
               ),
             )}
           </select>
         </label>
         {(serverFilter === "slice" || serverFilter === "clip") ? (
           <p className="muted">{sliceAxis}{messages.properties.sliceClipHint}</p>
-        ) : (
+        ) : requiresArray ? (
           <>
             <label>
               {messages.properties.array}
@@ -132,15 +184,57 @@ export const ServerFilterSection = memo(function ServerFilterSection({
               </label>
             )}
           </>
+        ) : serverFilter === "cell_to_point" ? (
+          <p className="muted">{messages.properties.cellToPointHint}</p>
+        ) : serverFilter === "resample" ? (
+          <>
+            <p className="muted">{messages.properties.resampleHint}</p>
+            {(["X", "Y", "Z"] as const).map((axis, index) => (
+              <label key={axis}>
+                {messages.properties.resampleDimensions} {axis}
+                <input
+                  type="number"
+                  min="2"
+                  max="512"
+                  step="1"
+                  aria-invalid={!dimensionValuesValid[index] || resampleSampleCountExceeded}
+                  aria-describedby={resampleError ? "resample-dimensions-error" : undefined}
+                  value={resampleDimensions[index]}
+                  onChange={(event) => setResampleDimensions((previous) => {
+                    const next: [string, string, string] = [...previous];
+                    next[index] = event.target.value;
+                    return next;
+                  })}
+                />
+              </label>
+            ))}
+            {resampleError && (
+              <p id="resample-dimensions-error" className="validation-error" role="alert">
+                {resampleError}
+              </p>
+            )}
+          </>
+        ) : (
+          <label>
+            {messages.properties.targetReduction}
+            <input
+              type="number"
+              min="0"
+              max="1"
+              step="0.05"
+              value={targetReduction}
+              onChange={(event) => setTargetReduction(event.target.value)}
+            />
+          </label>
         )}
         <button
           disabled={
             !serverFilterAvailable ||
             filterPending ||
-            ((serverFilter === "contour" || serverFilter === "threshold") && !filterArray) ||
-            ((serverFilter === "contour" || serverFilter === "threshold") &&
+            (requiresArray && !filterArray) ||
+            (requiresArray &&
               !serverArrays.some((array) => `${array.association}:${array.name}` === filterArray)) ||
-            !filterNumbersValid
+            !filterParamsValid
           }
           onClick={runFilter}
         >

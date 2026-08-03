@@ -38,6 +38,7 @@ export interface Dataset {
   timesteps?: number[] | null;
   arrays?: ArrayInfo[] | null;
   extra?: Record<string, unknown> | null;
+  tags?: string[];
   created_at: string;
 }
 
@@ -68,11 +69,70 @@ export const COLOR_MAP_NAMES = [
   "plasma",
   "turbo",
 ] as const;
-export type ColorMapName = (typeof COLOR_MAP_NAMES)[number];
+export type BuiltInColorMapName = (typeof COLOR_MAP_NAMES)[number];
+export type CustomColorMapName = `custom:${string}`;
+export type ColorMapName = BuiltInColorMapName | CustomColorMapName;
+
+export interface ColorMapStopDefinition {
+  position: number;
+  rgb: [number, number, number];
+}
+
+/** Self-contained definition stored with a ViewState for cross-session restore. */
+export interface CustomColorMapDefinition {
+  id: CustomColorMapName;
+  label: string;
+  stops: ColorMapStopDefinition[];
+}
 
 /** Client-creatable job kinds (POST /jobs). */
 export const JOB_KINDS = ["convert", "filter", "export", "render", "stats", "movie"] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
+
+export const MOVIE_FORMATS = ["zip", "mp4", "webm"] as const;
+export type MovieFormat = (typeof MOVIE_FORMATS)[number];
+
+export interface MovieParams {
+  /** Omitted format preserves the legacy PNG-frame ZIP contract. */
+  format?: MovieFormat;
+  fps?: number;
+  width?: number;
+  height?: number;
+}
+
+export const SERVER_FILTER_NAMES = [
+  "slice",
+  "clip",
+  "contour",
+  "threshold",
+  "cell_to_point",
+  "resample",
+  "decimate",
+] as const;
+export type ServerFilterName = (typeof SERVER_FILTER_NAMES)[number];
+
+export type ServerFilterParams =
+  | { filter: "slice" | "clip"; origin: [number, number, number]; normal: [number, number, number] }
+  | { filter: "contour"; array: string; association: "POINTS" | "CELLS"; value: number }
+  | {
+    filter: "threshold";
+    array: string;
+    association: "POINTS" | "CELLS";
+    minimum: number;
+    maximum: number;
+  }
+  | { filter: "cell_to_point" }
+  | { filter: "resample"; dimensions: [number, number, number] }
+  | { filter: "decimate"; target_reduction: number };
+
+export interface JobParamsByKind {
+  convert: Record<string, unknown>;
+  filter: ServerFilterParams;
+  export: Record<string, unknown>;
+  render: Record<string, unknown>;
+  stats: Record<string, unknown>;
+  movie: MovieParams;
+}
 
 export interface ScalarSelection {
   name: string;
@@ -94,6 +154,8 @@ export interface ViewState {
   color_range: [number, number] | null;
   opacity: number;
   color_map: ColorMapName;
+  /** Present for imported presets so a saved view remains portable. */
+  custom_color_map?: CustomColorMapDefinition;
   legend_visible: boolean;
   camera: CameraState | null;
   table_coordinates?: TableCoordinates | null;
@@ -234,5 +296,7 @@ export interface ServerCapabilities {
   object_store: "local" | "s3";
   oidc: boolean;
   paraview_worker: boolean;
+  video_export: boolean;
+  job_queue: "local" | "rq";
   trame_sessions: boolean;
 }

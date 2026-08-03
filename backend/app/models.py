@@ -101,6 +101,7 @@ class Dataset(Base):
     timesteps: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     arrays: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     extra: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
@@ -195,6 +196,19 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(default=_now)
     dataset: Mapped[Optional[Dataset]] = relationship(back_populates="artifacts")
     job: Mapped[Optional[Job]] = relationship(back_populates="artifacts")
+
+
+class ObjectDeletionOutbox(Base):
+    """Private, at-least-once object-store deletion intent."""
+
+    __tablename__ = "object_deletion_outbox"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    object_key: Mapped[str] = mapped_column(String, nullable=False)
+    # Deliberately not a foreign key: project/job deletion must not erase the
+    # cleanup intent before the external object-store side effect succeeds.
+    job_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_now, index=True)
 
 
 class AssistProposal(Base):

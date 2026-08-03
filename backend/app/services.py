@@ -13,12 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .bundles import bundle_reference_path, materialized_bundle_path
 from .config import settings
 from .db import SessionLocal
-from .jobs import JobCancelled, JobContext
+from .jobs import JobCancelled, JobContext, locked_job, stable_job_object_key
 from .metadata import extract_metadata
 from .models import Artifact, Dataset, DatasetFile, Job, Pipeline
 from .project_locks import locked_project
@@ -27,6 +27,7 @@ from .storage import store
 from .worker import (
     extract_external_metadata,
     run_movie_frames,
+    run_movie_video,
     run_pipeline_transform,
     run_transform,
 )
@@ -345,11 +346,21 @@ def persist_job_artifact(
     size: int,
     object_key: str,
     content_type: str,
-) -> str:
-    """Create the Artifact row inside a project lock, revalidating ownership."""
+    extra_result: dict,
+) -> dict:
+    """Stage one artifact and its eventual job result atomically.
+
+    The job stays ``running`` until :mod:`app.jobs` arbitrates cancellation and
+    publishes success.  Persisting ``Job.result`` in this transaction is an
+    internal recovery checkpoint: if an RQ workhorse dies after this commit,
+    its retry can return the exact same result without producing another
+    artifact.  API consumers must continue to treat ``status`` as authoritative.
+    """
     with SessionLocal() as db:
         with locked_project(db, project_id):
-            current_job = db.get(Job, ctx.job_id)
+            current_job = db.scalar(
+                select(Job).where(Job.id == ctx.job_id).with_for_update()
+            )
             current_dataset = db.get(Dataset, dataset_id) if dataset_id else None
             if (
                 (dataset_id is not None and (
@@ -359,28 +370,107 @@ def persist_job_artifact(
                 or current_job.project_id != project_id
             ):
                 raise ValueError("project was deleted while creating artifact")
-            artifact = Artifact(
-                dataset_id=dataset_id,
-                job_id=ctx.job_id,
-                kind=kind,
-                filename=filename,
-                size_bytes=size,
-                object_key=object_key,
-                content_type=content_type,
+            artifacts = list(
+                db.scalars(
+                    select(Artifact)
+                    .where(Artifact.job_id == ctx.job_id)
+                    .with_for_update()
+                )
             )
-            db.add(artifact)
-            db.flush()
-            return artifact.id
-
-
-def rollback_job_artifact(artifact_id: Optional[str], object_key: str) -> None:
-    """Delete a partially published artifact row and its stored object."""
-    if artifact_id is not None:
-        with SessionLocal() as db:
-            artifact = db.get(Artifact, artifact_id)
+            if len(artifacts) > 1:
+                raise RuntimeError(f"job {ctx.job_id} has multiple persisted artifacts")
+            artifact = artifacts[0] if artifacts else None
             if artifact is not None:
-                db.delete(artifact)
-                db.commit()
+                _validate_existing_artifact(
+                    artifact,
+                    project_id=project_id,
+                    dataset_id=dataset_id,
+                    kind=kind,
+                    filename=filename,
+                    object_key=object_key,
+                    content_type=content_type,
+                )
+            elif current_job.status in {"queued", "running"}:
+                artifact = Artifact(
+                    dataset_id=dataset_id,
+                    job_id=ctx.job_id,
+                    kind=kind,
+                    filename=filename,
+                    size_bytes=size,
+                    object_key=object_key,
+                    content_type=content_type,
+                )
+                db.add(artifact)
+            elif current_job.status == "canceled":
+                raise JobCancelled()
+            else:
+                raise RuntimeError(
+                    f"job {ctx.job_id} became {current_job.status} before artifact persistence"
+                )
+
+            if current_job.status == "canceled":
+                raise JobCancelled()
+            db.flush()
+            result = _artifact_result(
+                artifact,
+                project_id=project_id,
+                dataset_id=dataset_id,
+                size=size,
+                extra=extra_result,
+            )
+            if current_job.status == "succeeded":
+                if current_job.result != result:
+                    raise RuntimeError(
+                        f"job {ctx.job_id} already succeeded with a different result"
+                    )
+                return result
+            if current_job.status not in {"queued", "running"}:
+                raise RuntimeError(
+                    f"job {ctx.job_id} became {current_job.status} before artifact persistence"
+                )
+            artifact.size_bytes = size
+            db.add(artifact)
+            checkpointed = db.execute(
+                update(Job)
+                .where(Job.id == ctx.job_id, Job.status.in_(("queued", "running")))
+                .values(result=result)
+            )
+            if checkpointed.rowcount == 1:
+                return result
+            db.refresh(current_job)
+            if current_job.status == "canceled":
+                raise JobCancelled()
+            if current_job.status == "succeeded" and current_job.result == result:
+                return result
+            raise RuntimeError(
+                f"job {ctx.job_id} became {current_job.status} before artifact persistence"
+            )
+
+
+def rollback_job_artifact(
+    job_id: str, artifact_id: Optional[str], object_key: str
+) -> None:
+    """Delete a partially published artifact row and its stored object."""
+    with SessionLocal() as db:
+        with locked_job(db, job_id) as job:
+            if job is not None and job.status in {"queued", "running", "succeeded"}:
+                # Active duplicate deliveries share one stable object/artifact,
+                # so a loser cannot know whether another workhorse will publish
+                # it. Terminal cancel/failure owns cleanup transactionally.
+                return
+            if artifact_id is not None:
+                artifact = db.get(Artifact, artifact_id)
+                if artifact is not None and artifact.job_id == job_id:
+                    db.delete(artifact)
+            if (
+                job is not None
+                and isinstance(job.result, dict)
+                and job.result.get("artifact_id") == artifact_id
+                and job.status != "succeeded"
+            ):
+                job.result = None
+                db.add(job)
+            db.commit()
     store.delete(object_key)
 
 
@@ -397,6 +487,102 @@ class _ArtifactSpec:
 # Writes the output object for (source_path, object_key) and returns
 # (stored size, extra fields to merge into the job result).
 _Producer = Callable[[Optional[Path], str], "tuple[int, dict]"]
+
+
+def _validate_existing_artifact(
+    artifact: Artifact,
+    *,
+    project_id: str,
+    dataset_id: Optional[str],
+    kind: str,
+    filename: str,
+    object_key: str | None,
+    content_type: str,
+) -> None:
+    """Fail closed if a job id is already attached to another output contract."""
+    expected = (dataset_id, kind, filename, content_type)
+    actual = (
+        artifact.dataset_id,
+        artifact.kind,
+        artifact.filename,
+        artifact.content_type,
+    )
+    if actual != expected or (
+        object_key is not None and artifact.object_key != object_key
+    ):
+        raise RuntimeError(
+            f"existing artifact for job {artifact.job_id} does not match its output contract"
+        )
+    if artifact.job is not None and artifact.job.project_id != project_id:
+        raise RuntimeError(
+            f"existing artifact for job {artifact.job_id} does not match its project"
+        )
+
+
+def _artifact_result(
+    artifact: Artifact,
+    *,
+    project_id: str,
+    dataset_id: str,
+    size: int,
+    extra: dict,
+) -> dict:
+    result = {
+        "project_id": project_id,
+        "dataset_id": dataset_id,
+        "artifact_id": artifact.id,
+        "filename": artifact.filename,
+        "size_bytes": size,
+    }
+    result.update(extra)
+    return result
+
+
+def _recover_job_artifact(
+    ctx: JobContext,
+    source: _DatasetSource,
+    dataset_id: str,
+    spec: _ArtifactSpec,
+) -> tuple[dict | None, str, str | None]:
+    """Resolve a retry to its staged result, existing key, or stable new key."""
+    with SessionLocal() as db:
+        job = db.get(Job, ctx.job_id)
+        if job is None or job.project_id != source.project_id:
+            raise ValueError("job project changed while preparing artifact")
+        artifacts = list(db.scalars(select(Artifact).where(Artifact.job_id == ctx.job_id)))
+        if len(artifacts) > 1:
+            raise RuntimeError(f"job {ctx.job_id} has multiple persisted artifacts")
+        artifact = artifacts[0] if artifacts else None
+        if artifact is None:
+            return None, stable_job_object_key(ctx.job_id, spec.output_ext), None
+        _validate_existing_artifact(
+            artifact,
+            project_id=source.project_id,
+            dataset_id=dataset_id,
+            kind=spec.kind,
+            filename=spec.filename,
+            # A retry may recover a legacy UUID-keyed row. Validate the
+            # semantic contract here and intentionally retain that row's key;
+            # persist_job_artifact performs strict key matching after output.
+            object_key=None,
+            content_type=spec.content_type,
+        )
+        staged = job.result
+        expected = _artifact_result(
+            artifact,
+            project_id=source.project_id,
+            dataset_id=dataset_id,
+            size=artifact.size_bytes,
+            extra={},
+        )
+        has_matching_base = isinstance(staged, dict) and all(
+            staged.get(key) == value for key, value in expected.items()
+        )
+        if has_matching_base and store.exists(artifact.object_key):
+            return dict(staged), artifact.object_key, artifact.id
+        # Compatibility with a row left by an older worker: regenerate into
+        # that row's key, then checkpoint the complete result transactionally.
+        return None, artifact.object_key, artifact.id
 
 
 def _run_artifact_job(
@@ -420,13 +606,20 @@ def _run_artifact_job(
     source = _load_dataset_source(dataset_id)
     ctx.check_cancelled()
     spec, produce = plan(source)
-    object_key = store.new_key(spec.output_ext)
-    artifact_id: Optional[str] = None
+    recovered, object_key, artifact_id = _recover_job_artifact(
+        ctx, source, dataset_id, spec
+    )
+    if recovered is not None:
+        ctx.update(
+            progress=0.95,
+            log_line=f"reusing prepared {done_noun} id={recovered['artifact_id']}",
+        )
+        return recovered
     source_path = store.acquire_path(source.object_key) if needs_source_path else None
     try:
         size, extra = produce(source_path, object_key)
         ctx.check_cancelled()
-        artifact_id = persist_job_artifact(
+        result = persist_job_artifact(
             ctx,
             project_id=source.project_id,
             dataset_id=dataset_id,
@@ -435,20 +628,14 @@ def _run_artifact_job(
             size=size,
             object_key=object_key,
             content_type=spec.content_type,
+            extra_result=extra,
         )
+        artifact_id = result["artifact_id"]
         ctx.check_cancelled()
         ctx.update(progress=1.0, log_line=f"{done_noun} created id={artifact_id}")
-        result = {
-            "project_id": source.project_id,
-            "dataset_id": dataset_id,
-            "artifact_id": artifact_id,
-            "filename": spec.filename,
-            "size_bytes": size,
-        }
-        result.update(extra)
         return result
     except Exception:
-        rollback_job_artifact(artifact_id, object_key)
+        rollback_job_artifact(ctx.job_id, artifact_id, object_key)
         raise
     finally:
         if needs_source_path:
@@ -495,15 +682,27 @@ def run_stats_operation(dataset_id: str, params: dict):
 
 
 def run_movie_export(dataset_id: str, params: dict):
-    """Render per-timestep frames through the ParaView worker into a ZIP artifact."""
+    """Render timestep frames into the legacy ZIP or a fixed-codec video."""
 
     def body(ctx: JobContext) -> dict:
         def plan(source: _DatasetSource):
+            output_format = params.get("format", "zip")
+            if output_format not in {"zip", "mp4", "webm"}:
+                raise ValueError("movie format must be zip, mp4, or webm")
+            fps = int(params.get("fps", 24))
+            movie_params = {**params, "format": output_format, "fps": fps}
+            video_specs = {
+                "mp4": (".mp4", "video/mp4"),
+                "webm": (".webm", "video/webm"),
+            }
+            output_ext, content_type = video_specs.get(
+                output_format, (".zip", "application/zip")
+            )
             spec = _ArtifactSpec(
-                filename=f"{_stem(source.filename)}-movie.zip",
-                output_ext=".zip",
-                kind="movie_frames",
-                content_type="application/zip",
+                filename=f"{_stem(source.filename)}-movie{output_ext}",
+                output_ext=output_ext,
+                kind="movie_frames" if output_format == "zip" else "movie_video",
+                content_type=content_type,
             )
 
             def produce(source_path: Optional[Path], object_key: str):
@@ -515,17 +714,38 @@ def run_movie_export(dataset_id: str, params: dict):
                         else source_path
                     )
                     ctx.update(progress=0.2, log_line="rendering timestep frames")
-                    frames = run_movie_frames(Path(worker_source), root / "frames", params, ctx)
+                    if output_format == "zip":
+                        frames = run_movie_frames(
+                            Path(worker_source), root / "frames", movie_params, ctx
+                        )
+                        ctx.check_cancelled()
+                        ctx.update(
+                            progress=0.8,
+                            log_line=f"packaging {len(frames)} frames",
+                        )
+                        output_path = root / spec.filename
+                        with zipfile.ZipFile(
+                            output_path, "w", compression=zipfile.ZIP_DEFLATED
+                        ) as archive:
+                            for frame in frames:
+                                archive.write(frame, arcname=frame.name)
+                        frame_count = len(frames)
+                    else:
+                        ctx.update(
+                            progress=0.4,
+                            log_line=f"encoding {output_format} at {fps} fps",
+                        )
+                        output_path = root / spec.filename
+                        frame_count = run_movie_video(
+                            Path(worker_source), output_path, movie_params, ctx
+                        )
                     ctx.check_cancelled()
-                    ctx.update(progress=0.8, log_line=f"packaging {len(frames)} frames")
-                    archive_path = root / spec.filename
-                    with zipfile.ZipFile(
-                        archive_path, "w", compression=zipfile.ZIP_DEFLATED
-                    ) as archive:
-                        for frame in frames:
-                            archive.write(frame, arcname=frame.name)
-                    size = store.copy_in(object_key, archive_path)
-                return size, {"frame_count": len(frames)}
+                    size = store.copy_in(object_key, output_path)
+                return size, {
+                    "frame_count": frame_count,
+                    "format": output_format,
+                    "fps": fps,
+                }
 
             return spec, produce
 

@@ -8,7 +8,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -35,7 +35,7 @@ jobs:
         # shipped by backend/Dockerfile.
         python-version: ["3.11", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -70,7 +70,7 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -95,7 +95,7 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -135,7 +135,7 @@ jobs:
       PVWEB_DATABASE_URL: postgresql+psycopg://pvweb:pvweb@localhost:5432/pvweb
       PVWEB_DATA_ROOT: /tmp/pvweb-ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

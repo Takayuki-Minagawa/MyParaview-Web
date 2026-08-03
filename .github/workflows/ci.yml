@@ -16,7 +16,7 @@ jobs:
       # one place with the other dev dependencies.
       - run: pip install -r backend/requirements-dev.txt
       - run: ruff check --config backend/ruff.toml backend workers python
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -103,7 +103,7 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       # The Playwright config launches the backend via backend/.venv.
       - run: python -m venv backend/.venv && backend/.venv/bin/pip install -r backend/requirements.txt
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm

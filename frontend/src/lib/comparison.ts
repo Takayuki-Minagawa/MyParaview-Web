@@ -90,7 +90,8 @@ export function comparisonSliceIndex(
 export function camerasEqual(left: CameraState | null, right: CameraState | null): boolean {
   if (left === right) return true;
   if (!left || !right) return false;
-  return left.parallel_scale === right.parallel_scale
+  return (left.parallel_projection ?? false) === (right.parallel_projection ?? false)
+    && left.parallel_scale === right.parallel_scale
     && left.position.every((value, index) => value === right.position[index])
     && left.focal_point.every((value, index) => value === right.focal_point[index])
     && left.view_up.every((value, index) => value === right.view_up[index]);

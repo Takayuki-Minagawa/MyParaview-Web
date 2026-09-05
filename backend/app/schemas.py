@@ -127,6 +127,7 @@ class CameraState(BaseModel):
     focal_point: list[float] = Field(min_length=3, max_length=3)
     view_up: list[float] = Field(min_length=3, max_length=3)
     parallel_scale: float = Field(gt=0)
+    parallel_projection: bool = Field(default=False, strict=True)
 
 
 class TableCoordinatesState(BaseModel):
@@ -186,10 +187,21 @@ class CustomColorMapDefinitionState(BaseModel):
         return self
 
 
+class DisplayStyleState(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+    solid_color: str = Field(pattern="^#[0-9A-Fa-f]{6}$")
+    edge_color: str = Field(pattern="^#[0-9A-Fa-f]{6}$")
+    point_size: float = Field(ge=1, le=30)
+    line_width: float = Field(ge=1, le=10)
+
+
 class ViewState(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
     schema_version: int = Field(default=1, ge=1, le=1)
-    representation: str = Field(pattern="^(surface|wireframe|points)$")
+    representation: str = Field(pattern="^(surface|surface-with-edges|wireframe|points)$")
+    display_style: DisplayStyleState = Field(default_factory=lambda: DisplayStyleState(
+        solid_color="#ffffff", edge_color="#000000", point_size=7, line_width=1,
+    ))
     color_by: Optional[ScalarSelectionState] = None
     color_range: Optional[list[float]] = Field(default=None, min_length=2, max_length=2)
     opacity: float = Field(ge=0, le=1)

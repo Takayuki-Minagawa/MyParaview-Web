@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Enable with: git config --local core.hooksPath .githooks
+set -euo pipefail
+bash "$(git rev-parse --show-toplevel)/scripts/ci.sh" check

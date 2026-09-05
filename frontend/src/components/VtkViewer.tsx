@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import type {
   CameraState,
   ColorMapName,
+  DisplayStyle,
   ImageMode,
   Representation,
   ScalarSelection,
@@ -26,6 +27,7 @@ import {
   applyRepresentation,
   applySavedCamera,
   readCamera,
+  toggleProjection,
 } from "../lib/viewer/camera";
 import {
   buildImageScene,
@@ -92,6 +94,7 @@ export interface VtkViewerProps {
   datasetType?: string | null;
   emptyMessage?: string;
   representation: Representation;
+  displayStyle?: DisplayStyle;
   colorBy: ScalarSelection | null;
   colorRange: [number, number] | null;
   opacity: number;
@@ -118,7 +121,7 @@ export interface VtkViewerProps {
 
 export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function VtkViewer(props, ref) {
   const {
-    datasetId, url, datasetType, emptyMessage, representation, colorBy, colorRange, opacity, colorMap,
+    datasetId, url, datasetType, emptyMessage, representation, displayStyle, colorBy, colorRange, opacity, colorMap,
     legendVisible, axesVisible, tableCoordinates, imageMode, sliceAxis, sliceIndex,
     volumeOpacityPoints,
     onColorRangeResolved, onLoadComplete, cameraState, onCameraChange, onScreenshotCaptured,
@@ -185,11 +188,11 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
   const axesVisibleRef = useRef(axesVisible);
   axesVisibleRef.current = axesVisible;
   const displayRef = useRef<DisplaySettings>({
-    representation, colorBy, colorRange, opacity, colorMap, cameraState, legendVisible,
+    representation, displayStyle, colorBy, colorRange, opacity, colorMap, cameraState, legendVisible,
     sliceAxis, sliceIndex, volumeOpacityPoints,
   });
   displayRef.current = {
-    representation, colorBy, colorRange, opacity, colorMap, cameraState, legendVisible,
+    representation, displayStyle, colorBy, colorRange, opacity, colorMap, cameraState, legendVisible,
     sliceAxis, sliceIndex, volumeOpacityPoints,
   };
 
@@ -327,7 +330,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
       }
       let displayDiagnostic = scene.dataDiagnostic ?? "";
       if (scene.kind === "geometry") {
-        applyRepresentation(scene, display.representation);
+        applyRepresentation(scene, display.representation, display.displayStyle);
         applyGeometryColor(scene, display.colorBy, resolvedRange, display.colorMap);
         scene.prop.getProperty().setOpacity(display.opacity);
         scene.renderer.addActor(scene.prop);
@@ -516,9 +519,9 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
 
   useEffect(() => {
     if (!ctx.current) return;
-    applyRepresentation(ctx.current, representation);
+    applyRepresentation(ctx.current, representation, displayStyle);
     ctx.current.renderWindow.render();
-  }, [representation]);
+  }, [representation, displayStyle]);
 
   useEffect(() => {
     const scene = ctx.current;
@@ -555,8 +558,14 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
   return (
     <div className="viewer" aria-label={viewerLabel}>
       <div ref={containerRef} className="viewer-canvas" />
+      <div className="viewer-tools">
       {renderable && (
         <div className="viewer-toolbar" aria-label={messages.viewer.standardViews}>
+          <button
+            aria-pressed={cameraState?.parallel_projection ?? false}
+            onClick={() => toggleProjection(ctx.current)}
+            title={messages.viewer.projectionHint}
+          >{messages.viewer.parallelProjection}</button>
           <button onClick={() => applyCameraPreset(ctx.current, "front")}>{messages.viewer.front}</button>
           <button onClick={() => applyCameraPreset(ctx.current, "back")}>{messages.viewer.back}</button>
           <button onClick={() => applyCameraPreset(ctx.current, "side")}>{messages.viewer.side}</button>
@@ -700,6 +709,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
           )}
         </div>
       )}
+      </div>
       {probeEnabled && probeResult && (
         <div
           className="probe-tooltip"

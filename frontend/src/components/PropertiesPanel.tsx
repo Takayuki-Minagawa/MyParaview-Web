@@ -115,6 +115,9 @@ export const PropertiesPanel = memo(function PropertiesPanel({
         isImageData={isImageData}
         representation={display.representation}
         onRepresentation={display.setRepresentation}
+        displayStyle={display.displayStyle}
+        onDisplayStyle={display.setDisplayStyle}
+        scalarColoring={display.colorBy !== null}
         opacity={display.opacity}
         onOpacity={display.setOpacity}
         axesVisible={display.axesVisible}

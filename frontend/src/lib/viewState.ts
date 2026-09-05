@@ -1,6 +1,7 @@
 import type {
   CameraState,
   ColorMapName,
+  DisplayStyle,
   ImageMode,
   Representation,
   ScalarSelection,
@@ -47,8 +48,24 @@ export function parseViewState(value: unknown): ViewState | null {
     // definition remains valid while that preset is already registered.
     return null;
   }
-  if (typeof state.opacity !== "number" || state.opacity < 0 || state.opacity > 1) return null;
+  if (typeof state.opacity !== "number" || !Number.isFinite(state.opacity) || state.opacity < 0 || state.opacity > 1) return null;
   if (typeof state.legend_visible !== "boolean") return null;
+
+  let displayStyle: DisplayStyle | undefined;
+  if (state.display_style !== undefined) {
+    if (!state.display_style || typeof state.display_style !== "object") return null;
+    const style = state.display_style as Record<string, unknown>;
+    if (typeof style.solid_color !== "string" || !/^#[0-9a-f]{6}$/i.test(style.solid_color)
+      || typeof style.edge_color !== "string" || !/^#[0-9a-f]{6}$/i.test(style.edge_color)
+      || typeof style.point_size !== "number" || !Number.isFinite(style.point_size)
+      || style.point_size < 1 || style.point_size > 30
+      || typeof style.line_width !== "number" || !Number.isFinite(style.line_width)
+      || style.line_width < 1 || style.line_width > 10) return null;
+    displayStyle = {
+      solid_color: style.solid_color, edge_color: style.edge_color,
+      point_size: style.point_size, line_width: style.line_width,
+    };
+  }
 
   let colorBy: ScalarSelection | null = null;
   if (state.color_by !== null) {
@@ -78,13 +95,17 @@ export function parseViewState(value: unknown): ViewState | null {
       !finiteTuple(candidate.focal_point, 3) ||
       !finiteTuple(candidate.view_up, 3) ||
       typeof candidate.parallel_scale !== "number" ||
-      candidate.parallel_scale <= 0
+      !Number.isFinite(candidate.parallel_scale) ||
+      candidate.parallel_scale <= 0 ||
+      (candidate.parallel_projection !== undefined && typeof candidate.parallel_projection !== "boolean")
     ) return null;
     camera = {
       position: [...candidate.position] as CameraState["position"],
       focal_point: [...candidate.focal_point] as CameraState["focal_point"],
       view_up: [...candidate.view_up] as CameraState["view_up"],
       parallel_scale: candidate.parallel_scale,
+      ...(candidate.parallel_projection !== undefined
+        ? { parallel_projection: candidate.parallel_projection as boolean } : {}),
     };
   }
 
@@ -156,6 +177,7 @@ export function parseViewState(value: unknown): ViewState | null {
   return {
     schema_version: 1,
     representation: state.representation as Representation,
+    ...(displayStyle ? { display_style: displayStyle } : {}),
     color_by: colorBy,
     color_range: colorRange,
     opacity: state.opacity,

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { MessagesProvider } from "../../i18n-context";
 import { MESSAGES } from "../../i18n";
+import { DEFAULT_DISPLAY_STYLE } from "../../types";
 import { DisplaySection } from "./DisplaySection";
 
 function renderSection({ canUndo = false, canRedo = false } = {}) {
@@ -13,6 +14,9 @@ function renderSection({ canUndo = false, canRedo = false } = {}) {
       <DisplaySection
         isImageData={false}
         representation="surface"
+        displayStyle={DEFAULT_DISPLAY_STYLE}
+        onDisplayStyle={vi.fn()}
+        scalarColoring={false}
         onRepresentation={vi.fn()}
         opacity={1}
         onOpacity={vi.fn()}

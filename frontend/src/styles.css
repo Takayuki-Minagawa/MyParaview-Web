@@ -200,10 +200,7 @@ body {
   white-space: nowrap;
   pointer-events: none;
 }
-.comparison-enabled .viewer-toolbar:not(.viewer-plane-toolbar):not(.viewer-vector-toolbar) {
-  max-width: calc(100% - 24px);
-  flex-wrap: wrap;
-}
+.comparison-enabled .viewer-tools { top: 46px; }
 
 .viewer { position: absolute; inset: 0; }
 .viewer-canvas { position: absolute; inset: 0; }
@@ -218,18 +215,28 @@ body {
   color: var(--muted);
   pointer-events: none;
 }
-.viewer-toolbar {
+.viewer-tools {
   position: absolute;
   top: 12px;
   left: 12px;
+  right: 12px;
   display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: none;
+}
+.viewer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 100%;
+  pointer-events: auto;
   gap: 4px;
   padding: 4px;
   border-radius: 7px;
   background: var(--viewer-toolbar-bg);
 }
 .viewer-toolbar button { padding: 4px 7px; }
-.viewer-plane-toolbar { top: 54px; }
 .viewer-toolbar button[aria-pressed="true"] {
   border-color: var(--accent);
   color: var(--accent);
@@ -258,13 +265,10 @@ body {
   right: 4px;
   padding: 1px 5px;
 }
-.viewer-plane-toolbar { flex-wrap: wrap; max-width: calc(100% - 24px); }
 .viewer-vector-toolbar {
-  left: auto;
-  right: 12px;
   align-items: center;
   flex-wrap: wrap;
-  max-width: min(560px, calc(100% - 24px));
+  max-width: 100%;
   font-size: 11px;
 }
 .viewer-vector-toolbar label {
@@ -317,6 +321,8 @@ button:hover { border-color: var(--accent); }
 .member-admin .row input { min-width: 0; }
 .row input[type="text"], .row input:not([type]) { flex: 1; }
 .actions { margin-top: 16px; }
+.representation-options { flex-wrap: wrap; }
+.representation-options .radio { white-space: nowrap; }
 .radio { display: flex; align-items: center; gap: 4px; color: var(--text); }
 
 .busy { color: var(--accent); margin: 8px 0; font-size: 13px; }
@@ -615,3 +621,14 @@ button:hover { border-color: var(--accent); }
   font-family: ui-monospace, monospace;
   padding-right: 12px;
 }
+
+.display-style-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+.display-style-controls label { display: flex; flex-direction: column; gap: 4px; }
+.display-style-controls input { width: 100%; min-width: 0; }
+.display-style-controls input[type="color"] { height: 30px; padding: 2px; }
+.display-style-controls small { grid-column: 1 / -1; opacity: 0.7; }

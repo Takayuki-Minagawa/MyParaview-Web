@@ -37,6 +37,7 @@ export function usePipelineActions({
     const state: ViewState = {
       schema_version: 1,
       representation: display.representation,
+      display_style: display.displayStyle,
       color_by: display.colorBy,
       color_range: display.customColorRange,
       opacity: display.opacity,

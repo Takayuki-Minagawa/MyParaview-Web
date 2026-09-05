@@ -787,6 +787,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
                   datasetType: viewerDatasetType,
                   emptyMessage: viewerEmptyMessage,
                   representation: display.representation,
+                  displayStyle: display.displayStyle,
                   colorBy: display.colorBy,
                   colorRange: activeColorRange,
                   opacity: display.opacity,

@@ -1,53 +1,56 @@
 name: deploy-pages
 
+# No builds or tests on Pages / GitHub-hosted CI. Publish only when explicitly
+# requested, using the exact archive already verified locally or externally.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "frontend/**"
-      - ".github/workflows/deploy-pages.yml"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag containing pages-site.zip
+        required: true
+        type: string
+      sha256:
+        description: SHA-256 from the trusted local/external CI run
+        required: true
+        type: string
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
-        working-directory: frontend
-      - run: npm run build
-        working-directory: frontend
-        env:
-          # Points the deployed static UI at a live backend. GitHub Pages only
-          # hosts the frontend build; without a reachable API, project/dataset
-          # data calls fail and only the app shell renders. Set this repo
-          # variable (Settings > Secrets and variables > Actions > Variables)
-          # once a backend is deployed.
-          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: frontend/dist
-
   deploy:
-    needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
+      - name: Download verified release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SHA256: ${{ inputs.sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]
+          gh release download "$RELEASE_TAG" --pattern pages-site.zip --dir "$RUNNER_TEMP/pages-download"
+          cd "$RUNNER_TEMP/pages-download"
+          printf '%s  pages-site.zip\n' "$EXPECTED_SHA256" | sha256sum --check --strict
+      - name: Prepare static files for final placement
+        run: python3 scripts/pages_bundle.py unpack "$RUNNER_TEMP/pages-download/pages-site.zip" "$RUNNER_TEMP/pages-site"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/pages-site
       - id: deployment
         uses: actions/deploy-pages@v4

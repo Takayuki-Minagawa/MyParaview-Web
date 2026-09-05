@@ -1,6 +1,6 @@
 # サーバー配置メモ
 
-最終更新: 2026-08-02
+最終更新: 2026-09-06
 
 この文書は、初期公開をGitHub Pagesで行い、将来MyParaView-Webを本格的なサーバーへ
 移行するための方針と作業手順を記録するメモです。G11 で実装した単一サーバー向け
@@ -8,22 +8,18 @@
 
 ## GitHub Pagesへのフロントエンドデプロイ（実装済み）
 
-`.github/workflows/deploy-pages.yml` が `main` push時に `frontend/` を
-`npm run build` し、`actions/deploy-pages` で公開します。`vite.config.ts` の
-`base` はproduction buildでのみ `/MyParaview-Web/` を使用します
-（`VITE_BASE_PATH` で上書き可能）。
+`.github/workflows/deploy-pages.yml` は手動実行時だけ、検証済みRelease ZIPを取得し、
+SHA-256を照合してPagesへ配置します。pushでは起動せず、ビルド・テストは行いません。
+通常の検証と公開用ZIP作成は `scripts/ci.sh` をローカルまたは外部CIで実行します。
+詳しい準備・公開手順は [ParaView表示機能とCI分離](paraview-display-and-ci.md) を参照してください。
 
-初回のみ、リポジトリのSettings > Pages で Source を「GitHub Actions」に切り替える
-必要があります。
+`vite.config.ts` のproduction baseは `/MyParaview-Web/`（`VITE_BASE_PATH`で変更可能）。
+`VITE_API_BASE`やOIDC設定は公開時のActions変数ではなく、検証・ビルド環境に指定します。
+PagesのSourceは「GitHub Actions」を使用します。
 
 これは**フロントエンドの静的配信のみ**です。プロジェクト一覧・データセットupload・
-pipeline実行などは引き続きFastAPIバックエンドへのHTTP呼び出しが必要なため、
-バックエンドを別途どこかへデプロイしない限り、公開されたUIはロードはできても
-データ操作はエラーになります。バックエンドを用意したら、リポジトリのSettings >
-Secrets and variables > Actions > Variables に `VITE_API_BASE`（例:
-`https://api.example.com`）を設定し、backend側で該当Pages originからのCORSを
-許可してください。ブラウザ内で完結し外部APIを一切呼ばない「真の`static`モード」
-（下記）は未実装です。
+pipeline実行はFastAPIへの接続が必要です。ブラウザ単独のファイル読み込みモードは未実装です。
+別途バックエンドを配置し、Pages originからのCORSを許可してください。
 
 ## 公開モードの方針
 

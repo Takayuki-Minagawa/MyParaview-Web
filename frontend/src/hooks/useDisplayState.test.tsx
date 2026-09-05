@@ -289,3 +289,28 @@ describe("useDisplayState identity", () => {
     expect(result.current.restoreViewState).toBe(restoreViewState);
   });
 });
+
+describe("display style and projection history", () => {
+  it("restores style/projection atomically and undoes/redoes both", () => {
+    const { result } = renderHook(useDisplayState);
+    const initialStyle = { ...result.current.displayStyle };
+    const state: ViewState = {
+      ...RESTORED_VIEW_STATE, representation: "surface-with-edges",
+      display_style: { solid_color: "#123456", edge_color: "#abcdef", point_size: 15, line_width: 3 },
+      camera: { ...CAMERA, parallel_projection: true },
+    };
+    act(() => result.current.restoreViewState(state));
+    expect(result.current.displayStyle).toEqual(state.display_style);
+    expect(result.current.cameraState?.parallel_projection).toBe(true);
+    act(() => result.current.undo());
+    expect(result.current.displayStyle).toEqual(initialStyle);
+    expect(result.current.cameraState).toBeNull();
+    act(() => result.current.redo());
+    expect(result.current.displayStyle).toEqual(state.display_style);
+    act(() => result.current.setCameraState({ ...CAMERA, parallel_projection: false }));
+    act(() => result.current.undo());
+    expect(result.current.cameraState?.parallel_projection).toBe(true);
+    act(() => result.current.restoreViewState(RESTORED_VIEW_STATE));
+    expect(result.current.displayStyle).toEqual(initialStyle);
+  });
+});

@@ -57,7 +57,7 @@ export interface Job {
 
 // Canonical value lists; UI pickers, validators, and the assistant all
 // derive from these so a new entry cannot be added in one place only.
-export const REPRESENTATION_NAMES = ["surface", "wireframe", "points"] as const;
+export const REPRESENTATION_NAMES = ["surface", "surface-with-edges", "wireframe", "points"] as const;
 export type Representation = (typeof REPRESENTATION_NAMES)[number];
 
 export type ScalarAssociation = "point" | "cell";
@@ -139,16 +139,32 @@ export interface ScalarSelection {
   association: ScalarAssociation;
 }
 
+export interface DisplayStyle {
+  solid_color: string;
+  edge_color: string;
+  point_size: number;
+  line_width: number;
+}
+
+export const DEFAULT_DISPLAY_STYLE: DisplayStyle = {
+  solid_color: "#ffffff",
+  edge_color: "#000000",
+  point_size: 7,
+  line_width: 1,
+};
+
 export interface CameraState {
   position: [number, number, number];
   focal_point: [number, number, number];
   view_up: [number, number, number];
   parallel_scale: number;
+  parallel_projection?: boolean;
 }
 
 export interface ViewState {
   schema_version: 1;
   representation: Representation;
+  display_style?: DisplayStyle;
   color_by: ScalarSelection | null;
   /** null means use the selected array's data range automatically. */
   color_range: [number, number] | null;

@@ -1,14 +1,27 @@
 /** Camera helpers: presets, save/restore, and serialization. */
-import type { CameraState, Representation } from "../../types";
+import { DEFAULT_DISPLAY_STYLE, type DisplayStyle, type CameraState, type Representation } from "../../types";
 import type { CameraPreset, Scene } from "./vtkTypes";
 import { REPR_CODE } from "./vtkTypes";
 
-export function applyRepresentation(scene: Scene, representation: Representation) {
+export function applyRepresentation(
+  scene: Scene, representation: Representation, style: DisplayStyle = DEFAULT_DISPLAY_STYLE,
+) {
   if (scene.kind !== "geometry" || !scene.prop) return;
   const property = scene.prop.getProperty();
   property.setRepresentation(scene.pointGlyph ? REPR_CODE.surface : REPR_CODE[representation]);
-  property.setEdgeVisibility(representation === "surface");
-  property.setPointSize(representation === "points" ? 7 : 1);
+  property.setEdgeVisibility(representation === "surface-with-edges");
+  property.setPointSize(style.point_size);
+  property.setLineWidth(style.line_width);
+  const rgb = (hex: string): [number, number, number] => [
+    parseInt(hex.slice(1, 3), 16) / 255,
+    parseInt(hex.slice(3, 5), 16) / 255,
+    parseInt(hex.slice(5, 7), 16) / 255,
+  ];
+  property.setColor(...rgb(style.solid_color));
+  property.setEdgeColor(...rgb(style.edge_color));
+  if (scene.pointGlyph && scene.pointGlyphBaseRadius !== undefined) {
+    scene.glyphSource?.setRadius?.(scene.pointGlyphBaseRadius * style.point_size / 7);
+  }
 }
 
 export function applyCameraPreset(scene: Scene | null, preset: CameraPreset) {
@@ -44,6 +57,7 @@ export function readCamera(scene: Scene): CameraState {
     focal_point: [...camera.getFocalPoint()] as CameraState["focal_point"],
     view_up: [...camera.getViewUp()] as CameraState["view_up"],
     parallel_scale: camera.getParallelScale(),
+    parallel_projection: camera.getParallelProjection(),
   };
 }
 
@@ -53,6 +67,32 @@ export function applySavedCamera(scene: Scene, state: CameraState) {
   camera.setFocalPoint(...state.focal_point);
   camera.setViewUp(...state.view_up);
   camera.setParallelScale(state.parallel_scale);
+  camera.setParallelProjection(state.parallel_projection ?? false);
   scene.renderer.resetCameraClippingRange();
   scene.renderWindow.render();
+}
+
+/** Preserve the apparent size at the focal plane when changing projection. */
+export function toggleProjection(scene: Scene | null) {
+  if (!scene) return;
+  const camera = scene.renderer.getActiveCamera();
+  const focal = camera.getFocalPoint();
+  const position = camera.getPosition();
+  const offset = position.map((value, index) => value - focal[index]);
+  const distance = Math.max(Math.hypot(...offset), 1e-6);
+  const tangent = Math.tan(camera.getViewAngle() * Math.PI / 360);
+  const parallel = !camera.getParallelProjection();
+  if (parallel) camera.setParallelScale(distance * tangent);
+  else {
+    const scale = camera.getParallelScale() / tangent / distance;
+    camera.setPosition(
+      focal[0] + offset[0] * scale,
+      focal[1] + offset[1] * scale,
+      focal[2] + offset[2] * scale,
+    );
+  }
+  camera.setParallelProjection(parallel);
+  scene.renderer.resetCameraClippingRange();
+  scene.renderWindow.render();
+  scene.emitCamera();
 }

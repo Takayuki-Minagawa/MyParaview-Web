@@ -148,6 +148,7 @@ export const ComparisonViewport = forwardRef<VtkViewerHandle, Props>(
           ? messages.appMessages.incompletePvd
           : undefined}
         representation={primary.representation}
+        displayStyle={primary.displayStyle}
         colorBy={secondaryColorBy}
         colorRange={secondaryColorRange}
         opacity={primary.opacity}

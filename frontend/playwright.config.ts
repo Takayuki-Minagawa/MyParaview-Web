@@ -12,16 +12,19 @@ export default defineConfig({
   },
   webServer: [
     {
-      command:
-        "cd ../backend && PVWEB_AUTH_MODE=dev PVWEB_ALLOW_INSECURE_DEV_AUTH=1 "
-        + "PVWEB_DATA_ROOT=$(mktemp -d /tmp/pvweb-e2e.XXXXXX) "
-        + "./.venv/bin/python -m uvicorn app.main:app --port 8000",
+      command: "../backend/.venv/bin/python ../scripts/e2e_server.py",
       url: "http://localhost:8000/health",
       reuseExistingServer: false,
       timeout: 30_000,
     },
     {
       command: "npm run dev -- --port 5173 --strictPort",
+      env: {
+        VITE_API_BASE: "http://localhost:8000",
+        VITE_OIDC_AUTHORITY: "",
+        VITE_OIDC_CLIENT_ID: "",
+        VITE_OIDC_REDIRECT_URI: "",
+      },
       url: "http://localhost:5173",
       reuseExistingServer: false,
       timeout: 30_000,

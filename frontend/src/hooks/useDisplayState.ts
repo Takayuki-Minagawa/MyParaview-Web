@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CameraState,
   ColorMapName,
+  DisplayStyle,
   ImageMode,
   Representation,
   ScalarSelection,
@@ -10,6 +11,7 @@ import type {
   ViewState,
   VolumeOpacityPoint,
 } from "../types";
+import { DEFAULT_DISPLAY_STYLE } from "../types";
 import { DEFAULT_VOLUME_OPACITY_POINTS } from "../lib/imageData";
 
 /** Undo/redo is intentionally bounded so camera moves and slider edits cannot
@@ -21,6 +23,7 @@ export const DISPLAY_HISTORY_LIMIT = 50;
  * transient viewer preferences and therefore stay outside this history. */
 export interface DisplayHistorySnapshot {
   representation: Representation;
+  displayStyle: DisplayStyle;
   colorBy: ScalarSelection | null;
   customColorRange: [number, number] | null;
   opacity: number;
@@ -45,6 +48,7 @@ const EMPTY_HISTORY: HistoryStacks = { past: [], future: [] };
 function cloneSnapshot(snapshot: DisplayHistorySnapshot): DisplayHistorySnapshot {
   return {
     ...snapshot,
+    displayStyle: { ...snapshot.displayStyle },
     colorBy: snapshot.colorBy ? { ...snapshot.colorBy } : null,
     customColorRange: snapshot.customColorRange ? [...snapshot.customColorRange] : null,
     cameraState: snapshot.cameraState
@@ -78,6 +82,7 @@ function snapshotsEqual(
   );
   const sameCamera = left.cameraState === right.cameraState || (
     !!left.cameraState && !!right.cameraState
+    && (left.cameraState.parallel_projection ?? false) === (right.cameraState.parallel_projection ?? false)
     && left.cameraState.parallel_scale === right.cameraState.parallel_scale
     && left.cameraState.position.every(
       (value, index) => value === right.cameraState?.position[index],
@@ -104,6 +109,10 @@ function snapshotsEqual(
   );
 
   return left.representation === right.representation
+    && left.displayStyle.solid_color === right.displayStyle.solid_color
+    && left.displayStyle.edge_color === right.displayStyle.edge_color
+    && left.displayStyle.point_size === right.displayStyle.point_size
+    && left.displayStyle.line_width === right.displayStyle.line_width
     && sameColorBy
     && sameRange
     && left.opacity === right.opacity
@@ -133,6 +142,7 @@ function appendBounded(
  * new history boundary for a dataset/project change. */
 export function useDisplayState() {
   const [representation, setRepresentation] = useState<Representation>("surface");
+  const [displayStyle, setDisplayStyle] = useState<DisplayStyle>(DEFAULT_DISPLAY_STYLE);
   const [colorBy, setColorByState] = useState<ScalarSelection | null>(null);
   const [customColorRange, setCustomColorRange] = useState<[number, number] | null>(null);
   const [runtimeColorRange, setRuntimeColorRange] = useState<[number, number] | null>(null);
@@ -161,6 +171,7 @@ export function useDisplayState() {
 
   const snapshot = useMemo<DisplayHistorySnapshot>(() => ({
     representation,
+    displayStyle,
     colorBy,
     customColorRange,
     opacity,
@@ -174,7 +185,7 @@ export function useDisplayState() {
     timestepIndex,
     volumeOpacityPoints,
   }), [
-    representation, colorBy, customColorRange, opacity, colorMap,
+    representation, displayStyle, colorBy, customColorRange, opacity, colorMap,
     legendVisible, cameraState, tableCoordinates, imageMode, sliceAxis,
     sliceIndex, timestepIndex, volumeOpacityPoints,
   ]);
@@ -194,6 +205,7 @@ export function useDisplayState() {
 
   const applySnapshot = useCallback((next: DisplayHistorySnapshot) => {
     setRepresentation(next.representation);
+    setDisplayStyle(next.displayStyle);
     setColorByState(next.colorBy);
     setCustomColorRange(next.customColorRange);
     setOpacity(next.opacity);
@@ -262,6 +274,7 @@ export function useDisplayState() {
     const current = cloneSnapshot(snapshotRef.current);
     const target: DisplayHistorySnapshot = {
       representation: state.representation,
+      displayStyle: state.display_style ?? DEFAULT_DISPLAY_STYLE,
       colorBy: state.color_by,
       customColorRange: state.color_range,
       opacity: state.opacity,
@@ -311,6 +324,7 @@ export function useDisplayState() {
   // history availability changes — consumers use it in effect dependencies.
   return useMemo(() => ({
     representation, setRepresentation,
+    displayStyle, setDisplayStyle,
     colorBy, setColorBy, setColorByState,
     customColorRange, setCustomColorRange,
     runtimeColorRange, setRuntimeColorRange,
@@ -328,7 +342,7 @@ export function useDisplayState() {
     volumeOpacityPoints, setVolumeOpacityPoints,
     canUndo, canRedo, undo, redo, restoreViewState, reset,
   }), [
-    representation, colorBy, customColorRange, runtimeColorRange, opacity,
+    representation, displayStyle, colorBy, customColorRange, runtimeColorRange, opacity,
     colorMap, legendVisible, axesVisible, cameraState, tableCoordinates,
     imageMode, sliceAxis, sliceIndex, timestepIndex, playing,
     volumeOpacityPoints, canUndo, canRedo, setColorBy, undo, redo,

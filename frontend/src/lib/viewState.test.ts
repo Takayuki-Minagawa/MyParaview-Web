@@ -194,3 +194,24 @@ describe("parseViewState", () => {
     expect(clampSliceIndex(-1, -5, 5)).toBe(-1);
   });
 });
+
+describe("ParaView display state validation", () => {
+  const style = { solid_color: "#ff8800", edge_color: "#000000", point_size: 12, line_width: 3 };
+  it("round trips the new fields without changing legacy states", () => {
+    const state = { ...VALID, representation: "surface-with-edges", display_style: style,
+      camera: { ...VALID.camera, parallel_projection: true } };
+    expect(parseViewState(state)).toEqual(state);
+    expect(parseViewState(VALID)).toEqual(VALID);
+  });
+  it.each([
+    { solid_color: "red" }, { edge_color: "#fff" }, { point_size: 0 },
+    { point_size: Infinity }, { line_width: 11 }, { line_width: NaN },
+  ])("rejects unsafe style values: %j", (invalid) => {
+    expect(parseViewState({ ...VALID, display_style: { ...style, ...invalid } })).toBeNull();
+  });
+  it("rejects malformed projection and nonfinite camera/opacity values", () => {
+    expect(parseViewState({ ...VALID, camera: { ...VALID.camera, parallel_projection: "false" } })).toBeNull();
+    expect(parseViewState({ ...VALID, camera: { ...VALID.camera, parallel_scale: Infinity } })).toBeNull();
+    expect(parseViewState({ ...VALID, opacity: NaN })).toBeNull();
+  });
+});

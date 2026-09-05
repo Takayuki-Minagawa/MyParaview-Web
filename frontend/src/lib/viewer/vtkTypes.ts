@@ -9,6 +9,7 @@
 import type {
   CameraState,
   ColorMapName,
+  DisplayStyle,
   Representation,
   ScalarSelection,
   SliceAxis,
@@ -70,6 +71,9 @@ export interface VtkProperty {
   setRepresentation: (code: number) => void;
   setEdgeVisibility: (visible: boolean) => void;
   setPointSize: (size: number) => void;
+  setLineWidth: (width: number) => void;
+  setColor: (r: number, g: number, b: number) => void;
+  setEdgeColor: (r: number, g: number, b: number) => void;
   setOpacity: (opacity: number) => void;
   setRGBTransferFunction: (index: number, lut: VtkObject) => void;
   setColorWindow: (window: number) => void;
@@ -89,6 +93,9 @@ export interface VtkCamera {
   getFocalPoint: () => number[];
   getViewUp: () => number[];
   getParallelScale: () => number;
+  getParallelProjection: () => boolean;
+  getViewAngle: () => number;
+  setParallelProjection: (parallel: boolean) => void;
   getDistance?: () => number;
   setPosition: (x: number, y: number, z: number) => void;
   setFocalPoint: (x: number, y: number, z: number) => void;
@@ -138,6 +145,7 @@ export const REPR_CODE: Record<Representation, number> = {
   points: 0,
   wireframe: 1,
   surface: 2,
+  "surface-with-edges": 2,
 };
 
 export const SLICE_MODE: Record<SliceAxis, "I" | "J" | "K"> = { X: "I", Y: "J", Z: "K" };
@@ -146,6 +154,7 @@ export type CameraPreset = "front" | "side" | "top" | "back" | "bottom" | "isome
 
 export interface DisplaySettings {
   representation: Representation;
+  displayStyle?: DisplayStyle;
   colorBy: ScalarSelection | null;
   colorRange: [number, number] | null;
   opacity: number;
@@ -170,7 +179,8 @@ export interface Scene {
   reader: VtkObject | null;
   output: VtkDataSet | null;
   createdOutput: boolean;
-  glyphSource: VtkObject | null;
+  glyphSource: (VtkObject & { setRadius?: (radius: number) => void }) | null;
+  pointGlyphBaseRadius?: number;
   pointGlyph: boolean;
   lut: VtkObject | null;
   opacityFunction: VtkObject | null;

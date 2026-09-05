@@ -269,6 +269,7 @@ export async function buildTableScene(
   scene.createdOutput = true;
   scene.glyphSource = glyphSource;
   scene.pointGlyph = useGlyphs;
+  scene.pointGlyphBaseRadius = Math.max(diagonal * 0.035, 0.01);
 }
 
 /** Fetch + parse a VTI into a slice actor or a volume, per the image mode. */

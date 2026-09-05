@@ -31,3 +31,6 @@ frontend/playwright-report/
 !.env.production.example
 !infra/.env.example
 infra/.env
+
+# Locally verified release bundles
+artifacts/

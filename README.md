@@ -14,9 +14,12 @@ GitHub Pagesでの初期公開と将来のDockerサーバー移行方針は
 ブラウザ内で完結するファイル表示機能を初期対象とします。プロジェクト保存、認証、サーバフィルタ、
 trame session、PostgreSQL/S3連携はサーバーモードで提供する機能です。
 
+今回のParaView表示機能追加と、Pagesを最終配置に限定するCI手順は
+[docs/paraview-display-and-ci.md](docs/paraview-display-and-ci.md) を参照してください。
+
 ## 主な機能
 
-- VTP: surface / wireframe / points、point/cell scalar、5種の組み込みcolormap、ParaView JSON preset import、手動range、opacity、凡例
+- VTP: surface / surface with edges / wireframe / points、point/cell scalar、5種の組み込みcolormap、ParaView JSON preset import、手動range、opacity、凡例
 - VTU: ブラウザ内で外表面を抽出して直接描画（ascii / inline binary / raw appended、zlib対応。未対応形式はサーバVTP変換へ誘導）、point/cell scalar着色、表面のclient export
 - VTS/VTR: StructuredGrid / RectilinearGridの外表面をブラウザ内で抽出して直接描画（VTUと同じDataArray encoding範囲、未対応形式はサーバVTP変換へ誘導）
 - VTI: X/Y/Z slice とvolume rendering（2〜4点の不透明度transfer function編集）
@@ -25,6 +28,7 @@ trame session、PostgreSQL/S3連携はサーバーモードで提供する機能
 - 対話ツール: VTP/VTU/VTS/VTRのクライアントclip/slice平面、point/cell scalar Probe、距離/角度計測、最大2,000本に制限したvector glyph
 - 比較・管理: dataset名検索、タグの付与/絞り込み、datasetまたはtimestepの2画面比較、カメラ同期（WebGL contextは最大2）
 - 表示状態: Pipeline browser（保存・復元・リネーム・サーバ実行）、camera/representation/color/VTI/PVD状態の保存・復元、共有リンク、最大50履歴のundo/redo
+- 表示編集: 平行投影/透視投影、単色・エッジ色・点サイズ・線幅（保存/復元、Undo/Redo、比較ビュー対応）
 - UX: job center（フィルタ/ページングAPI、SSEストリーム）、cancel、進捗/ログ、panel折りたたみ、resize、orientation axesトグル、6方向標準view、背景色選択
 - Artifact: source/bundle export、VTP変換、統計JSON（ヒストグラム含む）とそのUI可視化（配列別ヒストグラム/件数/平均/範囲/標準偏差）、client screenshot/geometry export、Artifact→Dataset昇格、認証付きdownload
 - ジョブ・解析: 開発用local executorまたはRedis/RQ worker、7種のParaView filter、Pipelineフィルタ連鎖、PNG frame ZIP / MP4 / WebM animation export
@@ -249,8 +253,9 @@ cd ../frontend
 npm run test:coverage
 ```
 
-CIはサポート下限のPython 3.11と、backend imageが配布するPython 3.13の両方でbackend
-testを実行します。frontend coverageにもlines 51%、branches 45%、functions 48%、
+検証は `bash scripts/ci.sh check` をローカルまたは外部CIで実行します。GitHub Actionsの
+通常CIは起動しません。サポート下限のPython 3.11と、backend imageが配布するPython 3.13の
+両方で同じコマンドを実行する運用です。frontend coverageにもlines 51%、branches 45%、functions 48%、
 statements 49%の退行防止下限を設定しています。
 
 GitHub DependabotはPython・npm・GitHub Actions・Docker Composeの依存関係を週次で確認します。

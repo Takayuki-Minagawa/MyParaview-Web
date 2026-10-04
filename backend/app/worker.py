@@ -123,8 +123,10 @@ def extract_external_metadata(path: Path, ctx: JobContext) -> DatasetMetadata:
     result = _run(_command("metadata", str(path)), ctx)
     try:
         payload = json.loads(result.stdout)
+        if not isinstance(payload, dict):
+            raise ValueError("metadata JSON must be an object")
         arrays = [ArrayInfo(**item) for item in payload.get("arrays", [])]
-        return DatasetMetadata(
+        metadata = DatasetMetadata(
             dataset_type=payload.get("dataset_type", "Unknown"),
             num_points=payload.get("num_points"),
             num_cells=payload.get("num_cells"),
@@ -134,6 +136,8 @@ def extract_external_metadata(path: Path, ctx: JobContext) -> DatasetMetadata:
             arrays=arrays,
             extra=payload.get("extra") or {"reader": "paraview"},
         )
+        metadata.to_dict()
+        return metadata
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError("ParaView worker returned invalid metadata JSON") from exc
 

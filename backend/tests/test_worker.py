@@ -15,10 +15,31 @@ from app.worker import (
     WorkerUnavailable,
     _resolve_ffmpeg_executable,
     _run,
+    extract_external_metadata,
     resolve_ffmpeg_executable,
     run_movie_video,
     run_pipeline_transform,
 )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"bounds": [NaN, 1, 0, 1, 0, 1]}',
+        '{"timesteps": [1e309]}',
+        '{"extra": {"nested": {"value": Infinity}}}',
+        '{"arrays": [{"name": "bad", "association": "point", "value_range": [-Infinity, 1]}]}',
+        '[]',
+    ],
+)
+def test_external_metadata_rejects_non_json_values_before_persistence(monkeypatch, payload):
+    monkeypatch.setattr("app.worker._command", lambda *args: ["pvpython", *args])
+    monkeypatch.setattr(
+        "app.worker._run",
+        lambda command, _ctx: subprocess.CompletedProcess(command, 0, payload, ""),
+    )
+    with pytest.raises(RuntimeError, match="invalid metadata JSON"):
+        extract_external_metadata(Path("source.cgns"), JobContext("test", threading.Event()))
 
 
 def test_pipeline_transform_uses_one_worker_command_with_complete_chain(

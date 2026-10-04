@@ -44,24 +44,37 @@ for (const scenario of CASES) {
     await expect(datasetRow.getByText("Ready")).toBeVisible({ timeout: 20_000 });
     const canvas = page.locator(".viewer-canvas canvas");
     await expect(canvas).toBeVisible({ timeout: 20_000 });
+    // The X-normal plane is edge-on in the initial view, so its origin cannot
+    // intersect the viewing ray. An oblique view permits a real widget drag.
+    await page.getByRole("button", { name: "Iso", exact: true }).click();
     const box = await canvas.boundingBox();
     if (!box) throw new Error("VTK canvas did not expose a bounding box");
     const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-    const modelPoint = { x: box.x + box.width * 0.4, y: center.y };
 
     const clip = page.getByRole("button", { name: "Clip", exact: true });
     await clip.click();
     await expect(clip).toHaveAttribute("aria-pressed", "true");
     const beforeDrag = await canvas.screenshot();
     await page.mouse.move(center.x, center.y);
+    // Wait for asynchronous picking and ensure this grabs the plane origin,
+    // rather than accidentally rotating the camera around an unpicked widget.
+    await expect(page.locator(".viewer-canvas")).toHaveCSS("cursor", "crosshair");
     await page.mouse.down();
+    await expect(page.locator(".viewer-canvas")).toHaveCSS("cursor", "grabbing");
     await page.mouse.move(center.x + 28, center.y + 14, { steps: 5 });
     await page.mouse.up();
-    const afterDrag = await canvas.screenshot();
-    expect(afterDrag.equals(beforeDrag)).toBe(false);
+    await page.mouse.move(box.x + box.width * 0.85, box.y + box.height * 0.85);
+    await expect.poll(async () => !(await canvas.screenshot()).equals(beforeDrag)).toBe(true);
 
     const probe = page.getByRole("button", { name: "Probe", exact: true });
     await probe.click();
+    await page.getByRole("button", { name: "Front", exact: true }).click();
+    const probeBox = await canvas.boundingBox();
+    if (!probeBox) throw new Error("VTK canvas did not expose a bounding box after Front view");
+    const modelPoint = {
+      x: probeBox.x + probeBox.width * 0.4,
+      y: probeBox.y + probeBox.height / 2,
+    };
     await page.mouse.click(modelPoint.x, modelPoint.y);
     const tooltip = page.locator(".probe-tooltip");
     await expect(tooltip).toBeVisible({ timeout: 10_000 });

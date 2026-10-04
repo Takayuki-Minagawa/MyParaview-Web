@@ -30,6 +30,7 @@ import { useDatasetJobs } from "./hooks/useDatasetJobs";
 import { usePipelineActions } from "./hooks/usePipelineActions";
 import { useDeepLink } from "./hooks/useDeepLink";
 import { useDatasetUpload } from "./hooks/useDatasetUpload";
+import { useTimestepPlayback } from "./hooks/useTimestepPlayback";
 
 const readStoredLanguage = (): Language => {
   const value = window.localStorage.getItem("pvweb-language");
@@ -71,7 +72,6 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
   const [clientExportPending, setClientExportPending] = useState(false);
-  const [viewerLoadedUrl, setViewerLoadedUrl] = useState<string | null>(null);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [comparisonEnabled, setComparisonEnabled] = useState(false);
@@ -492,27 +492,17 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     }
   }, [selectedDataset, display, viewerDatasetType]);
 
-  // ---- PVD playback loop. Depends on the specific values it reads, not the
-  // whole display object, so unrelated renders cannot keep resetting the timer.
-  const { playing, setPlaying, setTimestepIndex } = display;
-  useEffect(() => {
-    if (
-      !playing ||
-      selectedDataset?.dataset_type !== "Collection" ||
-      !viewerUrl ||
-      viewerLoadedUrl !== viewerUrl
-    ) return;
-    const count = selectedDataset.timesteps?.length ?? 0;
-    if (count < 2) {
-      setPlaying(false);
-      return;
-    }
-    const timer = window.setTimeout(
-      () => setTimestepIndex((index) => (index + 1) % count),
-      800,
-    );
-    return () => window.clearTimeout(timer);
-  }, [playing, setPlaying, setTimestepIndex, selectedDataset, viewerUrl, viewerLoadedUrl]);
+  const playback = useTimestepPlayback({
+    datasetId: selectedDataset?.id ?? null,
+    enabled: selectedDataset?.dataset_type === "Collection" && !remoteSession,
+    timestepCount: selectedDataset?.timesteps?.length ?? 0,
+    timestepIndex: display.timestepIndex,
+    viewerUrl,
+    playing: display.playing,
+    setPlaying: display.setPlaying,
+    setTimestepIndex: display.setTimestepIndex,
+    setPlaybackTimestep: display.setPlaybackTimestep,
+  });
 
   useEffect(() => {
     const maximum = Math.max(0, (selectedDataset?.timesteps?.length ?? 1) - 1);
@@ -539,11 +529,6 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [display, wholeExtent.join(",")]);
 
-  const onTimestepIndex = useCallback((index: number) => {
-    display.setPlaying(false);
-    display.setTimestepIndex(index);
-  }, [display]);
-
   const onColorRangeResolved = useCallback(
     (selection: ScalarSelection, range: [number, number]) => {
       display.setRuntimeColorRange((previous) => previous);
@@ -557,7 +542,6 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     [display],
   );
 
-  const onLoadComplete = useCallback(() => setViewerLoadedUrl(viewerUrl), [viewerUrl]);
   const onScreenshot = useCallback(() => viewerRef.current?.screenshot(), []);
   const onResetCamera = useCallback(() => viewerRef.current?.resetCamera(), []);
 
@@ -568,12 +552,20 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     sliceMin,
     sliceMax,
     onSliceAxis,
-    onTimestepIndex,
+    onTimestepIndex: playback.seek,
+    playbackSpeed: playback.speed,
+    onPlaybackSpeed: playback.setSpeed,
+    playbackLoop: playback.loop,
+    onPlaybackLoop: playback.setLoop,
+    playbackAvailable: playback.playbackAvailable,
+    onTogglePlayback: playback.togglePlayback,
     onScreenshot,
     onResetCamera,
   }), [
     availableColorRange, clampedSliceIndex, sliceMin, sliceMax,
-    onSliceAxis, onTimestepIndex, onScreenshot, onResetCamera,
+    onSliceAxis, playback.seek, playback.speed, playback.setSpeed,
+    playback.loop, playback.setLoop, playback.playbackAvailable, playback.togglePlayback,
+    onScreenshot, onResetCamera,
   ]);
 
   const serverFilterAvailable = serverCapabilities?.paraview_worker ?? false;
@@ -804,7 +796,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
                   onScreenshotCaptured,
                   onGeometryExported,
                   onColorRangeResolved,
-                  onLoadComplete,
+                  onLoadStateChange: playback.onLoadStateChange,
                   viewerBackground,
                 }}
               />

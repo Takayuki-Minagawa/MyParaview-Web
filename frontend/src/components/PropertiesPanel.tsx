@@ -32,6 +32,12 @@ export interface ViewControls {
   sliceMax: number;
   onSliceAxis: (axis: SliceAxis) => void;
   onTimestepIndex: (index: number) => void;
+  playbackSpeed: number;
+  onPlaybackSpeed: (speed: number) => void;
+  playbackLoop: boolean;
+  onPlaybackLoop: (loop: boolean) => void;
+  playbackAvailable: boolean;
+  onTogglePlayback: () => void;
   onScreenshot: () => void;
   onResetCamera: () => void;
 }
@@ -136,7 +142,12 @@ export const PropertiesPanel = memo(function PropertiesPanel({
           timestepIndex={display.timestepIndex}
           onTimestepIndex={view.onTimestepIndex}
           playing={display.playing}
-          onTogglePlayback={() => display.setPlaying((value) => !value)}
+          onTogglePlayback={view.onTogglePlayback}
+          playbackAvailable={view.playbackAvailable}
+          speed={view.playbackSpeed}
+          onSpeed={view.onPlaybackSpeed}
+          loop={view.playbackLoop}
+          onLoop={view.onPlaybackLoop}
           onDownloadTimestep={jobs.onDownloadTimestep}
         />
       )}

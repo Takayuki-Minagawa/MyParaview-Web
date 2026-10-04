@@ -108,7 +108,7 @@ class Settings:
             host.strip().lower() for host in configured_ws_hosts.split(",") if host.strip()
         }
         self.session_ttl_seconds = int(os.environ.get("PVWEB_SESSION_TTL", "3600"))
-        # Upload guardrails (work_plan 8.3 security).
+        # Upload guardrails.
         self.max_upload_bytes = int(os.environ.get("PVWEB_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
         self.max_artifact_bytes = int(
             os.environ.get("PVWEB_MAX_ARTIFACT_BYTES", str(32 * 1024 * 1024))

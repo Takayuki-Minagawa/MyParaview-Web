@@ -1,6 +1,6 @@
 # サーバー配置メモ
 
-最終更新: 2026-09-06
+最終更新: 2026-10-04
 
 この文書は、初期公開をGitHub Pagesで行い、将来MyParaView-Webを本格的なサーバーへ
 移行するための方針と作業手順を記録するメモです。G11 で実装した単一サーバー向け
@@ -10,7 +10,8 @@
 
 `.github/workflows/deploy-pages.yml` は手動実行時だけ、検証済みRelease ZIPを取得し、
 SHA-256を照合してPagesへ配置します。pushでは起動せず、ビルド・テストは行いません。
-通常の検証と公開用ZIP作成は `scripts/ci.sh` をローカルまたは外部CIで実行します。
+通常検証は `scripts/ci.sh check` をローカルとLinux専用GitHub Actionsで実行します。
+公開用ZIPは公開API設定を指定した環境で `scripts/ci.sh release` を実行して作成します。
 詳しい準備・公開手順は [ParaView表示機能とCI分離](paraview-display-and-ci.md) を参照してください。
 
 `vite.config.ts` のproduction baseは `/MyParaview-Web/`（`VITE_BASE_PATH`で変更可能）。

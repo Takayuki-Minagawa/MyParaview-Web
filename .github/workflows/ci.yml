@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Linux / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.13']
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pvweb
+          POSTGRES_PASSWORD: pvweb-ci
+          POSTGRES_DB: pvweb_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pvweb -d pvweb_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install backend dependencies
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --upgrade pip
+          backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt
+      - name: Install frontend dependencies and Chromium
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run shared checks
+        run: bash scripts/ci.sh check
+      - name: Verify PostgreSQL migrations and queries
+        env:
+          # The service database is disposable and isolated to this matrix job.
+          PVWEB_DATABASE_URL: postgresql+psycopg://pvweb:pvweb-ci@localhost:5432/pvweb_ci
+        run: bash scripts/ci.sh postgres
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-linux-python-${{ matrix.python-version }}
+          path: |
+            backend/coverage/coverage.xml
+            backend/coverage/html/
+            frontend/coverage/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload failed browser test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-linux-python-${{ matrix.python-version }}
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

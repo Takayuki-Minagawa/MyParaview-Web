@@ -1,6 +1,6 @@
 """FastAPI application entry point.
 
-Wires the M1 API surface (work_plan 7.2):
+Wires the API surface:
   projects / datasets (upload, ingest, metadata, download) / pipelines /
   jobs (status, cancel) / artifacts.
 """

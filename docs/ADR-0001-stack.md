@@ -4,7 +4,7 @@ Status: Accepted, amended by ADR-0002 · Date: 2026-07-09
 
 ## Context
 
-The [work plan](../work_plan.md) prescribes a two-stage approach: a fast PoC
+The [initial research](../paraview_webapp_research.md) informed a two-stage approach: a fast PoC
 (`trame`) followed by a productisation architecture (`React + vtk.js` front end,
 `FastAPI` API, `pvpython`/VTK workers). This ADR records the concrete choices
 for the **M1 MVP** implemented in this repository, given a development
@@ -12,7 +12,7 @@ environment without VTK/ParaView/GPU installed.
 
 ## Decisions
 
-1. **Backend: FastAPI + SQLAlchemy 2.0 + SQLite.** Matches the work plan's API
+1. **Backend: FastAPI + SQLAlchemy 2.0 + SQLite.** Matches the selected API
    layer. SQLite stands in for PostgreSQL for the MVP; the ORM keeps the swap
    cheap. JSON columns hold array/timestep detail instead of separate
    `ArrayInfo`/`TimeStep` tables to keep the schema small.
@@ -36,7 +36,7 @@ environment without VTK/ParaView/GPU installed.
    cooperative cancellation; only local active jobs are failed on API restart.
 
 5. **Frontend: React 19 + Vite + TypeScript + vtk.js.** The productisation
-   front end from the work plan. Browser rendering is scoped to `PolyData`
+   front end selected for the product. Browser rendering is scoped to `PolyData`
    surfaces (the research's "browser-direct" tier); other types are routed to a
    server-render placeholder rather than faked.
 

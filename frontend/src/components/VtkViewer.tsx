@@ -63,6 +63,7 @@ import {
   type VectorGlyphSummary,
 } from "../lib/viewer/vectorGlyph";
 import { viewerContextPool } from "../lib/viewer/contextPool";
+import type { ViewerLoadState } from "../hooks/useTimestepPlayback";
 
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import "@kitware/vtk.js/Rendering/Profiles/Volume";
@@ -107,7 +108,7 @@ export interface VtkViewerProps {
   sliceIndex: number;
   volumeOpacityPoints: VolumeOpacityPoint[];
   onColorRangeResolved?: (selection: ScalarSelection, range: [number, number]) => void;
-  onLoadComplete?: () => void;
+  onLoadStateChange?: (url: string, state: ViewerLoadState) => void;
   cameraState: CameraState | null;
   onCameraChange: (camera: CameraState) => void;
   onScreenshotCaptured?: (blob: Blob, datasetId: string | null) => void;
@@ -124,7 +125,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
     datasetId, url, datasetType, emptyMessage, representation, displayStyle, colorBy, colorRange, opacity, colorMap,
     legendVisible, axesVisible, tableCoordinates, imageMode, sliceAxis, sliceIndex,
     volumeOpacityPoints,
-    onColorRangeResolved, onLoadComplete, cameraState, onCameraChange, onScreenshotCaptured,
+    onColorRangeResolved, onLoadStateChange, cameraState, onCameraChange, onScreenshotCaptured,
     onGeometryExported, viewerBackground, contextOwner = "primary", viewerLabel,
   } = props;
   const messages = useMessages();
@@ -168,8 +169,8 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
   planeSettingsRef.current = planeSettings;
   const rangeCallbackRef = useRef(onColorRangeResolved);
   rangeCallbackRef.current = onColorRangeResolved;
-  const loadCallbackRef = useRef(onLoadComplete);
-  loadCallbackRef.current = onLoadComplete;
+  const loadCallbackRef = useRef(onLoadStateChange);
+  loadCallbackRef.current = onLoadStateChange;
   const cameraCallbackRef = useRef(onCameraChange);
   cameraCallbackRef.current = onCameraChange;
   const screenshotCallbackRef = useRef(onScreenshotCaptured);
@@ -254,12 +255,14 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
     const isDisposed = () => disposed;
     const abortController = new AbortController();
     const strings = messagesRef.current;
+    loadCallbackRef.current?.(url, "loading");
     setStatus(strings.viewer.loading);
     setVectorArrays([]);
     setVectorGlyphSummary(null);
     const contextLease = viewerContextPool.tryAcquire(contextOwner);
     if (!contextLease) {
       setStatus(strings.viewer.webglContextLimit);
+      loadCallbackRef.current?.(url, "error");
       return;
     }
     let grw: ReturnType<typeof vtkGenericRenderWindow.newInstance> | null = null;
@@ -271,6 +274,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
       grw?.delete?.();
       contextLease.release();
       setStatus(`${strings.viewer.renderError}: ${String(error)}`);
+      loadCallbackRef.current?.(url, "error");
       return;
     }
     const renderer = grw.getRenderer();
@@ -403,7 +407,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
       renderWindow.render();
       scene.emitCamera();
       setStatus(displayDiagnostic);
-      loadCallbackRef.current?.();
+      loadCallbackRef.current?.(url, "ready");
     };
 
     const load = async () => {
@@ -431,6 +435,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
     void load().catch((error: unknown) => {
       if (!disposed && !(error instanceof DOMException && error.name === "AbortError")) {
         setStatus(`${messagesRef.current.viewer.renderError}: ${String(error)}`);
+        loadCallbackRef.current?.(url, "error");
       }
     });
 

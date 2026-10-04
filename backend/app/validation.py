@@ -10,7 +10,7 @@ from fastapi import HTTPException, UploadFile
 
 
 def sniff_ok(ext: str, head: bytes) -> bool:
-    """Lightweight magic/header check (work_plan 8.3): don't trust the extension."""
+    """Lightweight magic/header check: don't trust the extension."""
     if ext in {".vtp", ".vti", ".vtu", ".vts", ".vtr", ".pvd"}:
         prefix = head.lstrip()[:200].lower()
         return prefix.startswith(b"<?xml") or b"<vtkfile" in prefix or b"<collection" in prefix

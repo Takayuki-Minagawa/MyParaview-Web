@@ -162,6 +162,9 @@ def run_ingest(dataset_id: str):
                 # playback is only enabled for a server-validated full bundle.
                 meta.extra["bundle_complete"] = bool(bundle_files)
             ctx.check_cancelled()
+            # Validate before saving any metadata, inside the error handler so
+            # malformed local or worker output leaves a retryable error row.
+            payload = meta.to_dict()
         except JobCancelled:
             # revert so the dataset is not left displaying "ingesting"
             _set_dataset_status(dataset_id, "registered", error=None)
@@ -170,7 +173,6 @@ def run_ingest(dataset_id: str):
             _set_dataset_status(dataset_id, "error", error=str(exc))
             raise
 
-        payload = meta.to_dict()
         with SessionLocal() as db:
             ds = db.get(Dataset, dataset_id)
             if ds is None:

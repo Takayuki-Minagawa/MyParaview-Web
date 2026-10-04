@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import type {
   CameraState,
   ColorMapName,
@@ -155,7 +155,16 @@ export function useDisplayState() {
   const [imageMode, setImageMode] = useState<ImageMode>("slice");
   const [sliceAxis, setSliceAxis] = useState<SliceAxis>("Z");
   const [sliceIndex, setSliceIndex] = useState(0);
-  const [timestepIndex, setTimestepIndex] = useState(0);
+  const [timestepIndex, setTimestepIndexState] = useState(0);
+  const automaticTimestepRef = useRef<number | null>(null);
+  const setTimestepIndex = useCallback((value: SetStateAction<number>) => {
+    automaticTimestepRef.current = null;
+    setTimestepIndexState(value);
+  }, []);
+  const setPlaybackTimestep = useCallback((index: number) => {
+    automaticTimestepRef.current = index;
+    setTimestepIndexState(index);
+  }, []);
   const [playing, setPlaying] = useState(false);
   const [volumeOpacityPoints, setVolumeOpacityPoints] = useState<VolumeOpacityPoint[]>(
     DEFAULT_VOLUME_OPACITY_POINTS,
@@ -204,6 +213,7 @@ export function useDisplayState() {
   }, []);
 
   const applySnapshot = useCallback((next: DisplayHistorySnapshot) => {
+    automaticTimestepRef.current = null;
     setRepresentation(next.representation);
     setDisplayStyle(next.displayStyle);
     setColorByState(next.colorBy);
@@ -216,7 +226,7 @@ export function useDisplayState() {
     setImageMode(next.imageMode);
     setSliceAxis(next.sliceAxis);
     setSliceIndex(next.sliceIndex);
-    setTimestepIndex(next.timestepIndex);
+    setTimestepIndexState(next.timestepIndex);
     setVolumeOpacityPoints(next.volumeOpacityPoints);
     // Derived ranges must be recomputed for the restored color selection, and
     // playback must stop so it cannot immediately overwrite a restored step.
@@ -234,9 +244,15 @@ export function useDisplayState() {
   // Ordinary setters remain the public API. Observe their batched result here,
   // dedupe value-equivalent objects, then add one entry for the rendered state.
   useEffect(() => {
+    const automaticTimestep = automaticTimestepRef.current === snapshot.timestepIndex;
+    automaticTimestepRef.current = null;
     if (snapshotsEqual(lastRecordedSnapshotRef.current, snapshot)) return;
     const previous = cloneSnapshot(lastRecordedSnapshotRef.current);
     lastRecordedSnapshotRef.current = cloneSnapshot(snapshot);
+    // Autoplay is transient navigation, not an edit. Ignore only its timestep
+    // delta: a manual display change batched into the same render stays undoable.
+    if (automaticTimestep) previous.timestepIndex = snapshot.timestepIndex;
+    if (snapshotsEqual(previous, snapshot)) return;
     const currentHistory = historyRef.current;
     replaceHistory({
       past: appendBounded(currentHistory.past, previous),
@@ -337,7 +353,7 @@ export function useDisplayState() {
     imageMode, setImageMode,
     sliceAxis, setSliceAxis,
     sliceIndex, setSliceIndex,
-    timestepIndex, setTimestepIndex,
+    timestepIndex, setTimestepIndex, setPlaybackTimestep,
     playing, setPlaying,
     volumeOpacityPoints, setVolumeOpacityPoints,
     canUndo, canRedo, undo, redo, restoreViewState, reset,
@@ -346,7 +362,7 @@ export function useDisplayState() {
     colorMap, legendVisible, axesVisible, cameraState, tableCoordinates,
     imageMode, sliceAxis, sliceIndex, timestepIndex, playing,
     volumeOpacityPoints, canUndo, canRedo, setColorBy, undo, redo,
-    restoreViewState, reset,
+    restoreViewState, reset, setTimestepIndex, setPlaybackTimestep,
   ]);
 }
 

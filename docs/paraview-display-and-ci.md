@@ -1,6 +1,6 @@
 # ParaViewとの機能比較・表示機能追加とCI分離
 
-確認日: 2026-09-06
+確認日: 2026-09-06（CI運用更新: 2026-10-04）
 
 ## コード確認結果と候補
 
@@ -32,9 +32,11 @@ VTIでは形状用の色・点・線編集を表示せず、既存のスカラ�
 
 ## GitHub Pagesを使わない検証
 
-通常のGitHub-hosted CI workflowとpush時の自動Pagesデプロイを廃止した。
-`scripts/ci.sh`をローカル、社内CI、任意の外部ランナーで共通利用する。
-GitHubへのpush/PRだけではCIもPagesも起動しない。
+通常検証とPages公開を分離し、`scripts/ci.sh`をローカルとCIで共通利用する。
+`.github/workflows/ci.yml`はPR・mainへのpush・手動実行で起動し、Ubuntu 24.04上で
+Python 3.11/3.13、Node.js 22、Chromium、PostgreSQL 16を検証する。
+GitHub Actionsの実行OSはLinuxのみ。coverageと失敗時のPlaywright traceは7日間保存する。
+Pagesへの配置は引き続き手動実行のみで、push/PRでは公開しない。
 
 初回準備（Node.js 22.12+、Python 3.11+）:
 
@@ -64,7 +66,7 @@ git config --local core.hooksPath .githooks
 
 既存のGit hookを設定済みの場合は、そのhookから`bash scripts/ci.sh check`を呼ぶ。
 この設定はcloneごとに必要。外部CIではcheckout・依存インストール後に同じコマンドを呼ぶ。
-branch protectionに旧GitHub Actionsの必須checkが残っている場合は管理画面で見直す必要がある。
+必須checkを設定する場合は、現在の `Linux / Python 3.11` と `Linux / Python 3.13` を選択する。
 
 Pythonの対応下限3.11と配布版3.13は、それぞれの仮想環境で検証する。
 PostgreSQLを用意したランナーでは、**破棄可能な専用DB**を指定して追加検証する:

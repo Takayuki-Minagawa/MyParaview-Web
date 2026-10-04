@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
 
 import pytest
 from defusedxml.common import DefusedXmlException
 
-from app.metadata import UnsupportedFormatError, extract_metadata
+from app.metadata import DatasetMetadata, UnsupportedFormatError, extract_metadata
 
 DATA = Path(__file__).parent / "data"
 
@@ -260,3 +262,87 @@ def test_to_dict_drops_empty_optionals():
     assert "arrays" in d
     # timesteps is None for a static polydata and should be omitted
     assert "timesteps" not in d
+
+
+@pytest.mark.parametrize("extension,vtk_type", [("vtp", "PolyData"), ("vtu", "UnstructuredGrid")])
+@pytest.mark.parametrize("coordinates", ["nan 0 0", "0 inf 0", "0 0 -inf", "0 0 0 1"])
+def test_point_bounds_omit_non_finite_or_incomplete_coordinates(
+    tmp_path, extension, vtk_type, coordinates
+):
+    path = tmp_path / f"invalid-points.{extension}"
+    path.write_text(
+        f'<VTKFile type="{vtk_type}"><{vtk_type}><Piece NumberOfPoints="1">'
+        f'<Points><DataArray format="ascii">{coordinates}</DataArray></Points>'
+        f'</Piece></{vtk_type}></VTKFile>'
+    )
+    meta = extract_metadata(str(path))
+    assert meta.bounds is None
+    json.dumps(meta.to_dict(), allow_nan=False)
+
+
+@pytest.mark.parametrize("attribute", ["Origin", "Spacing"])
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "1e309"])
+def test_imagedata_rejects_non_finite_geometry(tmp_path, attribute, value):
+    path = tmp_path / "invalid-geometry.vti"
+    path.write_text(
+        '<VTKFile type="ImageData">'
+        f'<ImageData WholeExtent="0 1 0 1 0 1" {attribute}="{value} 1 1"/>'
+        '</VTKFile>'
+    )
+    with pytest.raises(ValueError, match="Origin and Spacing must be finite"):
+        extract_metadata(str(path))
+
+
+@pytest.mark.parametrize("extent", ["0 2 0 1 0 1", f"0 {10**400} 0 1 0 1"])
+def test_imagedata_rejects_bounds_overflow_from_finite_inputs(tmp_path, extent):
+    path = tmp_path / "overflow.vti"
+    path.write_text(
+        '<VTKFile type="ImageData">'
+        f'<ImageData WholeExtent="{extent}" Spacing="1e308 1 1"/>'
+        '</VTKFile>'
+    )
+    with pytest.raises(ValueError, match="bounds must be finite"):
+        extract_metadata(str(path))
+
+
+def test_imagedata_negative_spacing_preserves_ordered_physical_bounds(tmp_path):
+    path = tmp_path / "negative-spacing.vti"
+    path.write_text(
+        '<VTKFile type="ImageData">'
+        '<ImageData WholeExtent="1 3 -2 1 0 1" Origin="10 20 30" Spacing="-2 -3 4"/>'
+        '</VTKFile>'
+    )
+    meta = extract_metadata(str(path))
+    assert meta.bounds == [4.0, 8.0, 17.0, 26.0, 30.0, 34.0]
+    assert meta.extra["spacing"] == [-2.0, -3.0, 4.0]
+
+
+@pytest.mark.parametrize("scale", [1e308, 1e-300])
+def test_vector_magnitude_range_avoids_intermediate_overflow_and_underflow(tmp_path, scale):
+    path = tmp_path / "large-vectors.vtp"
+    path.write_text(
+        '<VTKFile type="PolyData"><PolyData><Piece><PointData>'
+        '<DataArray Name="velocity" NumberOfComponents="3" format="ascii">'
+        f'{scale} {scale} 0'
+        '</DataArray></PointData></Piece></PolyData></VTKFile>'
+    )
+    meta = extract_metadata(str(path))
+    expected = math.hypot(scale, scale)
+    assert _array(meta, "velocity").value_range == [expected, expected]
+    json.dumps(meta.to_dict(), allow_nan=False)
+
+
+def test_csv_non_finite_samples_do_not_pollute_metadata(tmp_path):
+    path = tmp_path / "non-finite.csv"
+    path.write_text("value,empty\n1,nan\nnan,inf\ninf,-inf\n-3,1e309\n")
+    meta = extract_metadata(str(path))
+    assert _array(meta, "value").value_range == [-3.0, 1.0]
+    assert _array(meta, "empty").value_range is None
+    json.dumps(meta.to_dict(), allow_nan=False)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_metadata_serialization_rejects_nested_non_finite_values(value):
+    meta = DatasetMetadata(dataset_type="External", extra={"reader": {"range": [value]}})
+    with pytest.raises(ValueError, match="JSON-compatible finite values"):
+        meta.to_dict()

@@ -5,7 +5,7 @@ the .pvd time-series collection format, and CSV tables. XML parsing uses
 ``defusedxml`` so untrusted uploads cannot expand entities; no VTK install is
 required for the browser-direct formats.
 
-Scope (per work_plan M0-D / M1-B):
+Scope:
   * Structural metadata is always extracted (dataset type, counts, array names,
     components, dtypes, bounds where cheaply derivable).
   * Scalar *ranges* and point-derived *bounds* are computed only when the data
@@ -18,6 +18,7 @@ Scope (per work_plan M0-D / M1-B):
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import xml.etree.ElementTree as ET
@@ -49,6 +50,14 @@ class DatasetMetadata:
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        # Check the complete payload before a Dataset or Job result persists it.
+        # Python's JSON defaults accept NaN/Infinity, but HTTP JSON and
+        # PostgreSQL JSON columns do not. This also covers external readers'
+        # nested extra metadata, beyond the fields our parsers compute.
+        try:
+            json.dumps(d, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("metadata must contain JSON-compatible finite values") from exc
         # drop empty optionals for a cleaner API payload
         return {k: v for k, v in d.items() if v not in (None, [], {})}
 
@@ -91,7 +100,8 @@ def _range_for(values: List[float], num_components: int) -> Optional[List[float]
     mags: List[float] = []
     for i in range(0, len(values) - num_components + 1, num_components):
         tup = values[i : i + num_components]
-        mag = math.sqrt(sum(c * c for c in tup))
+        # hypot avoids overflow/underflow while squaring finite components.
+        mag = math.hypot(*tup)
         if math.isfinite(mag):
             mags.append(mag)
     if not mags:
@@ -107,7 +117,9 @@ def _padded(values: List[float], fill: List[float]) -> List[float]:
 
 def _bounds_from_points(coords: List[float]) -> Optional[List[float]]:
     """coords is a flat list of x,y,z triples."""
-    if len(coords) < 3:
+    if len(coords) < 3 or len(coords) % 3 or not all(map(math.isfinite, coords)):
+        # Bounds are optional. Do not invent a partial extent by dropping
+        # invalid points, or persist non-finite bounds into API responses.
         return None
     xs = coords[0::3]
     ys = coords[1::3]
@@ -214,16 +226,29 @@ def _extract_imagedata(grid: ET.Element) -> DatasetMetadata:
         extent = []
     origin = _padded(_floats(grid.get("Origin", "0 0 0")), [0.0, 0.0, 0.0])
     spacing = _padded(_floats(grid.get("Spacing", "1 1 1")), [1.0, 1.0, 1.0])
+    if not all(map(math.isfinite, origin + spacing)):
+        raise ValueError("ImageData Origin and Spacing must be finite")
     if len(extent) == 6:
         x0, x1, y0, y1, z0, z1 = extent
         dims = [x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1]
         meta.num_points = dims[0] * dims[1] * dims[2]
         cell_dims = [max(d - 1, 1) for d in dims]
         meta.num_cells = cell_dims[0] * cell_dims[1] * cell_dims[2]
+        try:
+            bounds = [
+                origin[axis] + extent[2 * axis + endpoint] * spacing[axis]
+                for axis in range(3)
+                for endpoint in range(2)
+            ]
+        except OverflowError as exc:
+            raise ValueError("ImageData bounds must be finite") from exc
+        if not all(map(math.isfinite, bounds)):
+            raise ValueError("ImageData bounds must be finite")
+        # Negative spacing reverses the physical endpoints of an axis.
         meta.bounds = [
-            origin[0] + x0 * spacing[0], origin[0] + x1 * spacing[0],
-            origin[1] + y0 * spacing[1], origin[1] + y1 * spacing[1],
-            origin[2] + z0 * spacing[2], origin[2] + z1 * spacing[2],
+            value
+            for axis in range(3)
+            for value in sorted(bounds[2 * axis:2 * axis + 2])
         ]
         meta.extra = {"whole_extent": extent, "origin": origin, "spacing": spacing, "dimensions": dims}
     piece = _find_child(grid, "Piece")
@@ -412,5 +437,5 @@ def extract_metadata(path: str, *, pvd_enrich_siblings: bool = False) -> Dataset
     raise UnsupportedFormatError(
         f"No metadata parser for extension {ext!r}. "
         "Formats such as .cgns/.exo/.case/.xdmf are handled server-side by a "
-        "VTK/ParaView reader (see work_plan M2)."
+        "VTK/ParaView reader."
     )

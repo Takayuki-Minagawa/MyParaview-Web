@@ -24,7 +24,7 @@ trame session、PostgreSQL/S3連携はサーバーモードで提供する機能
 - VTS/VTR: StructuredGrid / RectilinearGridの外表面をブラウザ内で抽出して直接描画（VTUと同じDataArray encoding範囲、未対応形式はサーバVTP変換へ誘導）
 - VTI: X/Y/Z slice とvolume rendering（2〜4点の不透明度transfer function編集）
 - CSV: X/Y/Z列選択による点群化（ブラウザ上限250,000点、無効行スキップ数を表示）
-- PVD: 参照ファイル込みbundle upload、時系列slider/playback、step単位download、完全bundle ZIP export
+- PVD: 参照ファイル込みbundle upload、時系列slider/playback（先頭/前/次/末尾、速度変更、ループ切替）、step単位download、完全bundle ZIP export
 - 対話ツール: VTP/VTU/VTS/VTRのクライアントclip/slice平面、point/cell scalar Probe、距離/角度計測、最大2,000本に制限したvector glyph
 - 比較・管理: dataset名検索、タグの付与/絞り込み、datasetまたはtimestepの2画面比較、カメラ同期（WebGL contextは最大2）
 - 表示状態: Pipeline browser（保存・復元・リネーム・サーバ実行）、camera/representation/color/VTI/PVD状態の保存・復元、共有リンク、最大50履歴のundo/redo
@@ -35,6 +35,16 @@ trame session、PostgreSQL/S3連携はサーバーモードで提供する機能
 - 本番基盤: backend/frontend container、full-stack Compose、Alembic、PostgreSQL、S3/MinIO（presigned URL redirect対応）、OIDC Code+PKCE、Project RBAC（メンバー削除対応）、監査ログ（Web UIビューア + CSV export）
 - Server capability: pvpython reader/convert/filter/render/movie、trame broker session、期限付きWebSocket proxy とフロントのリモートビューア
 - R&D: WebGPU/WASM検出（描画は安定版vtk.js WebGL）、Python/Jupyter deep link、安全な操作提案（永続化・確認後適用・却下）
+
+## PVD時系列の操作
+
+PVDと参照ファイルをまとめてアップロードすると、時系列パネルで先頭・前・次・末尾へ移動できます。
+再生速度は0.25×〜4×で、1×では各フレームの読み込み完了後に800 ms待って次へ進みます。
+データ読み込み時間も加わるため、指定速度は描画FPSの保証ではありません。ループを外すと末尾で停止し、
+末尾から再生を押すと先頭へ戻ります。手動での時刻移動、データセット切替、読み込みエラーでも停止します。
+自動再生の時刻移動はUndo履歴を消費せず、手動の表示編集は引き続き元に戻せます。
+速度とループ設定は画面を開いている間の一時設定です。
+操作構成は [ParaView公式Animationガイド](https://docs.paraview.org/en/v5.12.0/UsersGuide/animation.html) を参考にしています。
 
 ## アーキテクチャ
 
@@ -253,10 +263,12 @@ cd ../frontend
 npm run test:coverage
 ```
 
-検証は `bash scripts/ci.sh check` をローカルまたは外部CIで実行します。GitHub Actionsの
-通常CIは起動しません。サポート下限のPython 3.11と、backend imageが配布するPython 3.13の
-両方で同じコマンドを実行する運用です。frontend coverageにもlines 51%、branches 45%、functions 48%、
-statements 49%の退行防止下限を設定しています。
+検証は `bash scripts/ci.sh check` を共通入口として、ローカルとGitHub Actionsで実行します。
+PRとmainへのpushで起動するCIは **Ubuntu 24.04のみ** を使い、Python 3.11/3.13とNode.js 22で
+単体テスト・coverage・ビルド・Playwright E2Eを検証します。PostgreSQL 16の一時DBでも
+migrationとタグ検索を検証し、coverageと失敗時のE2E traceを7日間保存します。
+frontend coverageにはlines 51%、branches 45%、functions 48%、statements 49%の退行防止下限を設定しています。
+GitHub Pagesへの配置は引き続き手動実行です。
 
 GitHub DependabotはPython・npm・GitHub Actions・Docker Composeの依存関係を週次で確認します。
 脆弱性に基づく更新PRも受け取るには、リポジトリ側のDependabot alertsとsecurity updatesを

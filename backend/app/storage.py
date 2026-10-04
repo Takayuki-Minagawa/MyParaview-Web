@@ -1,8 +1,8 @@
 """Local or S3-compatible object storage selected through configuration.
 
-A thin stand-in for S3-compatible storage (work_plan M1-A). Keeps a flat
-namespace of opaque keys under ``<data_root>/objects``. Swapping this class for
-a boto3/minio implementation later keeps the router/job code unchanged.
+Both implementations expose opaque object keys to the routers and jobs.
+Local storage keeps objects under ``<data_root>/objects``; S3 uses a bounded
+read-through cache for operations that require a local path.
 """
 
 from __future__ import annotations

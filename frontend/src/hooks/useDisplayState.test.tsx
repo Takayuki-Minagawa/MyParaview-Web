@@ -158,6 +158,35 @@ describe("useDisplayState reset", () => {
 });
 
 describe("useDisplayState history", () => {
+  it("keeps edits undoable after many autoplay frames without filling history", () => {
+    const { result } = renderHook(useDisplayState);
+    act(() => result.current.setOpacity(0.25));
+    for (let index = 1; index <= DISPLAY_HISTORY_LIMIT + 5; index += 1) {
+      act(() => result.current.setPlaybackTimestep(index));
+    }
+    act(() => result.current.undo());
+    expect(result.current.opacity).toBe(1);
+    expect(result.current.canUndo).toBe(false);
+    act(() => result.current.redo());
+    expect(result.current.opacity).toBe(0.25);
+    expect(result.current.timestepIndex).toBe(DISPLAY_HISTORY_LIMIT + 5);
+  });
+
+  it("records manual edits batched with autoplay and retains manual seek history", () => {
+    const { result } = renderHook(useDisplayState);
+    act(() => {
+      result.current.setPlaybackTimestep(2);
+      result.current.setOpacity(0.25);
+    });
+    act(() => result.current.undo());
+    expect(result.current.opacity).toBe(1);
+    expect(result.current.timestepIndex).toBe(2);
+    act(() => result.current.setTimestepIndex(3));
+    act(() => result.current.undo());
+    expect(result.current.timestepIndex).toBe(2);
+    expect(result.current.canUndo).toBe(false);
+  });
+
   it("undoes and redoes tracked display changes", () => {
     const { result } = renderHook(useDisplayState);
     act(() => result.current.setOpacity(0.25));

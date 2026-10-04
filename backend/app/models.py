@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models (work_plan 7.1 entity subset for M1).
+"""SQLAlchemy ORM models for projects, datasets, pipelines, and jobs.
 
 Array/timestep detail is stored as JSON on Dataset rather than as separate
 tables; this keeps the MVP schema small while preserving the same information

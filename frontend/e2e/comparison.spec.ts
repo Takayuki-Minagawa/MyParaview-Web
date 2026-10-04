@@ -41,9 +41,19 @@ test("2-up comparison creates and releases only the secondary view", async ({ pa
   const beforeMove = await primaryCanvas.screenshot();
   const box = await primaryCanvas.boundingBox();
   if (!box) throw new Error("Primary comparison canvas has no bounding box");
-  await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.45);
+  // Narrow comparison panes wrap their toolbars into the upper half. Start
+  // below them: vtk.js correctly ignores a press intercepted by an overlay.
+  const start = { x: box.x + box.width * 0.45, y: box.y + box.height * 0.75 };
+  const end = { x: box.x + box.width * 0.62, y: box.y + box.height * 0.85 };
+  for (const point of [start, end]) {
+    expect(await primaryCanvas.evaluate(
+      (element, position) => document.elementFromPoint(position.x, position.y) === element,
+      point,
+    )).toBe(true);
+  }
+  await page.mouse.move(start.x, start.y);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.62, box.y + box.height * 0.55, { steps: 8 });
+  await page.mouse.move(end.x, end.y, { steps: 8 });
   await page.mouse.up();
   await expect.poll(async () => {
     const current = await primaryCanvas.screenshot();

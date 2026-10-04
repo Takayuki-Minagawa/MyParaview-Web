@@ -214,6 +214,17 @@ docker compose -f infra/docker-compose.yml --profile full-stack down
 3. input/select編集中はbrowser標準undoを優先すること、dataset/project切替後は過去のcameraや
    scalar選択をundoできないことを確認する。
 
+## PVD playback manual test
+
+1. `sample_series.pvd`と参照する2つのVTPをbundle uploadし、先頭・前・次・末尾とsliderで
+   表示stepと物理時刻が一致することを確認する。
+2. 再生速度を0.25×〜4×で変更する。各frameの読み込み完了後に待ち時間が変わり、
+   遅い通信でも次frameへ飛ばないことを確認する。
+3. ループOFFでは末尾で停止し、再度再生すると先頭から開始する。ONでは末尾から先頭へ戻る。
+4. 手動seek、dataset/project切替、読み込み失敗で再生が停止することを確認する。
+5. opacityを変えてから50step以上再生しても、Undoでその編集を戻せることを確認する。
+   再生中に行った手動表示編集もUndo対象になる。
+
 ## G8 VTS/VTR browser-direct manual test
 
 1. ascii / inline base64 / raw appended（little-endian、必要に応じzlib）のVTSとVTRをuploadし、
@@ -335,7 +346,7 @@ MINIO_BIND_ADDRESS=127.0.0.1 \
 
 1. READMEのcoverage commandを実行し、`backend/coverage/coverage.xml`、
    `backend/coverage/html/`、`frontend/coverage/`が生成されることを確認する。
-2. CIのbackend/frontend jobでcoverage artifactがuploadされることを確認する。
+2. Linux CIのPython 3.11/3.13両jobでcoverage artifactがuploadされることを確認する。
 3. `.github/dependabot.yml`がpip、npm、GitHub Actions、Docker Composeを週次対象にしていることを
    確認する。脆弱性PRが必要な場合はrepository settingsでDependabot alerts/security updatesも
    有効化する。

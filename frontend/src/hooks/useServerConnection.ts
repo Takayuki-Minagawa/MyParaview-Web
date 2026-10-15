@@ -75,12 +75,14 @@ export function useServerConnection(): ServerConnection {
 
   const connect = useCallback(async (target: string): Promise<boolean> => {
     const normalized = normalizeApiBase(target);
-    const attempt = ++attemptRef.current;
     if (!normalized) {
-      setStatus("failed");
+      // A typo in the form must not drop a working connection: report the
+      // invalid input but keep the current status and target.
+      setStatus((current) => (current === "connected" ? current : "failed"));
       setFailure({ kind: "invalid-url", detail: target });
       return false;
     }
+    const attempt = ++attemptRef.current;
     setApiBase(normalized);
     setApiBaseState(normalized);
     setSuggestedApiBase(normalized);

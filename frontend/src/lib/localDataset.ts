@@ -195,7 +195,21 @@ export interface CreateLocalDatasetOptions {
   createObjectUrl?: (blob: Blob) => string;
   revokeObjectUrl?: (url: string) => void;
   now?: () => Date;
-  readText?: (file: File) => Promise<string>;
+  readText?: (file: Blob) => Promise<string>;
+}
+
+/** Bytes read to detect CSV columns; the viewer parses the full file later. */
+export const CSV_SAMPLE_BYTES = 64 * 1024;
+
+/** Header plus complete sample rows; a row cut by the byte limit is dropped. */
+export async function readCsvHead(
+  file: Blob,
+  readText: (blob: Blob) => Promise<string> = (blob) => blob.text(),
+): Promise<string> {
+  if (file.size <= CSV_SAMPLE_BYTES) return readText(file);
+  const head = await readText(file.slice(0, CSV_SAMPLE_BYTES));
+  const lastNewline = head.lastIndexOf("\n");
+  return lastNewline > 0 ? head.slice(0, lastNewline + 1) : head;
 }
 
 let localCounter = 0;
@@ -233,7 +247,7 @@ export async function createLocalDataset(
   if (files.length === 0) throw new LocalDatasetError("no-files");
   const createObjectUrl = options.createObjectUrl ?? ((blob: Blob) => URL.createObjectURL(blob));
   const revokeObjectUrl = options.revokeObjectUrl ?? ((url: string) => URL.revokeObjectURL(url));
-  const readText = options.readText ?? ((file: File) => file.text());
+  const readText = options.readText ?? ((file: Blob) => file.text());
   const createdAt = (options.now ?? (() => new Date()))().toISOString();
   const id = options.id ?? nextLocalId();
 
@@ -256,7 +270,7 @@ export async function createLocalDataset(
       throw new LocalDatasetError("unsupported", [classification.ext || file.name]);
     }
     const arrays = classification.datasetType === "Table"
-      ? csvColumnInfo(await readText(file))
+      ? csvColumnInfo(await readCsvHead(file, readText))
       : null;
     const url = createObjectUrl(file);
     const dataset: Dataset = {

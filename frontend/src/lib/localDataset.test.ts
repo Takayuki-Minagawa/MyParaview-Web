@@ -6,7 +6,9 @@ import {
   csvColumnInfo,
   isLocalDataset,
   isLocalDatasetId,
+  CSV_SAMPLE_BYTES,
   LocalDatasetError,
+  readCsvHead,
   localDatasetUrl,
   parsePvdCollection,
   resolveReferencedFile,
@@ -83,6 +85,19 @@ describe("csvColumnInfo", () => {
     ]);
     expect(columns[0].association).toBe("table");
     expect(() => csvColumnInfo("")).toThrow(LocalDatasetError);
+  });
+});
+
+describe("readCsvHead", () => {
+  it("returns small files whole and trims a large file to complete rows", async () => {
+    const small = new Blob(["x,y\n1,2"]);
+    expect(await readCsvHead(small)).toBe("x,y\n1,2");
+    const row = "1,2,3\n";
+    const large = new Blob(["x,y,z\n", row.repeat(Math.ceil(CSV_SAMPLE_BYTES / row.length) + 10)]);
+    const head = await readCsvHead(large);
+    expect(head.length).toBeLessThanOrEqual(CSV_SAMPLE_BYTES);
+    expect(head.endsWith("\n")).toBe(true);
+    expect(head.startsWith("x,y,z\n")).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
-import { memo, useEffect, useId, useState, type FormEvent } from "react";
+import { memo, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import type { CameraState } from "../../types";
+import { camerasEqual } from "../../lib/comparison";
 import { useMessages } from "../../i18n-context";
 
 interface Props {
@@ -80,7 +81,12 @@ export const CameraSection = memo(function CameraSection({
   const [invalid, setInvalid] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // The viewer re-emits an identical camera on every scene load (e.g. each
+  // playback frame); only a real change may overwrite what the user typed.
+  const shownCameraRef = useRef(cameraState);
   useEffect(() => {
+    if (camerasEqual(shownCameraRef.current, cameraState)) return;
+    shownCameraRef.current = cameraState;
     setDraft(toDraft(cameraState));
     setInvalid(false);
   }, [cameraState]);

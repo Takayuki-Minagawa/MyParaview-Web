@@ -78,6 +78,10 @@ describe("useLayoutPreferences", () => {
     expect(result.current.leftCollapsed && result.current.rightCollapsed).toBe(true);
     act(() => media.emit(false));
     expect(result.current.narrow).toBe(false);
+    // Widening restores the remembered desktop layout and keeps it stored.
+    expect(result.current.leftCollapsed).toBe(false);
+    expect(result.current.rightCollapsed).toBe(false);
+    expect(readStoredPanels(window.localStorage)).toEqual({ left: false, right: false });
   });
 
   it("falls back to defaults for corrupt storage", () => {

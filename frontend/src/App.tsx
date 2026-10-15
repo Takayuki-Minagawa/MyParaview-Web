@@ -56,12 +56,25 @@ const readStoredTheme = (): ThemeMode => {
   return systemTheme();
 };
 
+const hasStoredTheme = (): boolean => {
+  const value = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return value === "light" || value === "dark";
+};
+
 export function App() {
   const [language, setLanguage] = useState<Language>(readStoredLanguage);
-  const [theme, setTheme] = useState<ThemeMode>(readStoredTheme);
+  const [theme, setThemeState] = useState<ThemeMode>(readStoredTheme);
+  // Only an explicit choice is persisted; otherwise the theme keeps
+  // following the system preference on later visits.
+  const [themeExplicit, setThemeExplicit] = useState(hasStoredTheme);
+  const setTheme = useCallback((next: ThemeMode) => {
+    setThemeExplicit(true);
+    setThemeState(next);
+  }, []);
   const resetAppearance = useCallback(() => {
     setLanguage("ja");
-    setTheme(systemTheme());
+    setThemeExplicit(false);
+    setThemeState(systemTheme());
   }, []);
   return (
     <MessagesProvider language={language}>
@@ -69,6 +82,7 @@ export function App() {
         language={language}
         onLanguage={setLanguage}
         theme={theme}
+        themeExplicit={themeExplicit}
         onTheme={setTheme}
         onResetAppearance={resetAppearance}
       />
@@ -80,11 +94,14 @@ interface AppBodyProps {
   language: Language;
   onLanguage: (language: Language) => void;
   theme: ThemeMode;
+  themeExplicit: boolean;
   onTheme: (theme: ThemeMode) => void;
   onResetAppearance: () => void;
 }
 
-function AppBody({ language, onLanguage, theme, onTheme, onResetAppearance }: AppBodyProps) {
+function AppBody({
+  language, onLanguage, theme, themeExplicit, onTheme, onResetAppearance,
+}: AppBodyProps) {
   const t = useMessages();
   const [manualOpen, setManualOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -223,8 +240,9 @@ function AppBody({ language, onLanguage, theme, onTheme, onResetAppearance }: Ap
     document.documentElement.lang = language;
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
-    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-  }, [language, theme]);
+    if (themeExplicit) window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    else window.localStorage.removeItem(THEME_STORAGE_KEY);
+  }, [language, theme, themeExplicit]);
 
   useEffect(() => {
     let disposed = false;
@@ -394,9 +412,12 @@ function AppBody({ language, onLanguage, theme, onTheme, onResetAppearance }: Ap
     }
   }, [scope, clearErrors, setDatasets, pushError]);
 
+  // Server datasets are only usable while connected. Hiding them as soon as
+  // the connection drops (or switches to another server) keeps render-time
+  // URL builders from targeting a missing or different API base.
   const allDatasets = useMemo(
-    () => [...localDatasets, ...datasets],
-    [localDatasets, datasets],
+    () => (connected ? [...localDatasets, ...datasets] : localDatasets),
+    [connected, localDatasets, datasets],
   );
   const selectedDataset = useMemo(
     () => allDatasets.find((d) => d.id === selectedDatasetId) ?? null,
@@ -799,7 +820,7 @@ function AppBody({ language, onLanguage, theme, onTheme, onResetAppearance }: Ap
           ) : null}
         </div>
         <div className="mode-controls" role="group" aria-label={t.common.displaySettings}>
-          <div className="segmented" role="group" aria-label={t.common.displaySettings}>
+          <div className="segmented" role="group" aria-label={t.layout.themeGroup}>
             <button aria-pressed={theme === "light"} onClick={() => onTheme("light")}>
               {t.common.light}
             </button>
@@ -807,7 +828,7 @@ function AppBody({ language, onLanguage, theme, onTheme, onResetAppearance }: Ap
               {t.common.dark}
             </button>
           </div>
-          <div className="segmented" role="group" aria-label="Language">
+          <div className="segmented" role="group" aria-label={t.layout.languageGroup}>
             <button aria-pressed={language === "ja"} onClick={() => onLanguage("ja")}>
               {t.common.japanese}
             </button>
@@ -849,12 +870,12 @@ function AppBody({ language, onLanguage, theme, onTheme, onResetAppearance }: Ap
             {t.layout.resetPreferences}
           </button>
         </div>
-        <div className="panel-toggles" role="group" aria-label={t.layout.resetLayout}>
+        <div className="panel-toggles" role="group" aria-label={t.layout.panelsGroup}>
           <button
             aria-expanded={!layout.leftCollapsed}
             aria-controls="dataset-panel"
-            aria-label={layout.leftCollapsed ? t.layout.datasetPanelOpen : t.layout.datasetPanelClose}
-            title={layout.leftCollapsed ? t.layout.datasetPanelOpen : t.layout.datasetPanelClose}
+            aria-label={`${t.datasetPanel.datasets}: ${layout.leftCollapsed ? t.layout.panelOpen : t.layout.panelClose}`}
+            title={`${t.datasetPanel.datasets}: ${layout.leftCollapsed ? t.layout.panelOpen : t.layout.panelClose}`}
             onClick={layout.toggleLeft}
           >
             {t.datasetPanel.datasets}
@@ -862,8 +883,8 @@ function AppBody({ language, onLanguage, theme, onTheme, onResetAppearance }: Ap
           <button
             aria-expanded={!layout.rightCollapsed}
             aria-controls="properties-panel"
-            aria-label={layout.rightCollapsed ? t.layout.propertiesPanelOpen : t.layout.propertiesPanelClose}
-            title={layout.rightCollapsed ? t.layout.propertiesPanelOpen : t.layout.propertiesPanelClose}
+            aria-label={`${t.properties.title}: ${layout.rightCollapsed ? t.layout.panelOpen : t.layout.panelClose}`}
+            title={`${t.properties.title}: ${layout.rightCollapsed ? t.layout.panelOpen : t.layout.panelClose}`}
             onClick={layout.toggleRight}
           >
             {t.properties.title}
@@ -977,7 +998,12 @@ function AppBody({ language, onLanguage, theme, onTheme, onResetAppearance }: Ap
               />
             )}
           </ErrorBoundary>
-          <div className="selection-status" role="status" data-testid="selection-status">
+          <div
+            className="selection-status"
+            role="status"
+            data-testid="selection-status"
+            title={selectionStatus}
+          >
             {selectionStatus}
           </div>
         </main>

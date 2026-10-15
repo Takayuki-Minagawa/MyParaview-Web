@@ -1,4 +1,4 @@
-import { api } from "../api";
+import { api, getApiBase } from "../api";
 import type { Dataset } from "../types";
 import { isLocalDataset, localDatasetUrl } from "./localDataset";
 
@@ -8,7 +8,9 @@ import { isLocalDataset, localDatasetUrl } from "./localDataset";
 export function viewerUrlFor(dataset: Dataset | null, timestepIndex: number): string | null {
   if (!dataset) return null;
   if (isLocalDataset(dataset)) return localDatasetUrl(dataset, timestepIndex);
-  if (dataset.status !== "ready") return null;
+  // A server dataset is only renderable while an API base exists; this runs
+  // during render, so it must never throw NotConnectedError.
+  if (getApiBase() === null || dataset.status !== "ready") return null;
   if (dataset.dataset_type === "Collection") {
     if (dataset.extra?.bundle_complete === false) return null;
     return api.timestepUrl(dataset.id, timestepIndex);

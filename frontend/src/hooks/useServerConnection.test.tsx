@@ -76,6 +76,24 @@ describe("useServerConnection", () => {
     expect(health).toHaveBeenLastCalledWith(expect.objectContaining({ signal: expect.anything() }));
   });
 
+  it("keeps a working connection when the form receives an invalid URL", async () => {
+    health.mockResolvedValue({ status: "ok" });
+    capabilities.mockResolvedValue(null as never);
+    const { result } = renderHook(() => useServerConnection());
+    await act(async () => {
+      await result.current.connect("http://localhost:8000");
+    });
+    expect(result.current.status).toBe("connected");
+    await act(async () => {
+      await result.current.connect("localhost:8000");
+    });
+    expect(result.current.status).toBe("connected");
+    expect(result.current.failure?.kind).toBe("invalid-url");
+    expect(result.current.apiBase).toBe("http://localhost:8000");
+    expect(getApiBase()).toBe("http://localhost:8000");
+    expect(health).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects an invalid URL without touching the network", async () => {
     const { result } = renderHook(() => useServerConnection());
     await act(async () => {

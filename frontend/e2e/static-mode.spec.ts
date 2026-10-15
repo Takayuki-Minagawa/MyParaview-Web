@@ -43,8 +43,15 @@ test("opens a bundled sample without any API request and renders it", async ({ p
   const originX = page.getByLabel("Origin X");
   await expect(originX).toHaveValue(/.+/);
   await originX.fill("0.5");
-  await page.getByRole("button", { name: "Apply", exact: true }).first().click();
-  await expect(page.locator(".viewer-plane-numeric [role=alert]")).toHaveCount(0);
+  const planeForm = page.locator(".viewer-plane-numeric");
+  await planeForm.getByLabel("Normal X").fill("0");
+  await planeForm.getByLabel("Normal Y").fill("2");
+  await planeForm.getByLabel("Normal Z").fill("0");
+  await planeForm.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(planeForm.locator("[role=alert]")).toHaveCount(0);
+  // The fields are re-read from the widget: origin kept, normal normalized.
+  await expect(originX).toHaveValue("0.5");
+  await expect(planeForm.getByLabel("Normal Y")).toHaveValue("1");
 
   // Numeric camera editing round-trips through the viewer.
   const cameraY = page.getByLabel("Position Y");

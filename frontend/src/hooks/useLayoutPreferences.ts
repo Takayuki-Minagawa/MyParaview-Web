@@ -66,7 +66,11 @@ export function useLayoutPreferences() {
     if (!media) return;
     const onChange = (event: MediaQueryListEvent) => {
       setNarrow(event.matches);
-      if (event.matches) setPanels({ left: true, right: true });
+      // Narrow: drawers start closed. Wide again: restore the remembered
+      // desktop arrangement instead of persisting the drawer state over it.
+      setPanels(event.matches
+        ? { left: true, right: true }
+        : readStoredPanels(safeStorage()) ?? DEFAULT_PANELS);
     };
     media.addEventListener?.("change", onChange);
     return () => media.removeEventListener?.("change", onChange);

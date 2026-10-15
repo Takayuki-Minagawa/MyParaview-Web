@@ -37,6 +37,26 @@ describe("CameraSection (R-03)", () => {
     expect(onApply).toHaveBeenCalledWith({ ...camera, position: [0, -20, 0] });
   });
 
+  it("keeps a half-typed draft when the viewer re-emits an identical camera", async () => {
+    const user = userEvent.setup();
+    const onApply = vi.fn();
+    const view = (state: CameraState) => (
+      <MessagesProvider language="en">
+        <CameraSection cameraState={state} onApply={onApply} onResetCamera={vi.fn()} />
+      </MessagesProvider>
+    );
+    const { rerender } = render(view(camera));
+    const positionX = screen.getByLabelText(`${messages.camera.position} X`);
+    await user.clear(positionX);
+    await user.type(positionX, "3");
+    // Playback/scene reload: a new object with the same values.
+    rerender(view({ ...camera, position: [...camera.position] }));
+    expect(positionX).toHaveValue(3);
+    // A real camera change (mouse interaction) still refreshes the fields.
+    rerender(view({ ...camera, position: [5, -10, 0] }));
+    expect(positionX).toHaveValue(5);
+  });
+
   it("explains invalid input instead of applying it", async () => {
     const user = userEvent.setup();
     const { onApply } = renderSection();

@@ -718,10 +718,15 @@ button:hover { border-color: var(--accent); }
   border-radius: 6px;
   background: var(--viewer-toolbar-bg);
   font-size: 11px;
+  line-height: 1.3;
   color: var(--muted);
   pointer-events: none;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
+/* Keep the legend's value row clear of the single-line selection status. */
+.center .color-legend { bottom: 46px; }
 .camera-section { display: grid; gap: 6px; margin-top: 10px; }
 .camera-section h3 { margin: 0; }
 .camera-vector { display: grid; gap: 3px; margin: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }

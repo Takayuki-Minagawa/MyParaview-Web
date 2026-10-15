@@ -22,8 +22,7 @@ GitHub Pagesでの初期公開と将来のDockerサーバー移行方針は
 
 モードは `VITE_APP_MODE=static|server` と `VITE_API_BASE` で決まります。production buildで
 どちらも未指定の場合はブラウザ表示モード、`npm run dev` では従来どおり `http://localhost:8000` へ
-接続するサーバーモードになります。2026-10-15の動作確認結果への対応内容は
-[docs/feedback-2026-10-15-plan.md](docs/feedback-2026-10-15-plan.md) を参照してください。
+接続するサーバーモードになります。
 
 今回のParaView表示機能追加と、Pagesを最終配置に限定するCI手順は
 [docs/paraview-display-and-ci.md](docs/paraview-display-and-ci.md) を参照してください。

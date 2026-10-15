@@ -20,7 +20,7 @@ Contour/Thresholdなど7種類のフィルタがあり、同名機能を重複�
 | ベクトル成分選択（X/Y/Z/Magnitude） | 次候補 | 現状は着色のMagnitude固定。UIだけでなくrange、凡例、VTI、保存形式の整合が必要 |
 | Spreadsheet View / Plot Over Line | 次候補 | Probeに加え、配列全体や線上サンプリングを確認できる。表面データと体積補間の区別が必要 |
 | Calculator / Warp By Vector | 次候補 | workerフィルタ・入力検証・Pipeline連鎖までの実装が必要 |
-| ブラウザ単独ファイル読込 | 実装済み（2026-10-15） | ブラウザ表示モード。ローカルファイル・内蔵サンプルをAPIなしで表示。[対応計画](feedback-2026-10-15-plan.md) |
+| ブラウザ単独ファイル読込 | 実装済み（2026-10-15） | ブラウザ表示モード。ローカルファイル・内蔵サンプルをAPIなしで表示 |
 
 今回の表示機能はブラウザのvtk.js描画が対象。別サービスのtrame UIやpvpythonの
 render/movieジョブに新しい表示設定を適用する変更は含まない。古い保存データの

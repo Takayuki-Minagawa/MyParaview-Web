@@ -1,4 +1,4 @@
-fastapi>=0.110
+fastapi>=0.141.1
 # 0.31 adds CIDR-aware FORWARDED_ALLOW_IPS used by the Compose proxy network.
 uvicorn[standard]>=0.31
 SQLAlchemy>=2.0

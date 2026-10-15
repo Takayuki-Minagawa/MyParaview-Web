@@ -72,6 +72,18 @@ describe("ConnectionSection", () => {
     expect(value.retry).toHaveBeenCalled();
   });
 
+  it("reports an invalid URL while connected without the retry guidance", () => {
+    renderSection(connection({
+      mode: "server",
+      apiBase: "http://localhost:8000",
+      status: "connected",
+      failure: { kind: "invalid-url", detail: "localhost:8000" },
+    }));
+    expect(screen.getByRole("alert")).toHaveTextContent(messages.connection.invalidApiBase);
+    expect(screen.queryByText(messages.connection.nextSteps)).toBeNull();
+    expect(screen.getByTestId("connection-status")).toHaveTextContent(messages.connection.statusConnected);
+  });
+
   it("copies diagnostics as JSON and offers disconnect when connected", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn(async () => {});

@@ -86,7 +86,9 @@ export const ConnectionSection = memo(function ConnectionSection({
       {failureText && (
         <div className="connection-failure" role="alert">
           <p>{failureText}</p>
-          <p className="muted">{t.connection.nextSteps}</p>
+          {connection.status !== "connected" && (
+            <p className="muted">{t.connection.nextSteps}</p>
+          )}
           {connection.failure?.detail && (
             <p className="muted mono connection-detail">
               {t.connection.detailLabel}: {connection.failure.detail}

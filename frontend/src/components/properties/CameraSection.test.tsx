@@ -57,6 +57,22 @@ describe("CameraSection (R-03)", () => {
     expect(positionX).toHaveValue(5);
   });
 
+  it("refreshes the draft after Reset camera even when the view does not move", async () => {
+    const user = userEvent.setup();
+    const view = (state: CameraState) => (
+      <MessagesProvider language="en">
+        <CameraSection cameraState={state} onApply={vi.fn()} onResetCamera={vi.fn()} />
+      </MessagesProvider>
+    );
+    const { rerender } = render(view(camera));
+    const positionX = screen.getByLabelText(`${messages.camera.position} X`);
+    await user.clear(positionX);
+    await user.type(positionX, "9");
+    await user.click(screen.getByRole("button", { name: messages.properties.resetCamera }));
+    rerender(view({ ...camera, position: [...camera.position] }));
+    expect(positionX).toHaveValue(0);
+  });
+
   it("explains invalid input instead of applying it", async () => {
     const user = userEvent.setup();
     const { onApply } = renderSection();

@@ -179,7 +179,18 @@ export const CameraSection = memo(function CameraSection({
       )}
       <div className="row">
         <button type="submit" disabled={!cameraState}>{messages.common.apply}</button>
-        <button type="button" onClick={onResetCamera}>{messages.properties.resetCamera}</button>
+        <button
+          type="button"
+          onClick={() => {
+            // Force the next emitted camera into the fields, even when the
+            // view was already at the reset position.
+            shownCameraRef.current = null;
+            setInvalid(false);
+            onResetCamera();
+          }}
+        >
+          {messages.properties.resetCamera}
+        </button>
         <button type="button" disabled={!cameraState} onClick={copy}>
           {copied ? messages.camera.copied : messages.common.copyText}
         </button>

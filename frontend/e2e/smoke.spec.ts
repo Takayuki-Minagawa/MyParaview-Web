@@ -19,11 +19,11 @@ test("upload -> display -> save/restore view state -> stats artifact", async ({ 
   await page.getByPlaceholder("New project name").fill(projectName);
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expect(
-    page.locator(".panel-left select").first().locator("option:checked"),
+    page.getByLabel("Project", { exact: true }).locator("option:checked"),
   ).toHaveText(projectName);
 
   // Upload the VTP fixture; ingest runs and the row flips to Ready.
-  const upload = page.locator('input[type="file"]').first();
+  const upload = page.getByLabel("Upload a single file");
   await expect(upload).toBeEnabled();
   await upload.setInputFiles(VTP_FIXTURE);
   const datasetRow = page.locator(".dataset-select-button").filter({ hasText: "sample_surface.vtp" });

@@ -10,7 +10,7 @@ test("display styling and projection render, undo, and survive saved pipeline re
   await page.goto("/");
   await page.getByPlaceholder("New project name").fill(`display-${Date.now()}`);
   await page.getByRole("button", { name: "Create", exact: true }).click();
-  const upload = page.locator('input[type="file"]').first();
+  const upload = page.getByLabel("Upload a single file");
   await expect(upload).toBeEnabled();
   await upload.setInputFiles(fixture);
   await expect(page.locator(".dataset-select-button").filter({ hasText: "sample_surface.vtp" }).getByText("Ready"))
@@ -58,6 +58,6 @@ test("display styling and projection render, undo, and survive saved pipeline re
   await page.getByRole("button", { name: "Parallel projection", exact: true }).nth(1).click();
   await expect(page.getByRole("button", { name: "Parallel projection", exact: true }).first()).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator(".error-banner")).toHaveCount(0);
-  await page.getByRole("button", { name: "Reset camera", exact: true }).click();
+  await page.getByRole("button", { name: "Reset camera", exact: true }).first().click();
   await page.screenshot({ path: "test-results/display-style.png", fullPage: true });
 });

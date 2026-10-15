@@ -19,8 +19,36 @@ import type {
   ViewState,
 } from "./types";
 
-export const API_BASE =
-  (import.meta.env?.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
+import { resolveConnectionConfig } from "./lib/appMode";
+
+/** The API base is mutable: static deployments start without one and only
+ * gain a target when the user explicitly connects to a server. */
+let apiBase: string | null = resolveConnectionConfig({
+  VITE_APP_MODE: import.meta.env?.VITE_APP_MODE as string | undefined,
+  VITE_API_BASE: import.meta.env?.VITE_API_BASE as string | undefined,
+  DEV: Boolean(import.meta.env?.DEV),
+}).apiBase;
+
+export function getApiBase(): string | null {
+  return apiBase;
+}
+
+export function setApiBase(next: string | null): void {
+  apiBase = next ? next.replace(/\/+$/, "") : null;
+}
+
+/** Thrown when an API call is attempted before a server connection exists. */
+export class NotConnectedError extends Error {
+  constructor() {
+    super("API base URL is not configured; connect to a server first");
+    this.name = "NotConnectedError";
+  }
+}
+
+function base(): string {
+  if (apiBase === null) throw new NotConnectedError();
+  return apiBase;
+}
 
 export function setAccessToken(token: string | null) {
   if (typeof window === "undefined") return;
@@ -58,7 +86,7 @@ export class ApiError extends Error {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await authorizedFetch(`${API_BASE}${path}`, init);
+  const resp = await authorizedFetch(`${base()}${path}`, init);
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     throw new ApiError(resp.status, resp.statusText, text);
@@ -68,7 +96,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => req<{ status: string }>("/health"),
+  health: (init?: RequestInit) => req<{ status: string }>("/health", init),
   capabilities: () => req<ServerCapabilities>("/capabilities"),
 
   listProjects: () => req<Project[]>("/projects"),
@@ -101,7 +129,7 @@ export const api = {
       `/projects/${projectId}/audit?limit=${limit}&offset=${offset}`,
     ),
   downloadAuditCsv: async (projectId: string) => {
-    const response = await authorizedFetch(`${API_BASE}/projects/${projectId}/audit?format=csv`);
+    const response = await authorizedFetch(`${base()}/projects/${projectId}/audit?format=csv`);
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.blob();
   },
@@ -224,18 +252,18 @@ export const api = {
     );
   },
   downloadArtifact: async (artifactId: string) => {
-    const response = await authorizedFetch(`${API_BASE}/artifacts/${artifactId}`);
+    const response = await authorizedFetch(`${base()}/artifacts/${artifactId}`);
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.blob();
   },
   promoteArtifact: (artifactId: string) =>
     req<Dataset>(`/artifacts/${artifactId}/promote`, { method: "POST" }),
 
-  downloadUrl: (datasetId: string) => `${API_BASE}/datasets/${datasetId}/download`,
+  downloadUrl: (datasetId: string) => `${base()}/datasets/${datasetId}/download`,
   listTimesteps: (datasetId: string) =>
     req<CollectionStep[]>(`/datasets/${datasetId}/timesteps`),
   timestepUrl: (datasetId: string, stepIndex: number) =>
-    `${API_BASE}/datasets/${datasetId}/timesteps/${stepIndex}/download`,
+    `${base()}/datasets/${datasetId}/timesteps/${stepIndex}/download`,
   proposeAssistance: (datasetId: string, prompt: string) =>
     req<AssistProposal>("/assist/proposals", {
       method: "POST",
@@ -261,7 +289,7 @@ export const api = {
   deleteSession: (sessionId: string) =>
     req<void>(`/sessions/${sessionId}`, { method: "DELETE" }),
   sessionWebSocketUrl: (websocketPath: string) =>
-    `${API_BASE.replace(/^http/, "ws")}${websocketPath}`,
+    `${base().replace(/^http/, "ws")}${websocketPath}`,
 };
 
 const TERMINAL = new Set(["succeeded", "failed", "canceled"]);

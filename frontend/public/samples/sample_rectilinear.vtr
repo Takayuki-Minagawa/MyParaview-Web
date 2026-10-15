@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<VTKFile type="RectilinearGrid" version="0.1" byte_order="LittleEndian">
+  <RectilinearGrid WholeExtent="0 2 0 1 0 1">
+    <Piece Extent="0 2 0 1 0 1">
+      <PointData Scalars="temperature">
+        <DataArray type="Float32" Name="temperature" NumberOfComponents="1" format="ascii">
+          0 1 2 3 4 5 6 7 8 9 10 11
+        </DataArray>
+      </PointData>
+      <CellData Scalars="region">
+        <DataArray type="Int32" Name="region" NumberOfComponents="1" format="ascii">10 20</DataArray>
+      </CellData>
+      <Coordinates>
+        <DataArray type="Float64" Name="X_COORDINATES" format="ascii">-1 0 2</DataArray>
+        <DataArray type="Float64" Name="Y_COORDINATES" format="ascii">0 4</DataArray>
+        <DataArray type="Float64" Name="Z_COORDINATES" format="ascii">2 5</DataArray>
+      </Coordinates>
+    </Piece>
+  </RectilinearGrid>
+</VTKFile>

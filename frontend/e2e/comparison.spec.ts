@@ -15,10 +15,10 @@ test("2-up comparison creates and releases only the secondary view", async ({ pa
   await page.getByPlaceholder("New project name").fill(projectName);
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expect(
-    page.locator(".panel-left select").first().locator("option:checked"),
+    page.getByLabel("Project", { exact: true }).locator("option:checked"),
   ).toHaveText(projectName);
 
-  const upload = page.locator('input[type="file"]').first();
+  const upload = page.getByLabel("Upload a single file");
   await expect(upload).toBeEnabled();
   await upload.setInputFiles(VTP_FIXTURE);
   const datasetRow = page.locator(".dataset-select-button").filter({ hasText: "sample_surface.vtp" });

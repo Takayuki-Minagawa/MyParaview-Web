@@ -41,7 +41,10 @@ import {
   createClientPlaneController,
   type ClientPlaneController,
   type ClientPlaneSettings,
+  type PlaneDefinition,
 } from "../lib/viewer/planeTool";
+import { summarizeScene } from "../lib/viewer/sceneSummary";
+import type { SceneSummary } from "../lib/localDataset";
 import {
   createProbeController,
   type ProbeController,
@@ -109,6 +112,8 @@ export interface VtkViewerProps {
   volumeOpacityPoints: VolumeOpacityPoint[];
   onColorRangeResolved?: (selection: ScalarSelection, range: [number, number]) => void;
   onLoadStateChange?: (url: string, state: ViewerLoadState) => void;
+  /** Metadata extracted from the parsed data (used for browser-local files). */
+  onSceneSummary?: (datasetId: string | null, summary: SceneSummary) => void;
   cameraState: CameraState | null;
   onCameraChange: (camera: CameraState) => void;
   onScreenshotCaptured?: (blob: Blob, datasetId: string | null) => void;
@@ -125,8 +130,9 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
     datasetId, url, datasetType, emptyMessage, representation, displayStyle, colorBy, colorRange, opacity, colorMap,
     legendVisible, axesVisible, tableCoordinates, imageMode, sliceAxis, sliceIndex,
     volumeOpacityPoints,
-    onColorRangeResolved, onLoadStateChange, cameraState, onCameraChange, onScreenshotCaptured,
-    onGeometryExported, viewerBackground, contextOwner = "primary", viewerLabel,
+    onColorRangeResolved, onLoadStateChange, onSceneSummary, cameraState, onCameraChange,
+    onScreenshotCaptured, onGeometryExported, viewerBackground, contextOwner = "primary",
+    viewerLabel,
   } = props;
   const messages = useMessages();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -156,6 +162,12 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
   const [vectorGlyphSummary, setVectorGlyphSummary] = useState<VectorGlyphSummary | null>(null);
   const vectorGlyphSettingsRef = useRef(vectorGlyphSettings);
   vectorGlyphSettingsRef.current = vectorGlyphSettings;
+  const [planeDefinition, setPlaneDefinition] = useState<PlaneDefinition | null>(null);
+  const [planeDraft, setPlaneDraft] = useState<{ origin: string[]; normal: string[] }>({
+    origin: ["", "", ""], normal: ["", "", ""],
+  });
+  const [planeDraftInvalid, setPlaneDraftInvalid] = useState(false);
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
 
   useEffect(() => retainColorMap(colorMap), [colorMap]);
 
@@ -171,6 +183,8 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
   rangeCallbackRef.current = onColorRangeResolved;
   const loadCallbackRef = useRef(onLoadStateChange);
   loadCallbackRef.current = onLoadStateChange;
+  const summaryCallbackRef = useRef(onSceneSummary);
+  summaryCallbackRef.current = onSceneSummary;
   const cameraCallbackRef = useRef(onCameraChange);
   cameraCallbackRef.current = onCameraChange;
   const screenshotCallbackRef = useRef(onScreenshotCaptured);
@@ -259,6 +273,7 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
     setStatus(strings.viewer.loading);
     setVectorArrays([]);
     setVectorGlyphSummary(null);
+    setPlaneDefinition(null);
     const contextLease = viewerContextPool.tryAcquire(contextOwner);
     if (!contextLease) {
       setStatus(strings.viewer.webglContextLimit);
@@ -357,6 +372,12 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
           planeController = createClientPlaneController(scene);
           planeControllerRef.current = planeController;
           planeController?.apply(planeSettingsRef.current);
+          if (planeController) {
+            setPlaneDefinition(planeController.getPlane());
+            planeController.onPlaneChange((definition) => {
+              if (!disposed) setPlaneDefinition(definition);
+            });
+          }
           if (scene.output) {
             probeController = createProbeController(
               scene.renderer,
@@ -408,6 +429,8 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
       scene.emitCamera();
       setStatus(displayDiagnostic);
       loadCallbackRef.current?.(url, "ready");
+      const summary = summarizeScene(scene.output);
+      if (summary) summaryCallbackRef.current?.(datasetIdRef.current, summary);
     };
 
     const load = async () => {
@@ -493,6 +516,47 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
   useEffect(() => {
     planeControllerRef.current?.apply(planeSettings);
   }, [planeSettings]);
+
+  useEffect(() => {
+    const fmt = (value: number) => String(Number(value.toPrecision(7)));
+    setPlaneDraft(planeDefinition
+      ? { origin: planeDefinition.origin.map(fmt), normal: planeDefinition.normal.map(fmt) }
+      : { origin: ["", "", ""], normal: ["", "", ""] });
+    setPlaneDraftInvalid(false);
+  }, [planeDefinition]);
+
+  const applyPlaneDraft = () => {
+    const parse = (values: string[]) => values.map((value) => (
+      value.trim() === "" ? NaN : Number(value)
+    ));
+    const origin = parse(planeDraft.origin);
+    const normal = parse(planeDraft.normal);
+    const applied = origin.every(Number.isFinite) && normal.every(Number.isFinite)
+      && !!planeControllerRef.current?.setPlane({
+        origin: origin as [number, number, number],
+        normal: normal as [number, number, number],
+      });
+    setPlaneDraftInvalid(!applied);
+  };
+
+  const copyText = (text: string) => {
+    void navigator.clipboard?.writeText(text)
+      .then(() => setCopyNotice(messagesRef.current.viewer.resultCopied))
+      .catch(() => setCopyNotice(messagesRef.current.viewer.copyFailed))
+      .finally(() => window.setTimeout(() => setCopyNotice(null), 2000));
+  };
+
+  const probeAsText = () => {
+    if (!probeResult) return "";
+    const lines = [
+      `${messages.viewer.probePosition}: ${probeResult.worldPosition?.map((value) => Number(value).toPrecision(6)).join(", ") ?? "-"}`,
+      `${messages.viewer.probePoint}: ${probeResult.pointId ?? "-"}`,
+      `${messages.viewer.probeCell}: ${probeResult.cellId ?? "-"}`,
+      ...probeResult.values.map((entry) => `${entry.association} ${entry.name}: ${entry.value.toPrecision(7)}`),
+      messages.common.unitsUndefined,
+    ];
+    return lines.join("\n");
+  };
 
   useEffect(() => {
     probeControllerRef.current?.setEnabled(probeEnabled);
@@ -662,6 +726,41 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
           </button>
         </div>
       )}
+      {planeToolAvailable && planeSettings.enabled && (
+        <form
+          className="viewer-toolbar viewer-plane-numeric"
+          aria-label={messages.viewer.planeNumeric}
+          onSubmit={(event) => {
+            event.preventDefault();
+            applyPlaneDraft();
+          }}
+        >
+          {(["origin", "normal"] as const).map((key) => (
+            <fieldset key={key} className="plane-vector">
+              <legend>{key === "origin" ? messages.plane.origin : messages.plane.normal}</legend>
+              {(["X", "Y", "Z"] as const).map((axis, index) => (
+                <input
+                  key={axis}
+                  type="number"
+                  step="any"
+                  aria-label={`${key === "origin" ? messages.plane.origin : messages.plane.normal} ${axis}`}
+                  aria-invalid={planeDraftInvalid}
+                  value={planeDraft[key][index]}
+                  onChange={(event) => setPlaneDraft((current) => {
+                    const next = [...current[key]];
+                    next[index] = event.target.value;
+                    return { ...current, [key]: next };
+                  })}
+                />
+              ))}
+            </fieldset>
+          ))}
+          <button type="submit">{messages.common.apply}</button>
+          {planeDraftInvalid && (
+            <span className="validation-error" role="alert">{messages.plane.invalid}</span>
+          )}
+        </form>
+      )}
       {vectorArrays.length > 0 && (
         <div
           className="viewer-toolbar viewer-vector-toolbar"
@@ -753,6 +852,12 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
           ) : (
             <div>{messages.viewer.probeNoScalars}</div>
           )}
+          <div className="row">
+            <button type="button" onClick={() => copyText(probeAsText())}>
+              {messages.common.copyText}
+            </button>
+            <span className="muted">{messages.common.unitsUndefined}</span>
+          </div>
         </div>
       )}
       {measurementSettings.enabled && (
@@ -764,8 +869,25 @@ export const VtkViewer = forwardRef<VtkViewerHandle, VtkViewerProps>(function Vt
             : measurementSettings.mode === "distance"
               ? messages.viewer.distanceHint
               : messages.viewer.angleHint}
+          {measurementResult && (
+            <>
+              {" "}
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => copyText(
+                  measurementResult.mode === "distance"
+                    ? `${messages.viewer.distance}: ${measurementResult.value.toPrecision(7)} (${messages.common.unitsUndefined})`
+                    : `${messages.viewer.angle}: ${measurementResult.value.toPrecision(6)} deg`,
+                )}
+              >
+                {messages.common.copyText}
+              </button>
+            </>
+          )}
         </div>
       )}
+      {copyNotice && <div className="copy-notice" role="status">{copyNotice}</div>}
       {!renderable && (
         <div className="viewer-overlay">
           {!url

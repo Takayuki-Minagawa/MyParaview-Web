@@ -24,7 +24,7 @@ export default defineConfig(({ command }) => ({
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],
-      exclude: ["src/**/*.d.ts"],
+      exclude: ["src/**/*.d.ts", "src/test/**"],
       reporter: ["text", "html", "json-summary", "lcov"],
       reportsDirectory: "coverage",
       thresholds: {
@@ -51,6 +51,7 @@ export default defineConfig(({ command }) => ({
           name: "dom",
           globals: true,
           environment: "jsdom",
+          setupFiles: ["src/test/setup.ts"],
           include: ["src/**/*.test.tsx"],
         },
       },

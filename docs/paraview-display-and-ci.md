@@ -20,7 +20,7 @@ Contour/Thresholdなど7種類のフィルタがあり、同名機能を重複�
 | ベクトル成分選択（X/Y/Z/Magnitude） | 次候補 | 現状は着色のMagnitude固定。UIだけでなくrange、凡例、VTI、保存形式の整合が必要 |
 | Spreadsheet View / Plot Over Line | 次候補 | Probeに加え、配列全体や線上サンプリングを確認できる。表面データと体積補間の区別が必要 |
 | Calculator / Warp By Vector | 次候補 | workerフィルタ・入力検証・Pipeline連鎖までの実装が必要 |
-| ブラウザ単独ファイル読込 | 次候補 | Pagesのみでデータ操作するための機能。現状のuploadとproject管理はAPIが必要 |
+| ブラウザ単独ファイル読込 | 実装済み（2026-10-15） | ブラウザ表示モード。ローカルファイル・内蔵サンプルをAPIなしで表示。[対応計画](feedback-2026-10-15-plan.md) |
 
 今回の表示機能はブラウザのvtk.js描画が対象。別サービスのtrame UIやpvpythonの
 render/movieジョブに新しい表示設定を適用する変更は含まない。古い保存データの
@@ -80,6 +80,8 @@ PVWEB_DATABASE_URL=postgresql+psycopg://user:password@localhost/test_db \
 
 公開API URLはActionsの変数ではなく、**検証・ビルドする環境**に指定する。
 `VITE_BASE_PATH`、必要な`VITE_OIDC_*`も同様。バックエンド側では公開originのCORSを許可する。
+`VITE_API_BASE` を指定しない場合、配布物はブラウザ表示モード（static）になり、起動時に
+APIへ接続しない。Pagesのみで公開する場合はこちらを使う。
 
 ```bash
 VITE_API_BASE=https://api.example.com \

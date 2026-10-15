@@ -29,5 +29,19 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 30_000,
     },
+    {
+      // Browser-viewing (static) mode: no API base, nothing contacts a server.
+      command: "npm run dev -- --port 5174 --strictPort",
+      env: {
+        VITE_APP_MODE: "static",
+        VITE_API_BASE: "",
+        VITE_OIDC_AUTHORITY: "",
+        VITE_OIDC_CLIENT_ID: "",
+        VITE_OIDC_REDIRECT_URI: "",
+      },
+      url: "http://localhost:5174",
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
   ],
 });

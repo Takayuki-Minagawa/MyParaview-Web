@@ -21,6 +21,10 @@ import { AssistantSection } from "./properties/AssistantSection";
 import { RemoteSessionSection } from "./properties/RemoteSessionSection";
 import { ArtifactsSection } from "./properties/ArtifactsSection";
 import { StatsSection } from "./properties/StatsSection";
+import { CameraSection } from "./properties/CameraSection";
+import { LocalActionsSection } from "./properties/LocalActionsSection";
+import { isLocalDataset } from "../lib/localDataset";
+import type { CameraState } from "../types";
 
 /** Derived view values and camera commands the raw display state does not
  * carry (clamped slice index, slice bounds, wrapped handlers). */
@@ -40,6 +44,7 @@ export interface ViewControls {
   onTogglePlayback: () => void;
   onScreenshot: () => void;
   onResetCamera: () => void;
+  onApplyCamera: (camera: CameraState) => void;
 }
 
 /** Job-producing actions plus their pending flags (from useDatasetJobs). */
@@ -79,6 +84,7 @@ interface Props {
   jobs: DatasetJobControls;
   remote: RemoteControls;
   artifacts: Artifact[];
+  onDownloadOriginal: () => void;
   onError: (message: string) => void;
 }
 
@@ -89,13 +95,14 @@ export const PropertiesPanel = memo(function PropertiesPanel({
   jobs,
   remote,
   artifacts,
+  onDownloadOriginal,
   onError,
 }: Props) {
   const messages = useMessages();
 
   if (!dataset) {
     return (
-      <aside className="panel panel-right">
+      <aside className="panel panel-right" id="properties-panel" aria-label={messages.properties.title}>
         <h2>{messages.properties.title}</h2>
         <p className="muted">{messages.properties.selectDataset}</p>
       </aside>
@@ -111,9 +118,14 @@ export const PropertiesPanel = memo(function PropertiesPanel({
     renderType === "PolyData" || renderType === "Table" || renderType === "UnstructuredGrid"
     || renderType === "StructuredGrid" || renderType === "RectilinearGrid";
 
+  const local = isLocalDataset(dataset);
+
   return (
-    <aside className="panel panel-right">
+    <aside className="panel panel-right" id="properties-panel" aria-label={messages.properties.title}>
       <h2>{messages.properties.title}</h2>
+      <p className="muted">
+        {local ? messages.connection.processingBrowser : messages.connection.processingServer}
+      </p>
 
       <MetadataTable dataset={dataset} />
 
@@ -175,6 +187,12 @@ export const PropertiesPanel = memo(function PropertiesPanel({
         />
       )}
 
+      <CameraSection
+        cameraState={display.cameraState}
+        onApply={view.onApplyCamera}
+        onResetCamera={view.onResetCamera}
+      />
+
       <ScalarColorSection
         dataset={dataset}
         isImageData={isImageData}
@@ -189,55 +207,67 @@ export const PropertiesPanel = memo(function PropertiesPanel({
         onLegendVisible={display.setLegendVisible}
       />
 
-      <ServerFilterSection
-        dataset={dataset}
-        sliceAxis={display.sliceAxis}
-        filterPending={jobs.filterPending}
-        serverFilterAvailable={jobs.serverFilterAvailable}
-        onRunFilter={jobs.onRunFilter}
-      />
+      {local ? (
+        <LocalActionsSection
+          isClientExportable={isClientExportable}
+          onScreenshot={view.onScreenshot}
+          onClientExport={jobs.onClientExport}
+          clientExportPending={jobs.clientExportPending}
+          onDownloadOriginal={onDownloadOriginal}
+        />
+      ) : (
+        <>
+          <ServerFilterSection
+            dataset={dataset}
+            sliceAxis={display.sliceAxis}
+            filterPending={jobs.filterPending}
+            serverFilterAvailable={jobs.serverFilterAvailable}
+            onRunFilter={jobs.onRunFilter}
+          />
 
-      <AssistantSection
-        dataset={dataset}
-        serverFilterAvailable={jobs.serverFilterAvailable}
-        filterPending={jobs.filterPending}
-        onColorBy={display.setColorBy}
-        onColorMap={display.setColorMap}
-        onJobCreated={jobs.onJobCreated}
-        onError={onError}
-      />
+          <AssistantSection
+            dataset={dataset}
+            serverFilterAvailable={jobs.serverFilterAvailable}
+            filterPending={jobs.filterPending}
+            onColorBy={display.setColorBy}
+            onColorMap={display.setColorMap}
+            onJobCreated={jobs.onJobCreated}
+            onError={onError}
+          />
 
-      <StatsSection artifacts={artifacts} onError={onError} />
+          <StatsSection artifacts={artifacts} onError={onError} />
 
-      <RemoteSessionSection
-        dataset={dataset}
-        remoteAvailable={remote.available}
-        remoteSession={remote.session}
-        remotePending={remote.pending}
-        onStartRemote={remote.onStart}
-        onStopRemote={remote.onStop}
-      />
+          <RemoteSessionSection
+            dataset={dataset}
+            remoteAvailable={remote.available}
+            remoteSession={remote.session}
+            remotePending={remote.pending}
+            onStartRemote={remote.onStart}
+            onStopRemote={remote.onStop}
+          />
 
-      <ArtifactsSection
-        dataset={dataset}
-        isClientExportable={isClientExportable}
-        artifacts={artifacts}
-        onExport={jobs.onExport}
-        exportPending={jobs.exportPending}
-        onConvert={jobs.onConvert}
-        convertPending={jobs.convertPending}
-        serverFilterAvailable={jobs.serverFilterAvailable}
-        videoExportAvailable={jobs.videoExportAvailable}
-        onRunStats={jobs.onRunStats}
-        statsPending={jobs.statsPending}
-        onClientExport={jobs.onClientExport}
-        clientExportPending={jobs.clientExportPending}
-        onMovieExport={jobs.onMovieExport}
-        moviePending={jobs.moviePending}
-        onPromoteArtifact={jobs.onPromoteArtifact}
-        promotePendingIds={jobs.promotePendingIds}
-        onError={onError}
-      />
+          <ArtifactsSection
+            dataset={dataset}
+            isClientExportable={isClientExportable}
+            artifacts={artifacts}
+            onExport={jobs.onExport}
+            exportPending={jobs.exportPending}
+            onConvert={jobs.onConvert}
+            convertPending={jobs.convertPending}
+            serverFilterAvailable={jobs.serverFilterAvailable}
+            videoExportAvailable={jobs.videoExportAvailable}
+            onRunStats={jobs.onRunStats}
+            statsPending={jobs.statsPending}
+            onClientExport={jobs.onClientExport}
+            clientExportPending={jobs.clientExportPending}
+            onMovieExport={jobs.onMovieExport}
+            moviePending={jobs.moviePending}
+            onPromoteArtifact={jobs.onPromoteArtifact}
+            promotePendingIds={jobs.promotePendingIds}
+            onError={onError}
+          />
+        </>
+      )}
     </aside>
   );
 });

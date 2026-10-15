@@ -32,9 +32,9 @@ for (const scenario of CASES) {
     await page.getByPlaceholder("New project name").fill(projectName);
     await page.getByRole("button", { name: "Create", exact: true }).click();
     await expect(
-      page.locator(".panel-left select").first().locator("option:checked"),
+      page.getByLabel("Project", { exact: true }).locator("option:checked"),
     ).toHaveText(projectName);
-    const upload = page.locator('input[type="file"]').first();
+    const upload = page.getByLabel("Upload a single file");
     await expect(upload).toBeEnabled();
     await upload.setInputFiles(scenario.fixture);
 
@@ -90,7 +90,7 @@ for (const scenario of CASES) {
     await page.mouse.click(center.x + 40, center.y);
     const readout = page.locator(".measurement-readout");
     await expect(readout).toContainText("Distance:", { timeout: 10_000 });
-    const distance = Number((await readout.textContent())?.split(":")[1]);
+    const distance = Number(/Distance:\s*([-+\d.eE]+)/.exec((await readout.textContent()) ?? "")?.[1]);
     expect(distance).toBeGreaterThan(0);
     await expect(page.locator(".error-banner")).toHaveCount(0);
   });

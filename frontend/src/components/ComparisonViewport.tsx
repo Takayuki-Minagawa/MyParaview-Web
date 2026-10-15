@@ -7,8 +7,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { api } from "../api";
 import { useMessages } from "../i18n-context";
+import { viewerUrlFor } from "../lib/datasetUrl";
 import {
   camerasEqual,
   clampComparisonTimestep,
@@ -90,13 +90,7 @@ export const ComparisonViewport = forwardRef<VtkViewerHandle, Props>(
       secondaryTimestepIndex,
     );
     const secondaryType = comparisonDatasetType(secondaryDataset);
-    const secondaryUrl = secondaryDataset
-      ? secondaryDataset.dataset_type === "Collection"
-        ? secondaryDataset.extra?.bundle_complete === false
-          ? null
-          : api.timestepUrl(secondaryDataset.id, effectiveSecondaryTimestep)
-        : api.downloadUrl(secondaryDataset.id)
-      : null;
+    const secondaryUrl = viewerUrlFor(secondaryDataset, effectiveSecondaryTimestep);
     const secondaryColorBy = comparisonScalarSelection(secondaryDataset, primary.colorBy);
     const secondaryMetadataRange = comparisonScalarRange(secondaryDataset, secondaryColorBy);
     const sameDataset = secondaryDataset?.id === primaryDataset?.id;

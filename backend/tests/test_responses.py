@@ -58,8 +58,12 @@ def test_release_fires_exactly_once_when_send_raises(payload_file) -> None:
         if message["type"] == "http.response.body":
             raise OSError("client disconnected")
 
+    # ASGI 2.4 servers stream without racing ``receive``; Starlette >= 1.8
+    # otherwise cancels the body on the immediate disconnect from ``_receive``
+    # before ``send`` gets a chance to raise.
+    scope = {**_scope(), "asgi": {"version": "3.0", "spec_version": "2.4"}}
     with pytest.raises(OSError, match="client disconnected"):
-        asyncio.run(response(_scope(), _receive, send))
+        asyncio.run(response(scope, _receive, send))
 
     assert store.released == ["obj-key"]
 

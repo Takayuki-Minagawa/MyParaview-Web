@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { API_BASE, api } from "./api";
+import { api, getApiBase } from "./api";
+
+const API_BASE = getApiBase();
 
 const fetchMock = vi.fn();
 

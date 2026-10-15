@@ -46,6 +46,7 @@ export interface VtkDataSet extends VtkObject {
   getSpacing: () => number[];
   getBounds: () => number[];
   getNumberOfPoints: () => number;
+  getNumberOfCells?: () => number;
   getPoints?: () => VtkPointsLike;
 }
 

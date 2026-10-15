@@ -1,0 +1,6 @@
+FORMAT
+type: ensight gold
+GEOMETRY
+model: external_case.geo
+VARIABLE
+scalar per node: temperature external_case.scl

@@ -10,9 +10,19 @@ GitHub Pagesでの初期公開と将来のDockerサーバー移行方針は
 
 ## 公開範囲
 
-このリポジトリは研究・開発中のWeb可視化アプリケーションです。GitHub Pagesなどの静的公開では、
-ブラウザ内で完結するファイル表示機能を初期対象とします。プロジェクト保存、認証、サーバフィルタ、
-trame session、PostgreSQL/S3連携はサーバーモードで提供する機能です。
+このリポジトリは研究・開発中のWeb可視化アプリケーションです。フロントエンドは2つのモードで動作します。
+
+- **ブラウザ表示モード（static）**: GitHub Pagesなどの静的公開向け。左パネルの「ローカル表示」から
+  この端末のVTP / VTU / VTS / VTR / VTI / CSV / PVD（参照先を含むフォルダ）や内蔵サンプルを開き、
+  ブラウザ内だけで表示・着色・クリップ／スライス・Probe・計測・比較・画像保存ができます。
+  利用者が「サーバーに接続…」で接続先を入力するまで、localhostを含むどのAPIにも接続しません。
+- **サーバーモード（server）**: プロジェクト保存、アップロード、認証、サーバフィルタ、
+  trame session、PostgreSQL/S3連携を提供します。`VITE_API_BASE` を指定したビルド、または
+  ブラウザ表示モードからの明示的な接続で利用します。
+
+モードは `VITE_APP_MODE=static|server` と `VITE_API_BASE` で決まります。production buildで
+どちらも未指定の場合はブラウザ表示モード、`npm run dev` では従来どおり `http://localhost:8000` へ
+接続するサーバーモードになります。
 
 今回のParaView表示機能追加と、Pagesを最終配置に限定するCI手順は
 [docs/paraview-display-and-ci.md](docs/paraview-display-and-ci.md) を参照してください。
@@ -81,7 +91,8 @@ npm run dev
 
 - UI: `http://localhost:5173`
 - API/OpenAPI: `http://localhost:8000/docs`
-- `VITE_API_BASE`でAPI URLを変更可能
+- `VITE_API_BASE`でAPI URLを変更可能。`VITE_APP_MODE=static` を指定するとdev serverでも
+  ブラウザ表示モードで起動し、起動時にAPIへ接続しない
 
 ## full-stack container起動
 

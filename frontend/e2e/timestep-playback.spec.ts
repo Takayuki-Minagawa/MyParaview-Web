@@ -21,8 +21,8 @@ test("PVD controls navigate, wait for rendering, stop at the end, and pause on l
   const projectName = `playback-${Date.now()}`;
   await page.getByPlaceholder("New project name").fill(projectName);
   await page.getByRole("button", { name: "Create", exact: true }).click();
-  await expect(page.locator(".panel-left select").first().locator("option:checked")).toHaveText(projectName);
-  await page.locator('input[webkitdirectory]').setInputFiles(bundleDirectory);
+  await expect(page.getByLabel("Project", { exact: true }).locator("option:checked")).toHaveText(projectName);
+  await page.getByLabel("Folder for a multi-file dataset").setInputFiles(bundleDirectory);
   const datasetRow = page.locator(".dataset-select-button").filter({ hasText: "sample_series.pvd" });
   await expect(datasetRow.getByText("Ready")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("button", { name: "Front", exact: true })).toBeVisible();

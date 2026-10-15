@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type {
+  CameraState,
   Dataset,
   Project,
   ProjectRole,
   ScalarSelection,
-  ServerCapabilities,
 } from "./types";
 import { DatasetPanel } from "./components/DatasetPanel";
 import { PropertiesPanel } from "./components/PropertiesPanel";
@@ -13,11 +13,15 @@ import type { VtkViewerHandle } from "./components/VtkViewer";
 import { ComparisonViewport } from "./components/ComparisonViewport";
 import { RemoteViewer } from "./components/RemoteViewer";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ManualDialog } from "./components/ManualDialog";
 import { clampSliceIndex } from "./lib/viewState";
 import { sliceRangeFor, wholeExtentFor, SLICE_EXTENT_OFFSET } from "./lib/slice";
 import { initializeOidc, login, logout } from "./oidc";
 import { detectBrowserCapabilities } from "./lib/capabilities";
 import { defaultImageScalar } from "./lib/imageData";
+import { viewerUrlFor } from "./lib/datasetUrl";
+import { isLocalDataset, isLocalDatasetId, type SceneSummary } from "./lib/localDataset";
+import { triggerBlobDownload } from "./lib/download";
 import type { Language, ThemeMode } from "./i18n";
 import { MessagesProvider, useMessages } from "./i18n-context";
 import { useProjectScope } from "./hooks/useProjectScope";
@@ -30,29 +34,57 @@ import { useDatasetJobs } from "./hooks/useDatasetJobs";
 import { usePipelineActions } from "./hooks/usePipelineActions";
 import { useDeepLink } from "./hooks/useDeepLink";
 import { useDatasetUpload } from "./hooks/useDatasetUpload";
-import { useTimestepPlayback } from "./hooks/useTimestepPlayback";
+import { useTimestepPlayback, type ViewerLoadState } from "./hooks/useTimestepPlayback";
+import { useServerConnection } from "./hooks/useServerConnection";
+import { useLocalDatasets } from "./hooks/useLocalDatasets";
+import { useLayoutPreferences } from "./hooks/useLayoutPreferences";
+
+const LANGUAGE_STORAGE_KEY = "pvweb-language";
+const THEME_STORAGE_KEY = "pvweb-theme";
 
 const readStoredLanguage = (): Language => {
-  const value = window.localStorage.getItem("pvweb-language");
+  const value = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
   return value === "en" ? "en" : "ja";
 };
 
+const systemTheme = (): ThemeMode =>
+  window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+
 const readStoredTheme = (): ThemeMode => {
-  const value = window.localStorage.getItem("pvweb-theme");
+  const value = window.localStorage.getItem(THEME_STORAGE_KEY);
   if (value === "light" || value === "dark") return value;
-  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  return systemTheme();
+};
+
+const hasStoredTheme = (): boolean => {
+  const value = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return value === "light" || value === "dark";
 };
 
 export function App() {
   const [language, setLanguage] = useState<Language>(readStoredLanguage);
-  const [theme, setTheme] = useState<ThemeMode>(readStoredTheme);
+  const [theme, setThemeState] = useState<ThemeMode>(readStoredTheme);
+  // Only an explicit choice is persisted; otherwise the theme keeps
+  // following the system preference on later visits.
+  const [themeExplicit, setThemeExplicit] = useState(hasStoredTheme);
+  const setTheme = useCallback((next: ThemeMode) => {
+    setThemeExplicit(true);
+    setThemeState(next);
+  }, []);
+  const resetAppearance = useCallback(() => {
+    setLanguage("ja");
+    setThemeExplicit(false);
+    setThemeState(systemTheme());
+  }, []);
   return (
     <MessagesProvider language={language}>
       <AppBody
         language={language}
         onLanguage={setLanguage}
         theme={theme}
+        themeExplicit={themeExplicit}
         onTheme={setTheme}
+        onResetAppearance={resetAppearance}
       />
     </MessagesProvider>
   );
@@ -62,28 +94,34 @@ interface AppBodyProps {
   language: Language;
   onLanguage: (language: Language) => void;
   theme: ThemeMode;
+  themeExplicit: boolean;
   onTheme: (theme: ThemeMode) => void;
+  onResetAppearance: () => void;
 }
 
-function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
+function AppBody({
+  language, onLanguage, theme, themeExplicit, onTheme, onResetAppearance,
+}: AppBodyProps) {
   const t = useMessages();
   const [manualOpen, setManualOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
   const [clientExportPending, setClientExportPending] = useState(false);
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
   const [comparisonEnabled, setComparisonEnabled] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
+  const [viewerLoadState, setViewerLoadState] = useState<ViewerLoadState | null>(null);
   const viewerRef = useRef<VtkViewerHandle | null>(null);
   const [authState, setAuthState] = useState({
     ready: false,
     configured: false,
     authenticated: false,
   });
-  const [serverCapabilities, setServerCapabilities] = useState<ServerCapabilities | null>(null);
   const browserCapabilities = useMemo(() => detectBrowserCapabilities(), []);
+  const connection = useServerConnection();
+  const serverCapabilities = connection.capabilities;
+  const connected = connection.status === "connected";
+  const layout = useLayoutPreferences();
   const display = useDisplayState();
   useDisplayHistoryShortcuts({
     canUndo: display.canUndo,
@@ -186,21 +224,25 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     onError: pushError,
   });
 
-  const [backgroundChoice, setBackgroundChoice] =
-    useState<"theme" | "black" | "gray" | "white">("theme");
+  const {
+    localDatasets, loadingLabel: localLoadingLabel, openFiles: openLocalFiles,
+    openSample, removeLocal, applySummary, fileFor: localFileFor,
+  } = useLocalDatasets({ t, onError: pushError });
+
   const viewerBackground = useMemo<[number, number, number]>(() => {
-    if (backgroundChoice === "black") return [0.02, 0.02, 0.04];
-    if (backgroundChoice === "gray") return [0.5, 0.5, 0.52];
-    if (backgroundChoice === "white") return [1, 1, 1];
+    if (layout.backgroundChoice === "black") return [0.02, 0.02, 0.04];
+    if (layout.backgroundChoice === "gray") return [0.5, 0.5, 0.52];
+    if (layout.backgroundChoice === "white") return [1, 1, 1];
     return theme === "dark" ? [0.09, 0.11, 0.15] : [0.96, 0.97, 0.99];
-  }, [backgroundChoice, theme]);
+  }, [layout.backgroundChoice, theme]);
 
   useEffect(() => {
     document.documentElement.lang = language;
     document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem("pvweb-language", language);
-    window.localStorage.setItem("pvweb-theme", theme);
-  }, [language, theme]);
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+    if (themeExplicit) window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    else window.localStorage.removeItem(THEME_STORAGE_KEY);
+  }, [language, theme, themeExplicit]);
 
   useEffect(() => {
     let disposed = false;
@@ -217,10 +259,6 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     return () => { disposed = true; };
     // Runs once; auth strings are stable for the app session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    void api.capabilities().then(setServerCapabilities).catch(() => setServerCapabilities(null));
   }, []);
 
   const switchProject = useCallback((projectId: string) => {
@@ -256,20 +294,52 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     refreshDatasets, refreshPipelines, refreshMembership,
   ]);
 
-  const createProject = useCallback((name: string) => {
+  // Losing the server drops every server-scoped resource; local datasets stay.
+  useEffect(() => {
+    if (connected) return;
+    setProjects([]);
+    if (scope.currentProjectRef.current !== null) {
+      scope.beginProjectSwitch("");
+      scope.currentProjectRef.current = null;
+    }
+    setCurrentProjectId(null);
+    setSelectedDatasetId((current) => (isLocalDatasetId(current) ? current : null));
+    clearRemoteOnProjectSwitch();
+  }, [connected, scope, clearRemoteOnProjectSwitch]);
+
+  const createProject = useCallback(async (name: string): Promise<boolean> => {
     const ticket = scope.capture();
-    return guard(async () => {
+    clearErrors();
+    try {
       const project = await api.createProject(name);
       setProjects((previous) => [project, ...previous]);
       // Only auto-switch when the user did not change projects meanwhile.
       if (ticket ? ticket.stillCurrent() : scope.currentProjectRef.current === null) {
         switchProject(project.id);
       }
-    });
-  }, [scope, guard, switchProject]);
+      return true;
+    } catch (e) {
+      pushError(String(e));
+      return false;
+    }
+  }, [scope, clearErrors, pushError, switchProject]);
+
+  const localDatasetsRef = useRef(localDatasets);
+  localDatasetsRef.current = localDatasets;
 
   /** Select a dataset and wipe per-dataset display state. */
   const selectDataset = useCallback(async (id: string): Promise<Dataset | null> => {
+    if (isLocalDatasetId(id)) {
+      const local = localDatasetsRef.current.find((dataset) => dataset.id === id) ?? null;
+      if (!local) return null;
+      scope.beginSelection(id);
+      clearErrors();
+      setSelectedDatasetId(id);
+      stopRemoteIfDatasetChanged(id);
+      display.reset();
+      setArtifacts([]);
+      return local;
+    }
     const ticket = scope.capture();
     if (!ticket) return null;
     const request = scope.selectionRequestRef.current + 1;
@@ -301,6 +371,27 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     pushError, stopRemoteIfDatasetChanged,
   ]);
 
+  const openLocal = useCallback(async (files: File[]) => {
+    const dataset = await openLocalFiles(files);
+    if (dataset) {
+      localDatasetsRef.current = [dataset, ...localDatasetsRef.current];
+      void selectDataset(dataset.id);
+    }
+  }, [openLocalFiles, selectDataset]);
+
+  const openLocalSample = useCallback(async (sampleId: string) => {
+    const dataset = await openSample(sampleId);
+    if (dataset) {
+      localDatasetsRef.current = [dataset, ...localDatasetsRef.current];
+      void selectDataset(dataset.id);
+    }
+  }, [openSample, selectDataset]);
+
+  const removeLocalDataset = useCallback((id: string) => {
+    removeLocal(id);
+    setSelectedDatasetId((current) => (current === id ? null : current));
+  }, [removeLocal]);
+
   const updateDatasetTags = useCallback(async (
     datasetId: string,
     tags: string[],
@@ -321,17 +412,25 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     }
   }, [scope, clearErrors, setDatasets, pushError]);
 
-  const selectedDataset = useMemo(
-    () => datasets.find((d) => d.id === selectedDatasetId) ?? null,
-    [datasets, selectedDatasetId],
+  // Server datasets are only usable while connected. Hiding them as soon as
+  // the connection drops (or switches to another server) keeps render-time
+  // URL builders from targeting a missing or different API base.
+  const allDatasets = useMemo(
+    () => (connected ? [...localDatasets, ...datasets] : localDatasets),
+    [connected, localDatasets, datasets],
   );
+  const selectedDataset = useMemo(
+    () => allDatasets.find((d) => d.id === selectedDatasetId) ?? null,
+    [allDatasets, selectedDatasetId],
+  );
+  const selectedIsLocal = isLocalDataset(selectedDataset);
 
   const {
     savePipeline, restorePipeline, deletePipeline, renamePipeline, runPipeline,
   } = usePipelineActions({
     scope,
     display,
-    selectedDataset,
+    selectedDataset: selectedIsLocal ? null : selectedDataset,
     selectDataset,
     setPipelines,
     trackJob,
@@ -342,7 +441,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   const { deepLink, copyShareLink, shareCopied } = useDeepLink({
     authReady: authState.ready,
     currentProjectId,
-    selectedDatasetId,
+    selectedDatasetId: selectedIsLocal ? null : selectedDatasetId,
     datasets,
     pipelines,
     restorePipeline,
@@ -350,8 +449,9 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     onError: pushError,
   });
 
-  // ---- initial project list (and deep-linked project auto-switch)
+  // ---- project list once a server connection exists (and deep-linked auto-switch)
   useEffect(() => {
+    if (!connected) return;
     if (!authState.ready || (authState.configured && !authState.authenticated)) return;
     void guard(async () => {
       const next = await api.listProjects();
@@ -364,10 +464,10 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
         switchProject(deepLink.projectId);
       }
     });
-  }, [guard, authState, deepLink, switchProject, scope]);
+  }, [connected, connection.epoch, guard, authState, deepLink, switchProject, scope]);
 
   const onGeometryExported = useCallback((blob: Blob, datasetId: string | null) => {
-    if (!datasetId) {
+    if (!datasetId || isLocalDatasetId(datasetId)) {
       setClientExportPending(false);
       return;
     }
@@ -418,7 +518,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
   }, [scope, refreshMembership, pushError]);
 
   const onScreenshotCaptured = useCallback((blob: Blob, datasetId: string | null) => {
-    if (!datasetId) return;
+    if (!datasetId || isLocalDatasetId(datasetId)) return;
     const ticket = scope.capture();
     void api.uploadArtifact(datasetId, "screenshot", blob)
       .then((artifact) => {
@@ -430,6 +530,10 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
         if (ticket?.stillCurrent()) pushError(String(e));
       });
   }, [scope, setArtifacts, pushError]);
+
+  const onSceneSummary = useCallback((datasetId: string | null, summary: SceneSummary) => {
+    if (datasetId && isLocalDatasetId(datasetId)) applySummary(datasetId, summary);
+  }, [applySummary]);
 
   // ---- derived view values
   const colorRange = useMemo<[number, number] | null>(() => {
@@ -459,13 +563,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     ? String(selectedDataset.extra?.inner_type ?? "")
     : null;
   const viewerDatasetType = collectionInnerType || selectedDataset?.dataset_type;
-  const viewerUrl = selectedDataset && selectedDataset.status === "ready"
-    ? selectedDataset.dataset_type === "Collection"
-      ? selectedDataset.extra?.bundle_complete === false
-        ? null
-        : api.timestepUrl(selectedDataset.id, display.timestepIndex)
-      : api.downloadUrl(selectedDataset.id)
-    : null;
+  const viewerUrl = viewerUrlFor(selectedDataset, display.timestepIndex);
   const viewerEmptyMessage = selectedDataset?.dataset_type === "Collection" &&
     selectedDataset.extra?.bundle_complete === false
     ? t.appMessages.incompletePvd
@@ -503,12 +601,21 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     setTimestepIndex: display.setTimestepIndex,
     setPlaybackTimestep: display.setPlaybackTimestep,
   });
+  const playbackLoadStateChange = playback.onLoadStateChange;
+  const onLoadStateChange = useCallback((url: string, state: ViewerLoadState) => {
+    setViewerLoadState(state);
+    playbackLoadStateChange(url, state);
+  }, [playbackLoadStateChange]);
 
   useEffect(() => {
     const maximum = Math.max(0, (selectedDataset?.timesteps?.length ?? 1) - 1);
     display.setTimestepIndex((index) => Math.min(index, maximum));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDataset?.id, selectedDataset?.timesteps?.length]);
+
+  useEffect(() => {
+    setViewerLoadState(null);
+  }, [selectedDatasetId]);
 
   const dimensions = (selectedDataset?.extra?.dimensions as number[] | undefined) ?? [1, 1, 1];
   const wholeExtent = wholeExtentFor(
@@ -544,6 +651,22 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
 
   const onScreenshot = useCallback(() => viewerRef.current?.screenshot(), []);
   const onResetCamera = useCallback(() => viewerRef.current?.resetCamera(), []);
+  const onApplyCamera = useCallback((camera: CameraState) => {
+    display.setCameraState(camera);
+  }, [display]);
+
+  const downloadLocalFile = useCallback((index: number) => {
+    if (!selectedDataset || !selectedIsLocal) return;
+    const file = localFileFor(selectedDataset.id, index);
+    if (file) triggerBlobDownload(file, file.name);
+  }, [selectedDataset, selectedIsLocal, localFileFor]);
+  const onDownloadTimestep = useCallback((index: number) => {
+    if (selectedIsLocal) downloadLocalFile(index);
+    else downloadTimestep(index);
+  }, [selectedIsLocal, downloadLocalFile, downloadTimestep]);
+  const onDownloadOriginal = useCallback(() => {
+    downloadLocalFile(selectedDataset?.dataset_type === "Collection" ? display.timestepIndex : 0);
+  }, [downloadLocalFile, selectedDataset?.dataset_type, display.timestepIndex]);
 
   // ---- grouped props for the memoized PropertiesPanel
   const viewControls = useMemo(() => ({
@@ -561,11 +684,12 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     onTogglePlayback: playback.togglePlayback,
     onScreenshot,
     onResetCamera,
+    onApplyCamera,
   }), [
     availableColorRange, clampedSliceIndex, sliceMin, sliceMax,
     onSliceAxis, playback.seek, playback.speed, playback.setSpeed,
     playback.loop, playback.setLoop, playback.playbackAvailable, playback.togglePlayback,
-    onScreenshot, onResetCamera,
+    onScreenshot, onResetCamera, onApplyCamera,
   ]);
 
   const serverFilterAvailable = serverCapabilities?.paraview_worker ?? false;
@@ -587,13 +711,13 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     videoExportAvailable: serverCapabilities?.video_export ?? false,
     onRunFilter: runServerFilter,
     onJobCreated: onAssistJobCreated,
-    onDownloadTimestep: downloadTimestep,
+    onDownloadTimestep,
   }), [
     exportDataset, exportPending, convertDataset, convertPending,
     runStats, statsPending, promoteArtifact, promotePendingIds,
     clientExport, clientExportPending, exportMovie, moviePending,
     filterPending, serverFilterAvailable, serverCapabilities?.video_export,
-    runServerFilter, onAssistJobCreated, downloadTimestep,
+    runServerFilter, onAssistJobCreated, onDownloadTimestep,
   ]);
 
   const remoteControls = useMemo(() => ({
@@ -603,6 +727,78 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
     onStart: startRemote,
     onStop: stopRemote,
   }), [serverCapabilities?.trame_sessions, remoteSession, remotePending, startRemote, stopRemote]);
+
+  const buildDiagnostics = useCallback(() => ({
+    app: "MyParaView-Web",
+    generated_at: new Date().toISOString(),
+    build_mode: import.meta.env?.MODE ?? "unknown",
+    connection: {
+      mode: connection.mode,
+      config_source: connection.config.source,
+      api_base: connection.apiBase,
+      status: connection.status,
+      failure: connection.failure,
+      server_capabilities: serverCapabilities,
+    },
+    browser: {
+      user_agent: navigator.userAgent,
+      language: navigator.language,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      renderer: browserCapabilities.renderer,
+      webgpu: browserCapabilities.webgpu,
+      wasm: browserCapabilities.wasm,
+    },
+    ui: {
+      language,
+      theme,
+      background: layout.backgroundChoice,
+      narrow_layout: layout.narrow,
+      left_panel_collapsed: layout.leftCollapsed,
+      right_panel_collapsed: layout.rightCollapsed,
+    },
+    selection: selectedDataset ? {
+      source: selectedIsLocal ? "browser-local" : "server",
+      dataset_type: selectedDataset.dataset_type,
+      ext: selectedDataset.ext,
+      size_bytes: selectedDataset.size_bytes,
+      timestep_index: display.timestepIndex,
+      timestep_count: selectedDataset.timesteps?.length ?? 0,
+      load_state: viewerLoadState,
+      representation: display.representation,
+      color_by: display.colorBy,
+      color_map: display.colorMap,
+    } : null,
+    errors,
+  }), [
+    connection, serverCapabilities, browserCapabilities, language, theme, layout,
+    selectedDataset, selectedIsLocal, display.timestepIndex, viewerLoadState,
+    display.representation, display.colorBy, display.colorMap, errors,
+  ]);
+
+  const resetPreferences = useCallback(() => {
+    layout.resetAll();
+    window.localStorage.removeItem(LANGUAGE_STORAGE_KEY);
+    window.localStorage.removeItem(THEME_STORAGE_KEY);
+    onResetAppearance();
+  }, [layout, onResetAppearance]);
+
+  const loadStateText = viewerLoadState === "loading"
+    ? t.connection.loadStateLoading
+    : viewerLoadState === "ready"
+      ? t.connection.loadStateReady
+      : viewerLoadState === "error"
+        ? t.connection.loadStateError
+        : null;
+  const selectionStatus = selectedDataset
+    ? [
+      `${t.connection.selectionStatus}: ${selectedDataset.filename}`,
+      selectedIsLocal ? t.connection.modeStatic : t.connection.modeServer,
+      loadStateText,
+      selectedDataset.dataset_type === "Collection"
+        ? `${t.connection.timestepLabel} ${display.timestepIndex + 1} / ${selectedDataset.timesteps?.length ?? 0}`
+        : null,
+    ].filter(Boolean).join(" · ")
+    : t.connection.noSelection;
 
   return (
     <div className="app">
@@ -623,8 +819,8 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
             <button onClick={() => void logout()}>{t.auth.logout}</button>
           ) : null}
         </div>
-        <div className="mode-controls" aria-label={t.common.displaySettings}>
-          <div className="segmented">
+        <div className="mode-controls" role="group" aria-label={t.common.displaySettings}>
+          <div className="segmented" role="group" aria-label={t.layout.themeGroup}>
             <button aria-pressed={theme === "light"} onClick={() => onTheme("light")}>
               {t.common.light}
             </button>
@@ -632,7 +828,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
               {t.common.dark}
             </button>
           </div>
-          <div className="segmented">
+          <div className="segmented" role="group" aria-label={t.layout.languageGroup}>
             <button aria-pressed={language === "ja"} onClick={() => onLanguage("ja")}>
               {t.common.japanese}
             </button>
@@ -642,9 +838,9 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
           </div>
           <select
             aria-label={t.properties.background}
-            value={backgroundChoice}
+            value={layout.backgroundChoice}
             onChange={(event) =>
-              setBackgroundChoice(event.target.value as typeof backgroundChoice)
+              layout.setBackgroundChoice(event.target.value as typeof layout.backgroundChoice)
             }
           >
             {(Object.keys(t.properties.backgroundNames) as Array<
@@ -655,7 +851,11 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
               </option>
             ))}
           </select>
-          <button onClick={copyShareLink} disabled={!currentProjectId}>
+          <button
+            onClick={copyShareLink}
+            disabled={!currentProjectId}
+            title={currentProjectId ? undefined : t.connection.projectRequired}
+          >
             {shareCopied ? t.common.copied : t.common.copyLink}
           </button>
           <button
@@ -666,23 +866,39 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
             {t.viewer.comparisonToggle}
           </button>
           <button onClick={() => setManualOpen(true)}>{t.common.manual}</button>
+          <button onClick={resetPreferences} title={t.layout.resetPreferencesHint}>
+            {t.layout.resetPreferences}
+          </button>
         </div>
-        <div className="panel-toggles">
+        <div className="panel-toggles" role="group" aria-label={t.layout.panelsGroup}>
           <button
-            aria-pressed={leftCollapsed}
-            onClick={() => setLeftCollapsed((value) => !value)}
+            aria-expanded={!layout.leftCollapsed}
+            aria-controls="dataset-panel"
+            aria-label={`${t.datasetPanel.datasets}: ${layout.leftCollapsed ? t.layout.panelOpen : t.layout.panelClose}`}
+            title={`${t.datasetPanel.datasets}: ${layout.leftCollapsed ? t.layout.panelOpen : t.layout.panelClose}`}
+            onClick={layout.toggleLeft}
           >
             {t.datasetPanel.datasets}
           </button>
           <button
-            aria-pressed={rightCollapsed}
-            onClick={() => setRightCollapsed((value) => !value)}
+            aria-expanded={!layout.rightCollapsed}
+            aria-controls="properties-panel"
+            aria-label={`${t.properties.title}: ${layout.rightCollapsed ? t.layout.panelOpen : t.layout.panelClose}`}
+            title={`${t.properties.title}: ${layout.rightCollapsed ? t.layout.panelOpen : t.layout.panelClose}`}
+            onClick={layout.toggleRight}
           >
             {t.properties.title}
           </button>
+          <button
+            onClick={layout.maximizeViewer}
+            disabled={layout.leftCollapsed && layout.rightCollapsed}
+          >
+            {t.layout.maximizeViewer}
+          </button>
+          <button onClick={layout.resetLayout}>{t.layout.resetLayout}</button>
         </div>
         {errors.map((message, index) => (
-          <span key={`${index}-${message}`} className="error-banner">
+          <span key={`${index}-${message}`} className="error-banner" role="alert">
             {message}
             <button
               className="link-button"
@@ -696,40 +912,19 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
       </header>
 
       <div
-        className={`workspace${leftCollapsed ? " left-collapsed" : ""}${
-          rightCollapsed ? " right-collapsed" : ""
-        }`}
+        className={`workspace${layout.leftCollapsed ? " left-collapsed" : ""}${
+          layout.rightCollapsed ? " right-collapsed" : ""
+        }${layout.narrow ? " narrow" : ""}`}
       >
-        {manualOpen && (
-          <div
-            className="manual-backdrop"
-            role="presentation"
-            onClick={() => setManualOpen(false)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") setManualOpen(false);
-            }}
-          >
-            <section
-              className="manual-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="manual-title"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="manual-header">
-                <h2 id="manual-title">{t.manual.title}</h2>
-                {/* autoFocus moves focus into the dialog so Escape works immediately */}
-                <button autoFocus onClick={() => setManualOpen(false)}>{t.common.close}</button>
-              </div>
-              <p>{t.manual.intro}</p>
-              <ol>
-                {t.manual.steps.map((step) => <li key={step}>{step}</li>)}
-              </ol>
-              <p className="muted">{t.manual.publicNote}</p>
-            </section>
-          </div>
-        )}
+        <ManualDialog open={manualOpen} mode={connection.mode} onClose={() => setManualOpen(false)} />
         <DatasetPanel
+          connection={connection}
+          buildDiagnostics={buildDiagnostics}
+          localDatasets={localDatasets}
+          localLoadingLabel={localLoadingLabel}
+          onOpenLocalFiles={(files) => void openLocal(files)}
+          onOpenSample={(sampleId) => void openLocalSample(sampleId)}
+          onRemoveLocalDataset={removeLocalDataset}
           projects={projects}
           currentProjectId={currentProjectId}
           onSelectProject={switchProject}
@@ -748,7 +943,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
           cancelingJobIds={cancelingJobIds}
           onCancelJob={cancelJob}
           pipelines={pipelines}
-          canSavePipeline={!!selectedDataset}
+          canSavePipeline={!!selectedDataset && !selectedIsLocal}
           serverRunAvailable={!!serverCapabilities?.paraview_worker}
           onSavePipeline={(name) => void savePipeline(name)}
           onRestorePipeline={(pipeline) => void restorePipeline(pipeline)}
@@ -770,7 +965,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
               <ComparisonViewport
                 ref={viewerRef}
                 enabled={comparisonEnabled}
-                datasets={datasets}
+                datasets={allDatasets}
                 primaryDataset={selectedDataset}
                 primaryTimestepIndex={display.timestepIndex}
                 primary={{
@@ -796,12 +991,21 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
                   onScreenshotCaptured,
                   onGeometryExported,
                   onColorRangeResolved,
-                  onLoadStateChange: playback.onLoadStateChange,
+                  onLoadStateChange,
+                  onSceneSummary,
                   viewerBackground,
                 }}
               />
             )}
           </ErrorBoundary>
+          <div
+            className="selection-status"
+            role="status"
+            data-testid="selection-status"
+            title={selectionStatus}
+          >
+            {selectionStatus}
+          </div>
         </main>
 
         <PropertiesPanel
@@ -811,6 +1015,7 @@ function AppBody({ language, onLanguage, theme, onTheme }: AppBodyProps) {
           jobs={jobControls}
           remote={remoteControls}
           artifacts={artifacts}
+          onDownloadOriginal={onDownloadOriginal}
           onError={pushError}
         />
       </div>

@@ -49,10 +49,32 @@ interface PlaneAlgorithm extends VtkObject {
   setInputData: (input: unknown) => void;
 }
 
+/** Explicit plane definition for numeric entry and read-back. */
+export interface PlaneDefinition {
+  origin: [number, number, number];
+  normal: [number, number, number];
+}
+
 export interface ClientPlaneController {
   apply: (settings: ClientPlaneSettings) => void;
   reset: () => void;
+  /** Current widget plane (origin + unit normal). */
+  getPlane: () => PlaneDefinition;
+  /** Set the plane numerically; the widget and the pipeline follow. Returns
+   * false (and leaves the plane untouched) for a degenerate normal. */
+  setPlane: (definition: PlaneDefinition) => boolean;
+  /** Observe plane edits from the widget or `setPlane`. */
+  onPlaneChange: (callback: (plane: PlaneDefinition) => void) => () => void;
   delete: () => void;
+}
+
+export function normalizeVector(
+  vector: [number, number, number],
+): [number, number, number] | null {
+  if (vector.some((value) => !Number.isFinite(value))) return null;
+  const length = Math.hypot(vector[0], vector[1], vector[2]);
+  if (length < 1e-12) return null;
+  return [vector[0] / length, vector[1] / length, vector[2] / length];
 }
 
 const AXIS_NORMAL: Record<ClientPlaneAxis, [number, number, number]> = {
@@ -130,6 +152,16 @@ export function createClientPlaneController(scene: Scene): ClientPlaneController
     inverted: false,
   };
   let deleted = false;
+  const listeners = new Set<(plane: PlaneDefinition) => void>();
+
+  const currentPlane = (): PlaneDefinition => ({
+    origin: [...widgetState.getOrigin()] as [number, number, number],
+    normal: [...widgetState.getNormal()] as [number, number, number],
+  });
+  const notify = () => {
+    const definition = currentPlane();
+    listeners.forEach((listener) => listener(definition));
+  };
 
   const syncPipeline = () => {
     if (deleted) return;
@@ -138,6 +170,7 @@ export function createClientPlaneController(scene: Scene): ClientPlaneController
     clipper.modified();
     cutter.modified();
     scene.renderWindow.render();
+    notify();
   };
   // vtk.js 36 exposes the macro event as `onWidgetChange` at runtime.  Its
   // declaration file still calls it `onWidgetChangeEvent`, so keep the local
@@ -176,12 +209,31 @@ export function createClientPlaneController(scene: Scene): ClientPlaneController
     syncPipeline();
   };
 
+  const setPlane = (definition: PlaneDefinition) => {
+    if (deleted) return false;
+    const normal = normalizeVector(definition.normal);
+    if (!normal || definition.origin.some((value) => !Number.isFinite(value))) return false;
+    widgetState.setOrigin([...definition.origin]);
+    widgetState.setNormal(normal);
+    syncPipeline();
+    return true;
+  };
+
   return {
     apply,
     reset,
+    getPlane: currentPlane,
+    setPlane,
+    onPlaneChange: (callback) => {
+      listeners.add(callback);
+      return () => {
+        listeners.delete(callback);
+      };
+    },
     delete: () => {
       if (deleted) return;
       deleted = true;
+      listeners.clear();
       widgetSubscription.unsubscribe?.();
       try {
         widgetManager.removeWidget(planeWidget);

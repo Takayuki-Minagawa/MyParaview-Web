@@ -18,20 +18,34 @@ SHA-256を照合してPagesへ配置します。pushでは起動せず、ビル�
 `VITE_API_BASE`やOIDC設定は公開時のActions変数ではなく、検証・ビルド環境に指定します。
 PagesのSourceは「GitHub Actions」を使用します。
 
-これは**フロントエンドの静的配信のみ**です。プロジェクト一覧・データセットupload・
-pipeline実行はFastAPIへの接続が必要です。ブラウザ単独のファイル読み込みモードは未実装です。
-別途バックエンドを配置し、Pages originからのCORSを許可してください。
+これは**フロントエンドの静的配信**です。`VITE_API_BASE` を指定せずにビルドした配布物は
+ブラウザ表示モード（static）で起動し、ローカルファイルと内蔵サンプル（`public/samples/`）を
+ブラウザ内で表示します。起動時にAPIへは接続しません。プロジェクト一覧・データセットupload・
+pipeline実行は、利用者が画面の「サーバーに接続…」で接続先を入力するか、`VITE_API_BASE` を
+指定してビルドした場合に利用できます。別途バックエンドを配置する場合は、Pages originからの
+CORSを許可してください。
 
-## 公開モードの方針
+## 公開モード（2026-10-15 実装）
 
-同じリポジトリから次の2モードをビルドできる形を目標とします。
+同じリポジトリから次の2モードをビルドできます。
 
 - `static`: GitHub Pages向け。ファイルはブラウザ内で読み込み、DBやFastAPIを使わない。
 - `server`: 本格サーバー向け。FastAPI、PostgreSQL、S3/MinIO、OIDCを使用する。
 
-想定するビルド変数は `VITE_APP_MODE=static|server` です。サーバーモードではフロントエンドと
-APIを同一originで公開し、リバースプロキシが `/api` をFastAPIへ転送する構成を優先します。
-これにより、公開先ごとのCORS設定とAPI URL指定を最小化できます。
+ビルド変数は `VITE_APP_MODE=static|server` と `VITE_API_BASE` です（`frontend/src/lib/appMode.ts`）。
+
+| 条件 | モード | 起動時の接続先 |
+|---|---|---|
+| `VITE_APP_MODE=static` | static | なし |
+| `VITE_API_BASE` 指定 | server | 指定値 |
+| `VITE_APP_MODE=server`（API未指定） | server | `http://localhost:8000` |
+| `npm run dev` で未指定 | server | `http://localhost:8000` |
+| production buildで未指定（Pages） | static | なし |
+
+サーバーモードではフロントエンドとAPIを同一originで公開し、リバースプロキシが `/api` を
+FastAPIへ転送する構成を優先します。これにより、公開先ごとのCORS設定とAPI URL指定を
+最小化できます。static配布物からサーバーへ接続した場合、接続先はブラウザの
+localStorage（`pvweb-api-base`）に次回の候補として保存されますが、自動接続はしません。
 
 ## 現在の状態
 
@@ -253,7 +267,7 @@ object削除意図もPostgreSQLのoutboxへ先にcommitし、APIが既定30秒�
 
 ## 配置前チェックリスト
 
-- [ ] `static` / `server` のbuild切替が実装されている
+- [x] `static` / `server` のbuild切替が実装されている（2026-10-15）
 - [x] backend/frontend Dockerfileがある
 - [x] `infra/docker-compose.yml` に `full-stack` profileがある
 - [x] nginxがReactと `/api`（SSE/WebSocketを含む）を配信する

@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import type { AuditEvent, Dataset, Job, Project, ProjectMember, ProjectRole } from "../types";
 import { api } from "../api";
 import { triggerBlobDownload } from "../lib/download";
@@ -7,12 +7,23 @@ import { DatasetList } from "./DatasetList";
 import { PipelinePanel } from "./PipelinePanel";
 import type { Pipeline } from "../types";
 import { useMessages } from "../i18n-context";
+import { ConnectionSection } from "./ConnectionSection";
+import { LocalDataSection } from "./LocalDataSection";
+import type { ServerConnection } from "../hooks/useServerConnection";
 
 interface Props {
+  connection: ServerConnection;
+  buildDiagnostics: () => Record<string, unknown>;
+  localDatasets: Dataset[];
+  localLoadingLabel: string | null;
+  onOpenLocalFiles: (files: File[]) => void;
+  onOpenSample: (sampleId: string) => void;
+  onRemoveLocalDataset: (id: string) => void;
   projects: Project[];
   currentProjectId: string | null;
   onSelectProject: (id: string) => void;
-  onCreateProject: (name: string) => void;
+  /** Resolves true when the project exists; the name is kept on failure. */
+  onCreateProject: (name: string) => Promise<boolean>;
   membership: ProjectMember | null;
   members: ProjectMember[];
   onPutMember: (userId: string, role: ProjectRole) => void;
@@ -106,15 +117,81 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const bundleRef = useRef<HTMLInputElement | null>(null);
   const [newName, setNewName] = useState("");
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [memberId, setMemberId] = useState("");
   const [memberRole, setMemberRole] = useState<ProjectRole>("viewer");
   const t = useMessages();
+  const projectSelectId = useId();
+  const newNameId = useId();
+  const nameErrorId = useId();
+  const singleFileId = useId();
+  const bundleId = useId();
+  const uploadHintId = useId();
+  const serverHintId = useId();
+  const connected = props.connection.status === "connected";
+  const serverMode = props.connection.mode === "server";
+  const uploadDisabledReason = !connected
+    ? t.connection.serverFeaturesNeedConnection
+    : !props.currentProjectId
+      ? t.connection.projectRequired
+      : null;
+
+  const submitProject = async (event: FormEvent) => {
+    event.preventDefault();
+    if (creating) return;
+    const name = newName.trim();
+    if (!name) {
+      setNameError(t.datasetPanel.nameRequired);
+      return;
+    }
+    setNameError(null);
+    setCreating(true);
+    try {
+      // Only a confirmed success clears the field; a failed request keeps the
+      // typed name so the user can retry without re-entering it (F-02).
+      if (await props.onCreateProject(name)) setNewName("");
+      else setNameError(t.datasetPanel.createFailed);
+    } finally {
+      setCreating(false);
+    }
+  };
 
   return (
-    <aside className="panel panel-left">
-      <h2>{t.datasetPanel.projects}</h2>
+    <aside className="panel panel-left" id="dataset-panel" aria-label={t.datasetPanel.datasets}>
+      <ConnectionSection
+        connection={props.connection}
+        buildDiagnostics={props.buildDiagnostics}
+      />
+      <LocalDataSection
+        localDatasets={props.localDatasets}
+        selectedDatasetId={props.selectedDatasetId}
+        loadingLabel={props.localLoadingLabel}
+        onOpenFiles={props.onOpenLocalFiles}
+        onOpenSample={props.onOpenSample}
+        onSelectDataset={props.onSelectDataset}
+        onRemoveDataset={props.onRemoveLocalDataset}
+      />
+
+      <section
+        className={`server-features${connected ? "" : " server-features-disabled"}`}
+        aria-labelledby="server-features-title"
+        aria-describedby={connected ? undefined : serverHintId}
+      >
+      <h2 id="server-features-title">{t.datasetPanel.serverSection}</h2>
+      {!connected && (
+        <p id={serverHintId} className="muted">
+          {serverMode && props.connection.status !== "disconnected"
+            ? t.connection.serverFeaturesNeedConnection
+            : t.connection.connectHelp}
+        </p>
+      )}
+      <h3>{t.datasetPanel.projects}</h3>
+      <label htmlFor={projectSelectId}>{t.datasetPanel.projectSelectLabel}</label>
       <select
+        id={projectSelectId}
         value={props.currentProjectId ?? ""}
+        disabled={!connected}
         onChange={(e) => props.onSelectProject(e.target.value)}
       >
         <option value="" disabled>
@@ -126,23 +203,33 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
           </option>
         ))}
       </select>
-      <div className="row">
-        <input
-          placeholder={t.datasetPanel.newProjectName}
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-        />
-        <button
-          onClick={() => {
-            if (newName.trim()) {
-              props.onCreateProject(newName.trim());
-              setNewName("");
-            }
-          }}
-        >
-          {t.common.create}
-        </button>
-      </div>
+      <form
+        className="project-create"
+        aria-label={t.datasetPanel.createProjectForm}
+        onSubmit={(event) => void submitProject(event)}
+      >
+        <label htmlFor={newNameId}>{t.datasetPanel.newProjectNameLabel}</label>
+        <div className="row">
+          <input
+            id={newNameId}
+            placeholder={t.datasetPanel.newProjectName}
+            value={newName}
+            disabled={!connected || creating}
+            aria-invalid={nameError !== null}
+            aria-describedby={nameError ? nameErrorId : undefined}
+            onChange={(e) => {
+              setNewName(e.target.value);
+              if (nameError) setNameError(null);
+            }}
+          />
+          <button type="submit" disabled={!connected || creating}>
+            {creating ? t.datasetPanel.creating : t.common.create}
+          </button>
+        </div>
+        {nameError && (
+          <p id={nameErrorId} className="validation-error" role="alert">{nameError}</p>
+        )}
+      </form>
 
       {props.membership?.role === "admin" && (
         <section className="member-admin" aria-label={t.datasetPanel.memberAdmin}>
@@ -196,13 +283,19 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
         </section>
       )}
 
-      <h2>{t.datasetPanel.datasets}</h2>
-      <div className="row">
+      <h3>{t.datasetPanel.datasets}</h3>
+      {uploadDisabledReason && (
+        <p id={uploadHintId} className="muted">{uploadDisabledReason}</p>
+      )}
+      <div className="local-open">
+        <label htmlFor={singleFileId}>{t.datasetPanel.singleFileLabel}</label>
         <input
+          id={singleFileId}
           ref={fileRef}
           type="file"
           accept=".vtp,.vti,.vtu,.vts,.vtr,.pvd,.csv,.cgns,.exo,.e,.case,.xdmf,.xmf"
-          disabled={!props.currentProjectId}
+          disabled={!!uploadDisabledReason}
+          aria-describedby={uploadDisabledReason ? uploadHintId : undefined}
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) props.onUploadFiles([f]);
@@ -210,17 +303,19 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
           }}
         />
       </div>
-      <div className="bundle-upload">
+      <div className="bundle-upload local-open">
+        <label htmlFor={bundleId}>{t.datasetPanel.bundleLabel}</label>
         <input
+          id={bundleId}
           ref={(element) => {
             bundleRef.current = element;
             element?.setAttribute("webkitdirectory", "");
           }}
           type="file"
-          aria-label={t.datasetPanel.bundleLabel}
           accept=".pvd,.vtp,.vti,.case,.xdmf,.xmf,.h5,.hdf5,.geo,.scl,.vec,.dat,.bin"
           multiple
-          disabled={!props.currentProjectId}
+          disabled={!!uploadDisabledReason}
+          aria-describedby={uploadDisabledReason ? uploadHintId : undefined}
           onChange={(event) => {
             const selected = Array.from(event.target.files ?? []);
             if (selected.length) props.onUploadFiles(selected);
@@ -229,7 +324,7 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
         />
         <span className="muted">{t.datasetPanel.bundleHelp}</span>
       </div>
-      {props.busy && <div className="busy">{props.busy}</div>}
+      {props.busy && <div className="busy" role="status">{props.busy}</div>}
 
       <DatasetList
         projectId={props.currentProjectId}
@@ -241,7 +336,7 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
         onError={props.onError}
       />
 
-      <h2>{t.datasetPanel.jobs}</h2>
+      <h3>{t.datasetPanel.jobs}</h3>
       <ul className="job-list" aria-live="polite">
         {props.jobs.map((job) => (
           <li key={job.id}>
@@ -277,6 +372,7 @@ export const DatasetPanel = memo(function DatasetPanel(props: Props) {
         onRename={props.onRenamePipeline}
         onRun={props.onRunPipeline}
       />
+      </section>
     </aside>
   );
 });
